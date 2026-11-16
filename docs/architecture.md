@@ -312,7 +312,7 @@ struct PubState {
 | 终态 | 含义 | 计数落点 |
 | --- | --- | --- |
 | `delivered` | 回调执行完毕（SV 侧 = export 返回） | `Topic::delivered`、`Subscriber::received` |
-| `retired` | 未进入回调，且无人的错：快照之后、回调之前被退订（SV 注册表丢弃了这次在途投递，§9.1.1） | `Publication::retired()`、`Topic::dropped`、`Subscriber::dropped` |
+| `retired` | 未进入回调，且无人的错：快照之后、回调之前被退订（C++ 的 `Subscriber::removed` 或 SV 注册表丢弃，§9.1.1） | `Publication::retired()`、`Topic::dropped`、`Subscriber::dropped` |
 | `failed` | 尝试但未成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败 | `Topic::dropped`、`Subscriber::dropped`、`failures()` |
 | `deferred` | 返回时尚未开始（仅 `now` 的 `defer` 段），之后必落入前三种之一 | `Publication::deferred()`（标记） |
 | `excluded` | 策略不投（仅 `now` 的 `drop`），不进入目标集合 | `Publication::excluded()`、`Topic::dropped`、`Subscriber::dropped` |
@@ -327,7 +327,7 @@ expected;  // 目标数（不含 excluded）
 finished;  // 已达终态的目标数 = delivered + retired + failed
 excluded;  // 被 drop 排除的目标数（不进 expected）
 deferred;  // 转到后台链、返回时尚未开始的目标数（标记，不回零）
-retired;   // 快照后被退订而跳过、但计入 finished 的目标数
+retired;   // 快照后被退订而跳过、但计入 finished 的目标数（不分语言，§9.1.1）
 ```
 
 #### 9.1.1 目标集 = 名字 ∩ 类型
@@ -343,11 +343,29 @@ retired;   // 快照后被退订而跳过、但计入 finished 的目标数
 绑定时 `Broker::check_bind_compat`（§10.3）。测试：`tests/cpp/publish_tests.cpp` case15、
 `tests/cpp/broker_tests.cpp` case11。
 
-`retired` 是唯一的"非回调终态"，来源也只有一个：`Broker::deliver` 里
-`take_retired_delivery()` 报告该 SV 订阅者在本帧快照之后、回调之前被退订。记 `delivered`
-是幻影成功，记 `failed` 是把合法用户动作当错——目标已到终态、回调未进入、没有失败者。
-它同时计入 topic 级与订阅者级 `dropped`，所以"名额给了、内容没进回调"仍然可观测。
-测试：`tests/sv/shuttle_tests.sv` 的 `case_retired`。
+`retired` 是唯一的"非回调终态"：目标在快照之后、回调之前被退订。记 `delivered` 是幻影
+成功，记 `failed` 是把合法用户动作当错——目标已到终态、回调未进入、没有失败者。它同时计入
+topic 级与订阅者级 `dropped`，所以"名额给了、内容没进回调"仍然可观测。
+
+快照只保证**谁被选中**，不保证**一定被调用**（"退订即生效"，两种语言同一口径）。两个来源，
+覆盖全部窗口：
+
+| 来源 | 机制 | 覆盖的窗口 |
+| --- | --- | --- |
+| C++ 侧 `Subscriber::removed` | `Broker::remove_sub` 置位；`deliver` 在入口检查（kind 分支之前），因为快照持有 `shared_ptr`、对象还活着，不查就会真的调进回调 | 快照 → 投递之间的任意时刻 |
+| SV 注册表回告 | `shuttle_registry` 在退订时删除 sink 并置 `retired_[id]`，随后的在途 dispatch 静默丢弃并调 `shuttle_c_sub_retired` → `Broker::deliver` 里 `take_retired_delivery()` | 同上，但退订发生在 SV 侧，C++ 无法本地观察 |
+
+两个来源互不重叠也互不替代：C++ 的标记看不到 SV 侧的 `shuttle_sub::unsubscribe()`（它直接
+删注册表条目），SV 的回告也覆盖不到 C++ 订阅者。曾经只有 SV 一侧会产生 `retired`（C++ 侧
+按"快照语义"照常回调），这与后端隔离的方向矛盾——后端不该有专属终态，故统一为两来源。
+
+反向（让 SV 也保帧）不可行：`shuttle_sub` 退订后 sink 已不在注册表里，要保帧就得让注册表
+一直持有到本帧结束，即跨语言的在途引用计数（C++ 还得回告"帧 X 完成"），并让
+`unsubscribe()` 之后仍被调用——比丢一帧糟得多。
+
+测试：`tests/cpp/broker_tests.cpp` case12（同帧内 B 退订 A → A 记 retired）、
+`tests/cpp/trigger_tests.cpp` case7（触发等待期间退订）、`tests/sv/shuttle_tests.sv` 的
+`case_retired`。
 
 ### 9.2 不变量
 
@@ -548,7 +566,9 @@ broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV
 | `shuttle_handle`（SV） | 持 `pub_id`，方法名与 `Publication` 对应：`wait_done(timeout_fs)` / `done()` / `subscriber_count()` / `finished()` / `excluded()` / `deferred()` / `retired()` / `first_error()` |
 | `shuttle_event`（SV） | C++ 注册表持有的 id，`set()` / `close()` |
 
-退订只影响此后的投递；已快照的帧仍会到达 SV 侧，由 `retired_` 丢弃并回告（§11.4）。
+退订即生效：它立刻把订阅者移出目标集（此后的帧不再选中它），也让**已快照**但尚未投递的帧
+跳过它——这些投递记 `retired`（不是失败，也不是 `delivered`）。两种语言同一口径；实现与来源
+见 §9.1.1。
 
 ## 14. 延迟触发
 

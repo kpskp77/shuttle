@@ -15,8 +15,8 @@
 //
 // ── 记账语义：每个目标订阅者只有五种结局，三种方式完全一致 ─────────────────────
 //   delivered  回调执行完毕（SV 侧 = export 返回）
-//   retired    快照之后、回调之前被退订（SV 注册表丢弃了这次在途投递）：目标已到终态，
-//              内容没进回调，但没有任何人出错；计入 retired() 与 dropped()
+//   retired    快照之后、回调之前被退订：目标已到终态，内容没进回调，但没有任何人出错；
+//              计入 retired() 与 dropped()。两种语言同一口径（退订即生效）
 //   failed     尝试了但没成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败
 //              （同时计入 dropped，并留下一条 Failure）
 //   deferred   返回时尚未开始（仅 publish_now 的 defer 段，后台串行链接走）
@@ -81,7 +81,8 @@ public:
   // 被推迟到后台串行链、稍后才投递的订阅者数量（publish_now 的 defer）；是标记，完成后不回零
   [[nodiscard]] std::size_t deferred() const;
   // 本帧快照之后被退订、因而未进入回调的订阅者数量（已计入 finished 与 dropped）。
-  // 恒为 0 的例外是 SV 侧在途投递遇退订——这是一个终端计数，不是错误明细，不进 failures()
+  // 快照保证"谁被选中"，不保证"一定被调用"：退订即生效，不分语言。
+  // 这是终端计数，不是错误明细，不进 failures()
   [[nodiscard]] std::size_t retired() const;
 
   [[nodiscard]] std::vector<Failure> failures() const;

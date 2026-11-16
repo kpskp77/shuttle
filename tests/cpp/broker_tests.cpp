@@ -259,5 +259,39 @@ WEAVE_TEST(broker_tests) {
     expect_eq(static_cast<long long>(wild.dropped()), 0, "类型不相交的帧不是目标，不计 dropped");
   });
 
+  // case12：退订即生效 —— 快照之后、回调之前被退订的目标记 retired。
+  // 快照只保证"谁被选中"，不保证"一定被调用"：C++ 侧快照持有 shared_ptr、对象还活着，
+  // 所以 deliver 要显式看一眼 `removed`；SV 侧 sink 已被注册表删除，由 shuttle_c_sub_retired
+  // 回告。两种语言从此只有一种口径。
+  run_case(__func__, "case12", [] {
+    shuttle::Publisher<BkrTx> pub("bkr.inflight");
+    std::size_t a_frames = 0;
+    std::size_t b_frames = 0;
+    shuttle::Subscription a;
+    // 注册顺序 = 串行链里的投递顺序：B 先跑，并在自己的回调里退订排在其后的 A
+    auto b = shuttle::subscribe<BkrTx>(
+        "bkr.inflight",
+        shuttle::nb([&](const BkrTx&, const shuttle::Meta&) {
+          ++b_frames;
+          a.unsubscribe();
+        }));
+    a = shuttle::subscribe<BkrTx>(
+        "bkr.inflight", shuttle::nb([&](const BkrTx&, const shuttle::Meta&) { ++a_frames; }));
+
+    auto p = pub.publish_serial(BkrTx{1, 1});
+    p.wait();
+
+    expect_eq(static_cast<long long>(b_frames), 1, "排在前面的订阅者照常收到");
+    expect_eq(static_cast<long long>(a_frames), 0, "同帧内被退订的目标不再进回调");
+    expect_eq(static_cast<long long>(p.subscriber_count()), 2, "目标数在发布瞬间冻结");
+    expect_eq(static_cast<long long>(p.finished()), 2, "两个目标都到终态");
+    expect(p.done(), "done() 在全部目标到终态后成立");
+    const auto info = shuttle::broker::topic_info("bkr.inflight");
+    expect(info.has_value() && info->delivered == 1, "delivered 只数真正进回调的");
+    expect_eq(static_cast<long long>(p.retired()), 1, "被退订的那个记 retired");
+    expect_eq(static_cast<long long>(a.dropped()), 1, "退订丢弃计入该订阅者的 dropped");
+    expect(b.valid(), "b 未退订");
+  });
+
   report(__func__);
 }

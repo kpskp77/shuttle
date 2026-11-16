@@ -115,7 +115,7 @@ h.wait_done();                                                    // 挂起当�
 | `finished()` | 已达终态的目标数 |
 | `excluded()` | 被 `drop` 排除的目标数（仅 `now`） |
 | `deferred()` | 转到后台链的目标数（仅 `now` 的 `defer`；返回时未开始，完成后不回零） |
-| `retired()` | 本帧快照后被退订、回调未进入的目标数（仅 SV 注册表能在途退订） |
+| `retired()` | 本帧快照后被退订、回调未进入的目标数（退订即生效，两种语言同口径） |
 | `failures()` / `first_error()` | 失败明细（`Failure{subscriber, error}`） |
 | `wait()` / `wait(timeout)` / `wait_done(timeout_fs)` | 等待结束 |
 | `done()` | 是否已全部结束 |
@@ -205,8 +205,8 @@ xmake f --backend=svdpi   && xmake run shuttle_examples_svdpi_vcs   # 需 xmake 
 `tests/` 与 `examples/` 平行：示例示范用法，测试只断言行为（失败即 `[FAIL]`，整体判失败）。
 
 ```bash
-just test-sc    # systemc 后端：tests/cpp 43 个用例（跨语言用例不参与编译）
-just test-vcs   # VCS 后端：tests/cpp 46 个用例 + tests/sv 76 个断言
+just test-sc    # systemc 后端：tests/cpp 44 个用例（跨语言用例不参与编译）
+just test-vcs   # VCS 后端：tests/cpp 47 个用例 + tests/sv 76 个断言
 just test-all   # 两者都跑
 ```
 
@@ -215,7 +215,7 @@ just test-all   # 两者都跑
 | `tests/cpp/codec_tests.cpp` | 线格式黄金字节、各宽度大端与补码、IEEE754、长度前缀、enum 底层类型、嵌套 struct、越界抛 `DecodeError`、类型标签与 `has_codec_v` |
 | `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、类型不相交的帧不入目标集（含绑定时的通配符豁免） |
 | `tests/cpp/publish_tests.cpp` | `NowPolicy` 三策略、`wait/wait(timeout)/done/result/failures`、计数契约、失败聚合不影响其余目标、零目标立即完成、类型不相交即零目标、入口选择、`defer` 与 `serial` 共享 FIFO |
-| `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发期间退订仍投递（快照语义） |
+| `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发等待期间退订（在途帧记 retired） |
 | `tests/cpp/xlang_tests.cpp` | 跨语言往返（仅 svdpi 后端）：就绪握手、双向各三帧、类型标签与 seq 单调 |
 | `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、订阅先于绑定的标签冲突、快照、`shuttle_event`、跨语言往返 |
 

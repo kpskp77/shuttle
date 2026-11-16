@@ -56,7 +56,7 @@ package shuttle_pkg;
   // 发布计数查询：kind 0=目标数 1=已完成 2=排除 3=deferred 4=退订跳过
   import "DPI-C" context function int shuttle_c_pub_stat(int pub_id, int kind);
   import "DPI-C" context function string shuttle_c_pub_error(int pub_id);
-  // 在途投递到达一个已退订的 id 时回告 C++（不报错，只让 C++ 把该次投递记成失败）
+  // 在途投递到达一个已退订的 id 时回告 C++（不报错，只让 C++ 把该次投递记成 retired）
   import "DPI-C" context function void shuttle_c_sub_retired(int sv_sid);
   import "DPI-C" context function int shuttle_c_subscribe(
       string topic, int caps, string type_tag, int sv_sid);
@@ -150,7 +150,7 @@ package shuttle_pkg;
     static local shuttle_sink_nb sinks_nb_[int];
     // 已退订的 id：C++ 侧可能仍有在途投递（发布瞬间已快照订阅者集合），
     // 这些投递到达时静默丢弃（不当成 SV 侧错误），但经 shuttle_c_sub_retired 回告 C++，
-    // 让该帧记为该订阅者的失败（而不是幻影般的 delivered）；未登记过的 id 仍然报错。
+    // 让该帧记为该订阅者的 retired 终态（而不是幻影般的 delivered）；未登记过的 id 仍然报错。
     static local bit            retired_[int];
 
     static function automatic int add(shuttle_sink s, shuttle_sink_nb snb);

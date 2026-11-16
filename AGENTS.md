@@ -10,7 +10,7 @@ just build          # 按当前后端构建
 just sc             # systemc 后端本地跑（预期末行 "WEAVE TEST PASSED"）
 just vcs            # svdpi 后端 + 真实 VCS 仿真（预期 "SHUTTLE CPP DEMO PASSED"）
 just test           # 示例：两个后端都过一遍
-just test-all       # 测试套件：systemc（43 用例）+ VCS（46 用例 + 76 个 SV 断言）
+just test-all       # 测试套件：systemc（44 用例）+ VCS（47 用例 + 76 个 SV 断言）
 ```
 
 `tests/svdpi/run.sh` 在没有 vcs 的机器上会打印 `[svdpi-test] skipped` 并以 0 退出，
@@ -40,11 +40,15 @@ just test-all       # 测试套件：systemc（43 用例）+ VCS（46 用例 + 7
    让后续帧永久阻塞（曾引发整机 hang，表现为仿真时间停在最后一个事件处、无报错）。
 6. **SV 打包方向是 `{>>{...}}`**（声明序、每字段高位在前），与 C++ `Writer` 的大端逐字节一致；
    `{<<{...}}` 会整段反转比特流。string 先写 32 位长度前缀。
-7. **退订后的在途投递**：`shuttle_registry` 用 `retired_` 静默丢弃（不 `$error`），只有从未登记过的
-   id 才 `$error` —— 这是契约（发布瞬间已快照），别改回报错。但**必须回告 C++**：
-   `dispatch[_nb]` 在丢弃时调 `shuttle_c_sub_retired`，`Broker::deliver` 在 export 返回后把这次
-   投递记成 `Delivery::retired`（进 `dropped`，不进 `delivered`、不留 `Failure`）。少了这一步，
-   C++ 侧就是"幻影成功"：帧明明没进回调，`delivered`/`received` 却涨了。
+7. **退订即生效（在途投递记 retired）**：快照只保证"谁被选中"，不保证"一定被调用"。
+   两个来源都必须记成 `Delivery::retired`（进 `dropped`，不进 `delivered`、不留 `Failure`）：
+   - C++ 侧：`Broker::remove_sub` 置 `Subscriber::removed`，`deliver` 在 kind 分支**之前**检查。
+     快照持有 `shared_ptr`、对象还活着，漏了这一查就会真的调进已退订的回调；
+   - SV 侧：`shuttle_registry` 用 `retired_` 静默丢弃（不 `$error`，只有从未登记过的 id 才
+     `$error`），并在丢弃时调 `shuttle_c_sub_retired`；`Broker::deliver` 在 export 返回后用
+     `take_retired_delivery()` 把这次投递转成 retired。
+   少任何一边都是"幻影成功"（`delivered`/`received` 涨了但帧没进回调），或者两边口径不一致
+   （C++ 记 delivered、SV 记 retired）。别再引入"后端专属终态"。
 8. **跨 DSO 的异常**：异常类与 `shuttle::Event` 都要有 out-of-line 定义（key function），
    否则 `simv` 直接 `undefined symbol`。
 9. **typed 订阅者只能收到已物化的对象**：SV 发布时若 topic 未绑定 C++ 类型，帧只能是纯字节流

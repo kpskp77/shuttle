@@ -24,7 +24,7 @@
 | `shuttle_c_pub_error` | `(int pub_id) → string` | 不阻塞 | 第一个失败订阅者的错误信息；空串表示无失败 |
 | `shuttle_c_pub_stat` | `(int pub_id, int kind) → int` | 不阻塞 | 发布句柄的可见性计数。`kind`：0 = 目标订阅者数（名字 ∩ 类型），1 = 已结束（delivered / retired / failed 三种终态都算），2 = 被策略排除（只有 `drop` 会产生；`reject` 不返回句柄），3 = 转到后台链（defer，标记，完成后不回零），4 = 到达已退订的 SV 订阅者而跳过（已计入 1 与 `dropped`）。未知 `pub_id` 返回 -1 |
 | `shuttle_c_subscribe` | `(string topic, int caps, string type_tag, int sv_sid) → int` | 不阻塞 | 注册 SV 订阅者。`caps` 必须恰好是 `1`（`SHUTTLE_CAP_BLOCKING`）或 `2`（`SHUTTLE_CAP_NONBLOCKING`），其余值返回非 0 并置 last_error；`type_tag` 非空时校验与 topic 类型绑定是否一致，不一致返回非 0；`sv_sid` 是 SV 注册表编号，C++ 原样记录并在分发时带回，两侧无需维护 id 映射。topic 支持通配符（`*` 匹配单级，`>` 匹配其后至少一级、不匹配前缀本身） |
-| `shuttle_c_unsubscribe` | `(int sv_sid)` | 不阻塞 | 退订（幂等）。本帧已快照的在途投递仍会到达 SV 侧，由注册表丢弃并经 `shuttle_c_sub_retired` 回告 |
+| `shuttle_c_unsubscribe` | `(int sv_sid)` | 不阻塞 | 退订（幂等）。退订即生效：已快照但尚未投递的帧仍会到达 SV 侧（注册表里已无 sink），由注册表丢弃并经 `shuttle_c_sub_retired` 回告，C++ 记 `retired` |
 | `shuttle_c_set_retained` | `(string topic, bit retained)` | 不阻塞 | 开启或关闭 retained（latched）：开启后 broker 缓存最新一帧，新订阅者注册时补发 |
 | `shuttle_c_frame_len` | `() → int` | 不阻塞 | 当前帧的字节流长度。**只能在 export 体内**（`shuttle_sv_dispatch[_nb]`）调用，数据来自 C++ 侧的 thread_local `FrameContext` |
 | `shuttle_c_frame_qword` | `(int index) → longint` | 不阻塞 | 取第 `index` 个 8 字节块（SV 侧按小端拼装，末块不足 8 字节的部分补零）。帧因此不经过 export 形参，绕开"C++ 无法构造 open array"的限制 |
@@ -138,8 +138,9 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
 8. **顺序保证**：`publish_now` 严格 FIFO；`publish_serial` 经 per-topic 串行链保证 topic 级
    FIFO；`publish_concurrent` 不承诺任何顺序。`SHUTTLE_NOW_DEFER` 的帧进入的是与
    `publish_serial` **同一条**链，因此同一 topic 的后台投递顺序等于发布调用顺序。
-9. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，但发布瞬间已
-   快照的投递仍可能到达。SV 注册表把这些已退订 id 记为 retired，静默丢弃并经
+9. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
+   快照的投递仍可能到达 SV 侧（C++ 侧靠 `Subscriber::removed` 拦住同一类投递，两侧口径
+   一致：记 `retired`）。SV 注册表把这些已退订 id 记为 retired，静默丢弃并经
    `shuttle_c_sub_retired` 回告；未登记过的 id 才报 `$error`，以保留真实缺陷的可见性。
 
 ## 6. 仿真器约束（VCS O-2018.09-SP2-2）

@@ -79,14 +79,18 @@ struct Subscriber {
   ByteCallback cb_bytes;
   // kind == external：后端侧的不透明句柄（svdpi = SV 注册表编号），dispatch 时原样带回
   int handle = 0;
+  // 已退订（`remove_sub` 置位）。快照持有 shared_ptr，所以对象在退订后仍然活着——本标记
+  // 是"这一帧还该不该进回调"的唯一判据：退订即生效，不问投递进程此刻在哪。
+  bool removed = false;
   // 诊断计数
   std::uint64_t received = 0;
   std::uint64_t dropped = 0;
 };
 
 // ── 单次投递的结果（记账用）───────────────────────────────────────────────
-// `delivered` = 回调执行完毕；`retired` = 该订阅者在快照之后、回调之前被退订（SV 注册表
-// 丢弃了这次在途投递），目标已到终态但内容没进回调。类型标签的判定不在这里——它发生在
+// `delivered` = 回调执行完毕；`retired` = 该订阅者在快照之后、回调之前被退订，目标已到终态
+// 但内容没进回调。两个来源（都与语言无关）：C++ 侧的 `Subscriber::removed`、SV 注册表的
+// 静默丢弃回告。类型标签的判定不在这里——它发生在
 // **目标集快照**（`match_subs`：名字 ∩ 类型）时，不进目标集的订阅者根本没有投递单元。
 // 失败不走返回值，而是抛异常，由投递单元记成 failed。
 enum class Delivery { delivered, retired };
@@ -250,6 +254,14 @@ public:
   // 类型标签不在这里判：调用方只会传**目标集**里的订阅者（`match_subs` 已求过名字 ∩ 类型）。
   Delivery deliver(const std::shared_ptr<Subscriber>& sub, const Envelope& env) {
     const bool use_nb = sub->cap == Capability::nonblocking;
+    // 退订即生效（不分语言）：快照只保证"谁被选中"，不保证"一定被调用"。C++ 的快照持有
+    // shared_ptr、对象还活着，所以这里必须显式问一次；SV 侧 sink 已被注册表删除，同一件事
+    // 在 dispatch 之后由 take_retired_delivery() 报回来。两条来源互补，覆盖全部窗口。
+    if (sub->removed) {
+      ++sub->dropped;
+      ++topics[env.meta.topic].dropped;
+      return Delivery::retired;
+    }
     switch (sub->kind) {
       case SubKind::typed:
         // 安全网：帧是纯字节流（raw 绑定）时绝不能按 T* 解释它
@@ -563,6 +575,8 @@ public:
   }
 
   void remove_sub(const std::shared_ptr<Subscriber>& sub) {
+    // 先置位再摘表：在途投递（快照仍持有 shared_ptr）据此记 retired 而不是 delivered。
+    sub->removed = true;
     subs.erase(std::remove(subs.begin(), subs.end(), sub), subs.end());
   }
 };

@@ -144,23 +144,28 @@ WEAVE_TEST(trigger_tests) {
     expect_eq(static_cast<long long>(b), 1, "订阅者 B 放行");
   });
 
-  // case7：触发期间退订 —— 快照语义下已锁定的订阅者仍会收到本帧
+  // case7：触发期间退订 —— 退订即生效：快照只是"谁被选中"，放行时若已退订就不再进回调。
+  // （"退订不影响在途帧"是旧契约，已废弃：SV 侧的 sink 在退订瞬间就被注册表删掉了，
+  //  两种语言统一到"退订即生效"，这类投递记 retired。）
   run_case(__func__, "case7", [] {
     shuttle::Publisher<TrigMsg> pub("trig.unsub");
     std::size_t frames = 0;
+    shuttle::Publication h;
     {
       auto s = shuttle::subscribe<TrigMsg>("trig.unsub", [&](const TrigMsg&, const shuttle::Meta&) {
         ++frames;
       });
       shuttle::Event ev;
-      auto h = pub.publish_serial(TrigMsg{1}, shuttle::after(ev));
-      s.unsubscribe();  // 帧已快照，订阅者仍在本次投递列表里
+      h = pub.publish_serial(TrigMsg{1}, shuttle::after(ev));
+      s.unsubscribe();  // 帧已快照，但目标已退订
       ev.set();
       h.wait();
     }
-    expect_eq(static_cast<long long>(frames), 1, "快照语义：退订不影响在途帧");
+    expect_eq(static_cast<long long>(frames), 0, "退订后放行的在途帧不再进回调");
+    expect_eq(static_cast<long long>(h.retired()), 1, "该目标记 retired（不是 delivered）");
+    expect(h.done(), "仍然到达终态");
     pub.publish_serial(TrigMsg{2}).wait();
-    expect_eq(static_cast<long long>(frames), 1, "退订后不再有新帧");
+    expect_eq(static_cast<long long>(frames), 0, "退订后不再有新帧");
   });
 
   report(__func__);
