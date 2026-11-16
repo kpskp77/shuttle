@@ -195,8 +195,8 @@ std::size_t Publication::finished() const {
   return valid() ? impl_->pub->finished : 0;
 }
 
-std::size_t Publication::excluded() const {
-  return valid() ? impl_->pub->excluded : 0;
+std::size_t Publication::skipped() const {
+  return valid() ? impl_->pub->skipped : 0;
 }
 
 std::size_t Publication::deferred() const {
@@ -225,7 +225,7 @@ void Subscription::unsubscribe() {
 const std::string& Subscription::topic() const { return impl_->sub->pattern; }
 Capability Subscription::capability() const { return impl_->sub->cap; }
 std::uint64_t Subscription::received() const { return impl_->sub->received; }
-std::uint64_t Subscription::dropped() const { return impl_->sub->dropped; }
+std::uint64_t Subscription::dropped() const { return impl_->sub->dropped(); }
 
 // ── shuttle::Event（句柄注册表）─────────────────────────────────────────────
 namespace {
@@ -328,7 +328,10 @@ std::optional<TopicInfo> topic_info(std::string_view name) {
   info.retained = t.retained_on;
   info.published = t.published;
   info.delivered = t.delivered;
-  info.dropped = t.dropped;
+  info.dropped = t.dropped();
+  info.retired = t.retired;
+  info.skipped = t.skipped;
+  info.failed = t.failed;
   info.deferred = t.deferred;
   return info;
 }

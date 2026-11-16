@@ -69,13 +69,13 @@ module shuttle_demo;
 
     // ── `publish_now`：发布者栈内同步回调，发布进程全程不挂起 ───────────────────
     // 入口为 nonblocking 的那次注册被同步调用（invoke_nb）；入口为 blocking 的那次注册按策略处置——
-    // 这里用 drop 把它排除，不传策略则默认 defer（转后台串行链，稍后再调 invoke）。
+    // 这里用 skip 把它排除，不传策略则默认 defer（转后台串行链，稍后再调 invoke）。
     tx.addr = 32'h10; tx.data = 32'hA5;
     begin
-      automatic shuttle_handle hn = pub.publish_now(tx, SHUTTLE_NOW_DROP);
+      automatic shuttle_handle hn = pub.publish_now(tx, SHUTTLE_NOW_SKIP);
       if (hn == null) $error("publish_now 发布失败: %s", shuttle_c_last_error());
-      else if (hn.excluded() != 1)
-        $error("publish_now 应当排除 1 个 blocking 入口订阅者（实际 %0d）", hn.excluded());
+      else if (hn.skipped() != 1)
+        $error("publish_now 应当排除 1 个 blocking 入口订阅者（实际 %0d）", hn.skipped());
     end
     if (mon.last.addr !== 32'h10)
       $error("publish_now 未同步投递");
@@ -109,7 +109,7 @@ module shuttle_demo;
       automatic shuttle_pub #(UartTx) pub_b = new("uart0.tx");
       tx.addr = 32'h15; tx.data = 32'h55;
       begin
-        automatic shuttle_handle hn = pub_b.publish_now(tx, SHUTTLE_NOW_DROP);
+        automatic shuttle_handle hn = pub_b.publish_now(tx, SHUTTLE_NOW_SKIP);
         if (hn == null) $error("多发布器 publish_now 失败: %s", shuttle_c_last_error());
       end
       if (mon.last.addr !== 32'h15)

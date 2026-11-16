@@ -46,14 +46,14 @@ using shuttle::detail::last_error;
 using shuttle::detail::set_last_error;
 using WeaveScopeGuard = shuttle::detail::backend::SvScopeGuard;
 
-// DPI 常量 → NowPolicy：0 = reject / 1 = drop / 2 = defer（越界走默认 defer）。
+// DPI 常量 → NowPolicy：0 = reject / 1 = skip / 2 = defer（越界走默认 defer）。
 // 用显式映射而不是 static_cast：常量表变化时不会静默错位。
 shuttle::NowPolicy now_policy_of(int v) {
   switch (v) {
     case 0:
       return shuttle::NowPolicy::reject;
     case 1:
-      return shuttle::NowPolicy::drop;
+      return shuttle::NowPolicy::skip;
     default:
       return shuttle::NowPolicy::defer;
   }

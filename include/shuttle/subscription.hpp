@@ -42,8 +42,8 @@ public:
 
   // 诊断计数（口径：received + dropped == 它被本帧定为目标的次数）
   [[nodiscard]] std::uint64_t received() const;  // 已投递帧数
-  [[nodiscard]] std::uint64_t dropped() const;   // 没收到本帧内容：快照后被退订、
-                                                 // NowPolicy::drop、回调抛异常 / 投递被取消
+  // 没收到本帧内容的帧数，等于下面三种原因之和（拆分见 broker::TopicInfo）
+  [[nodiscard]] std::uint64_t dropped() const;
 
 private:
   struct Impl;

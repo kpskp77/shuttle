@@ -125,7 +125,7 @@ module shuttle_tests;
     automatic shuttle_handle      h;
     m.addr = 32'h101;
     m.data = 32'h202;
-    h = pub.publish_now(m, SHUTTLE_NOW_DROP);
+    h = pub.publish_now(m, SHUTTLE_NOW_SKIP);
     check(h != null, "now_sync.handle");
     check(h.subscriber_count() == 1, "now_sync.count");
     check(h.done() != 0, "now_sync.done_on_return");  // nonblocking 部分返回即结束
@@ -134,7 +134,7 @@ module shuttle_tests;
     check(rec.last.addr == 32'h101 && rec.last.data == 32'h202, "now_sync.payload");
   endtask
 
-  // ── `publish_now`：入口为 blocking 的订阅者 → reject 抛错 / drop 跳过（默认是 defer）─────
+  // ── `publish_now`：入口为 blocking 的订阅者 → reject 抛错 / skip 跳过（默认是 defer）─────
   task automatic case_now_blocking();
     automatic BlkRec              rec = new();
     automatic shuttle_sub         sub = shuttle_subscribe("sv.t.nowblk", rec, "XMsg");
@@ -146,11 +146,11 @@ module shuttle_tests;
     h = pub.publish_now(m, SHUTTLE_NOW_REJECT);
     check(h == null, "now_blk.reject_returns_null");
     check(rec.count == 0, "now_blk.no_partial_delivery");
-    h = pub.publish_now(m, SHUTTLE_NOW_DROP);
-    check(h != null, "now_blk.drop_ok");
-    check(h.excluded() == 1 && h.deferred() == 0, "now_blk.drop_counted");
-    check(h.done() != 0, "now_blk.drop_completes");
-    check(rec.count == 0, "now_blk.drop_skips");
+    h = pub.publish_now(m, SHUTTLE_NOW_SKIP);
+    check(h != null, "now_blk.skip_ok");
+    check(h.skipped() == 1 && h.deferred() == 0, "now_blk.skip_counted");
+    check(h.done() != 0, "now_blk.skip_completes");
+    check(rec.count == 0, "now_blk.skip_skips");
   endtask
 
   // ── `publish_serial`：后台单进程顺序回调，per-topic FIFO ──────────────────────────
@@ -235,9 +235,9 @@ module shuttle_tests;
     check(rec.nb_count == 1, "dual_registration.nonblocking_entry_once");
 
     // `now`：只有 nonblocking 入口的那个被同步调用；blocking 入口的那个按策略处置
-    h = pub.publish_now(m, SHUTTLE_NOW_DROP);
+    h = pub.publish_now(m, SHUTTLE_NOW_SKIP);
     check(h != null, "dual_registration.nonblocking_handle");
-    check(h.excluded() == 1, "dual_registration.drop_counted");
+    check(h.skipped() == 1, "dual_registration.skip_counted");
     check(rec.nb_count == 2, "dual_registration.nonblocking_sync_second");
     check(rec.blk_count == 1, "dual_registration.blocking_entry_not_synced");
     h = pub.publish_now(m);                                          // 默认 defer
@@ -308,10 +308,10 @@ module shuttle_tests;
     automatic shuttle_handle      h;
     m.addr = 32'hA;
     m.data = 0;
-    h = pa.publish_now(m, SHUTTLE_NOW_DROP);
+    h = pa.publish_now(m, SHUTTLE_NOW_SKIP);
     check(h != null, "multi_pub.handle");
     m.addr = 32'hB;
-    h = pb.publish_now(m, SHUTTLE_NOW_DROP);
+    h = pb.publish_now(m, SHUTTLE_NOW_SKIP);
     check(rec.nb_count == 2, "multi_pub.both_delivered");
     check(rec.order.size() == 2 && rec.order[0] == 32'hA && rec.order[1] == 32'hB,
           "multi_pub.now_order");
@@ -360,16 +360,16 @@ module shuttle_tests;
     mx2.addr = 7;
     my.addr  = 8;
     // 首次绑定就是错的类型：发布被拒（返回 null），帧未发布
-    h = puby.publish_now(my, SHUTTLE_NOW_DROP);
+    h = puby.publish_now(my, SHUTTLE_NOW_SKIP);
     check(h == null, "bind_conflict.rejected");
     check(shuttle_c_last_error() != "", "bind_conflict.has_error_text");
     check(rec.nb_count == 0, "bind_conflict.no_callback");
     // 失败的那次不改动任何状态：正确类型仍能绑定并投递
-    h = pubx.publish_now(mx, SHUTTLE_NOW_DROP);
+    h = pubx.publish_now(mx, SHUTTLE_NOW_SKIP);
     check(h != null, "bind_conflict.retry_ok");
     check(rec.nb_count == 1 && rec.last.addr == 32'd5, "bind_conflict.retry_delivered");
     // 反方向：订阅者声明 YMsg、发布者带 XMsg —— 同样在首次绑定时就拒
-    h = pubx2.publish_now(mx2, SHUTTLE_NOW_DROP);
+    h = pubx2.publish_now(mx2, SHUTTLE_NOW_SKIP);
     check(h == null, "bind_conflict.rejected_reverse");
     check(other.nb_count == 0, "bind_conflict.reverse_no_callback");
   endtask
@@ -382,11 +382,11 @@ module shuttle_tests;
     automatic shuttle_handle      h;
     m.addr = 1;
     m.data = 1;
-    h = pub.publish_now(m, SHUTTLE_NOW_DROP);
+    h = pub.publish_now(m, SHUTTLE_NOW_SKIP);
     check(rec.nb_count == 1, "unsub.before");
     sub.unsubscribe();
     sub.unsubscribe();  // 幂等
-    h = pub.publish_now(m, SHUTTLE_NOW_DROP);
+    h = pub.publish_now(m, SHUTTLE_NOW_SKIP);
     check(h.subscriber_count() == 0 && h.done() != 0, "unsub.empty_pub_completes");
     check(rec.nb_count == 1, "unsub.after");
   endtask
@@ -407,7 +407,7 @@ module shuttle_tests;
     s2   = shuttle_subscribe("sv.t.snap", late, "XMsg");  // 触发前注册的新订阅者
     h.wait_done();
     check(first.blk_count == 1, "snapshot.first_received");
-    check(late.blk_count == 0, "snapshot.late_sub_excluded");
+    check(late.blk_count == 0, "snapshot.late_sub_not_target");
   endtask
 
   // ── 跨语言往返：C++ 侧见 tests/cpp/xlang_tests.cpp ────────────────────

@@ -151,7 +151,7 @@ long long pub_stat(int pub_id, int kind) {
     case 1:
       return static_cast<long long>(pub->finished);
     case 2:
-      return static_cast<long long>(pub->excluded);
+      return static_cast<long long>(pub->skipped);
     case 3:
       return static_cast<long long>(pub->deferred);
     case 4:

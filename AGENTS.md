@@ -33,7 +33,7 @@ just test-all       # 测试套件：systemc（45 用例）+ VCS（48 用例 + 7
    能力变成类级属性，与 C++ 的注册级属性错位（会让 `subscriber_count()` 与 `publish_now` 的行为在两种
    语言里不一致）。两入口都要 = 注册两次。三种方式的目标集合都是"全部匹配订阅者"；`publish_now`
    是唯一无法提供 blocking 入口上下文的调度，所以它是唯一需要策略的地方
-   （`NowPolicy{reject,drop,defer}`，默认 `defer`）。别把"入口为 blocking 的订阅者"当成 `publish_now`
+   （`NowPolicy{reject,skip,defer}`，默认 `defer`）。别把"入口为 blocking 的订阅者"当成 `publish_now`
    的**错误**，也别让 `serial`/`concurrent` 静默丢帧——"没收到"必须体现为计数。
 5. **后台投递的 per-topic 串行链**：`src/broker.cpp` 的 `start_serial` 必须在发布瞬间捕获
    "本帧要放行的链尾事件"并在完成时 set 它；用当时的 `topics[topic].chain` 会放错帧、
@@ -66,7 +66,7 @@ just test-all       # 测试套件：systemc（45 用例）+ VCS（48 用例 + 7
     由此得到三条不变量：`done() ≡ finished() == subscriber_count()`（无例外路径）；
     `finished() == 投递 + 退订跳过 + 失败`；`retired() ≤ finished()`（退订跳过同时计入 `dropped()`）。
     零目标的发布必须立即完成（`publish_serial` 也要短路，不能建投递单元）。被排除出目标集的
-    目标（策略 `drop` 的 `excluded`、类型不相交的）都必须可数，别让"没收到"变成无记录。
+    目标（策略 `skip` 的 `skipped`、类型不相交的）都必须可数，别让"没收到"变成无记录。
 11. **`defer` 复用 `publish_serial` 的同一条链**（不要另起并发投递）：由此得到可测定律"同一 topic 的
     后台投递顺序 = 发布调用顺序"。串行链的跨订阅者队头阻塞是显式接受的代价——想要并发请用
     `publish_concurrent`。

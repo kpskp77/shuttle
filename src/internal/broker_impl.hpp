@@ -84,9 +84,14 @@ struct Subscriber {
   // 已退订（`remove_sub` 置位）。快照持有 shared_ptr，所以对象在退订后仍然活着——本标记
   // 是"这一帧还该不该进回调"的唯一判据：退订即生效，不问投递进程此刻在哪。
   bool removed = false;
-  // 诊断计数
+  // 诊断计数：三种"没进回调"的终态各自记一份，dropped() 是它们的和。
+  // 分开的理由是责任归属不同——退订是订阅者自己的决定，skip 是发布者的策略，
+  // failed 是有人出错了；合成一个数就只能靠翻 Publication::failures() 猜。
   std::uint64_t received = 0;
-  std::uint64_t dropped = 0;
+  std::uint64_t retired = 0;  // 快照之后、回调之前被退订
+  std::uint64_t skipped = 0;  // 发布者策略跳过（NowPolicy::skip）
+  std::uint64_t failed = 0;   // 尝试了但没成功：回调抛异常 / 投递被取消 / 单元级失败
+  [[nodiscard]] std::uint64_t dropped() const { return retired + skipped + failed; }
 };
 
 // ── 单次投递的结果（记账用）───────────────────────────────────────────────
@@ -113,8 +118,11 @@ struct Topic {
   std::uint64_t seq = 0;        // topic 内全局单调（跨发布者连续，多对多契约）
   std::uint64_t published = 0;  // 累计发布帧数
   std::uint64_t delivered = 0;  // 累计投递次数（所有订阅者合计）
-  std::uint64_t dropped = 0;    // 累计丢弃帧数（退订丢弃/drop 策略/失败合计）
+  std::uint64_t retired = 0;    // 累计未投递：快照后被退订
+  std::uint64_t skipped = 0;    // 累计未投递：发布者策略跳过（NowPolicy::skip）
+  std::uint64_t failed = 0;     // 累计未投递：尝试了但没成功
   std::uint64_t deferred = 0;   // 累计被 defer 到后台串行链的投递数
+  [[nodiscard]] std::uint64_t dropped() const { return retired + skipped + failed; }
   weave::Event chain;           // 后台投递的 per-topic 串行链尾（`publish_serial` 与 `now` 的 defer 共用）
   Topic() { chain.set(); }
 };
@@ -123,14 +131,14 @@ struct Topic {
 struct PubState {
   int id = 0;
   // 本帧目标数：`serial`/`concurrent` = 匹配到的订阅者数；`now` = nonblocking 目标数
-  // +（仅 defer 时）blocking 目标数（`drop` 掉的不算目标）
+  // +（仅 defer 时）blocking 目标数（`skip` 掉的照算目标、只是不投）
   std::size_t expected = 0;
   std::size_t finished = 0;
   // 可见性计数：本帧没收到 / 稍后才收到的订阅者（都是标记，不是余额；
   // 见 docs/architecture.md 的"记账契约"一章）
-  std::size_t excluded = 0;
+  std::size_t skipped = 0;   // 发布者策略跳过（未尝试，不是失败）
   std::size_t deferred = 0;
-  std::size_t retired = 0;  // 快照后被退订而跳过（计入 finished 与 dropped，不是失败）
+  std::size_t retired = 0;   // 快照后被退订而跳过（未尝试，不是失败）
   bool done_flag = false;
   weave::Event done_ev;
   std::vector<Publication::Failure> failures;
@@ -250,7 +258,7 @@ public:
     if (n == 0) return;
     throw CapabilityError(std::string("shuttle: publish_now 遇到 ") + std::to_string(n) +
                           " 个入口为 blocking 的订阅者（topic " + std::string(topic) +
-                          "）；它们无法在 publish_now 里投递，可用 NowPolicy::defer/drop，"
+                          "）；它们无法在 publish_now 里投递，可用 NowPolicy::defer/skip，"
                           "或改用 publish_serial/publish_concurrent");
   }
 
@@ -265,8 +273,8 @@ public:
     // shared_ptr、对象还活着，所以这里必须显式问一次；SV 侧 sink 已被注册表删除，同一件事
     // 在 dispatch 之后由 take_retired_delivery() 报回来。两条来源互补，覆盖全部窗口。
     if (sub->removed) {
-      ++sub->dropped;
-      ++topic_for(env.meta.topic).dropped;
+      ++sub->retired;
+      ++topic_for(env.meta.topic).retired;
       return Delivery::retired;
     }
     switch (sub->kind) {
@@ -291,8 +299,8 @@ public:
         // SV 注册表报告该 id 已退订：这次在途投递被丢弃。以前这里照样 ++received，
         // 于是在 C++ 侧是“幻影成功”；现在计为 retired（未进入回调，但不是错误）。
         if (detail::backend::take_retired_delivery()) {
-          ++sub->dropped;
-          ++topic_for(env.meta.topic).dropped;
+          ++sub->retired;
+          ++topic_for(env.meta.topic).retired;
           return Delivery::retired;
         }
         break;
@@ -364,10 +372,10 @@ public:
     return Publication::Failure{std::move(label), std::move(e)};
   }
 
-  // 没收到内容就计入该订阅者与 topic 的 dropped（失败与退订丢弃同一口径）
-  static void count_dropped(Topic& t, const std::shared_ptr<Subscriber>& sub) {
-    ++t.dropped;
-    ++sub->dropped;
+  // 尝试了但没成功：该订阅者与 topic 各记一次 failed（取消与异常同一口径）
+  static void count_failed(Topic& t, const std::shared_ptr<Subscriber>& sub) {
+    ++t.failed;
+    ++sub->failed;
   }
 
   // 建立类型绑定 + 打序号 + retained 快照（发布公共段）。
@@ -479,10 +487,10 @@ public:
           } catch (const weave::CancelledError&) {
             throw;  // 取消透传到外层：本目标与其余目标统一记 failed（仍要放行链尾）
           } catch (const std::exception&) {
-            count_dropped(t, sub);
+            count_failed(t, sub);
             if (!failure) failure = failure_of(describe(sub), std::current_exception());
           } catch (...) {
-            count_dropped(t, sub);
+            count_failed(t, sub);
             if (!failure) failure = failure_of(describe(sub), unknown_exc());
           }
           target_finished(pub);
@@ -497,8 +505,8 @@ public:
       // 单元级失败（触发条件抛异常 / 被取消 / 其余目标未尝试）：本单元未到达终态的目标
       // 全部记 failed —— 没收到就必须落在计数里，不能只留一条 Failure。
       for (; idx < targets.size(); ++idx) {
-        ++t.dropped;
-        ++targets[idx]->dropped;
+        ++t.failed;
+        ++targets[idx]->failed;
         target_finished(pub);
       }
       mine->set();  // 无论成败放行下一帧，防止链 stall
@@ -533,14 +541,14 @@ public:
           else
             ++pub->retired;
         } catch (const weave::CancelledError&) {
-          // 取消与异常同一口径：没收到内容就是 failed，计入 dropped
-          count_dropped(t, sub);
+          // 取消与异常同一口径：没收到内容就是 failed（dropped 的一部分）
+          count_failed(t, sub);
           failure = failure_of(describe(sub), cancelled_exc());
         } catch (const std::exception&) {
-          count_dropped(t, sub);
+          count_failed(t, sub);
           failure = failure_of(describe(sub), std::current_exception());
         } catch (...) {
-          count_dropped(t, sub);
+          count_failed(t, sub);
           failure = failure_of(describe(sub), unknown_exc());
         }
         unit_finished(pub, failure);
@@ -594,7 +602,7 @@ public:
 // 同一份"publish_now 公共段"被 C++ 类型化入口与 ext_pub_now 共用，所以在头里。
 // publish_now 公共段：nonblocking 入口的订阅者同步投递 + 入口为 blocking 的目标按策略处理。
 // 返回值覆盖本帧的**目标**：nonblocking 部分返回时已结束，defer 部分在后台串行链里；
-// drop 掉的不计入 expected，只进 excluded()；reject 直接抛，没有返回值。
+// skip 掉的不计入 expected，只进 skipped()；reject 直接抛，没有返回值。
 inline std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope> env,
                                                NowPolicy policy) {
   // env 由本函数与后台链持有，视图全程稳定：少一次每帧的 string 拷贝
@@ -615,7 +623,7 @@ inline std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
   const bool defer = (policy == NowPolicy::defer) && !blocking_targets.empty();
   pub->expected = nb_subs.size() + (defer ? blocking_targets.size() : 0);
   pub->deferred = defer ? blocking_targets.size() : 0;
-  pub->excluded = defer ? 0 : blocking_targets.size();
+  pub->skipped = defer ? 0 : blocking_targets.size();
   b.pubs[pub->id] = pub;
 
   // 同步段：每个目标都推进 finished；回调异常记入 failures 后**继续**下一个目标
@@ -628,23 +636,23 @@ inline std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
       else
         ++pub->retired;
     } catch (const weave::CancelledError&) {
-      Broker::count_dropped(t, sub);
+      Broker::count_failed(t, sub);
       b.record_failure(pub, Broker::failure_of(Broker::describe(sub), Broker::cancelled_exc()));
       if (!first_exc) first_exc = pub->failures.back().error;
     } catch (const std::exception&) {
-      Broker::count_dropped(t, sub);
+      Broker::count_failed(t, sub);
       b.record_failure(pub, Broker::failure_of(Broker::describe(sub), std::current_exception()));
       if (!first_exc) first_exc = pub->failures.back().error;
     } catch (...) {
-      Broker::count_dropped(t, sub);
+      Broker::count_failed(t, sub);
       b.record_failure(pub, Broker::failure_of(Broker::describe(sub), Broker::unknown_exc()));
       if (!first_exc) first_exc = pub->failures.back().error;
     }
     b.target_finished(pub);
   }
-  if (policy == NowPolicy::drop) {
-    t.dropped += blocking_targets.size();
-    for (const auto& sub : blocking_targets) ++sub->dropped;
+  if (policy == NowPolicy::skip) {
+    t.skipped += blocking_targets.size();
+    for (const auto& sub : blocking_targets) ++sub->skipped;
   }  if (!defer) {
     // 非 defer：`finished` 已在逐目标记账里到齐（含零目标的情况）
     if (!pub->done_flag) b.pub_complete(pub);

@@ -16,13 +16,13 @@
 
 | 函数 | 签名 | 阻塞性 | 说明 |
 |---|---|---|---|
-| `shuttle_c_publish_now` | `(string topic, string type_tag, byte payload[], int now_policy) → int` | 不阻塞（但同步执行回调） | `publish_now` 发布：在**调用该函数的 SV 进程**内同步回调入口为 nonblocking 的订阅者；入口为 blocking 的订阅者按 `now_policy`（`SHUTTLE_NOW_*`，默认 `defer`）处置。返回 `pub_id`（>0），失败返回 0（原因见 `shuttle_c_last_error`）。SV 侧据此构造 `shuttle_handle`，因此 `publish_now` 与 `serial` / `concurrent` 一样可 `wait_done()`、可查询 `excluded()` / `deferred()` / `retired()` |
+| `shuttle_c_publish_now` | `(string topic, string type_tag, byte payload[], int now_policy) → int` | 不阻塞（但同步执行回调） | `publish_now` 发布：在**调用该函数的 SV 进程**内同步回调入口为 nonblocking 的订阅者；入口为 blocking 的订阅者按 `now_policy`（`SHUTTLE_NOW_*`，默认 `defer`）处置。返回 `pub_id`（>0），失败返回 0（原因见 `shuttle_c_last_error`）。SV 侧据此构造 `shuttle_handle`，因此 `publish_now` 与 `serial` / `concurrent` 一样可 `wait_done()`、可查询 `skipped()` / `deferred()` / `retired()` |
 | `shuttle_c_publish_serial` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg) → int` | 不阻塞，立即返回 | `publish_serial` 发布：后台单链顺序回调（topic 级 FIFO）。返回 `pub_id`（>0 成功，≤0 失败）。`trig_kind` / `trig_arg` 见常量表。调用瞬间锁定目标集合与消息拷贝（快照语义） |
 | `shuttle_c_publish_concurrent` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg) → int` | 不阻塞，立即返回 | `publish_concurrent` 发布：后台每订阅者一个任务并发回调，无顺序承诺。其余同上 |
 | `shuttle_c_wait_pub` | `(int pub_id, longint timeout_fs, output int status)` | **阻塞**（task） | 阻塞当前 SV 进程直至该发布的全部订阅者回调结束。`timeout_fs` = 0 表示无限等待。`status` 见常量表。实现复用 weave 的挂起机制（`weave_sv_wait`），可挂起任意调用它的 SV 进程 |
 | `shuttle_c_pub_done` | `(int pub_id) → int` | 不阻塞 | 轮询：非 0 表示全部订阅者回调已结束（含失败） |
 | `shuttle_c_pub_error` | `(int pub_id) → string` | 不阻塞 | 第一个失败订阅者的错误信息；空串表示无失败 |
-| `shuttle_c_pub_stat` | `(int pub_id, int kind) → int` | 不阻塞 | 发布句柄的可见性计数。`kind`：0 = 目标订阅者数（名字 ∩ 类型），1 = 已结束（delivered / retired / failed 三种终态都算），2 = 被策略排除（只有 `drop` 会产生；`reject` 不返回句柄），3 = 转到后台链（defer，标记，完成后不回零），4 = 到达已退订的 SV 订阅者而跳过（已计入 1 与 `dropped`）。未知 `pub_id` 返回 -1 |
+| `shuttle_c_pub_stat` | `(int pub_id, int kind) → int` | 不阻塞 | 发布句柄的可见性计数。`kind`：0 = 目标订阅者数（名字 ∩ 类型），1 = 已结束（delivered / retired / failed 三种终态都算），2 = 被策略跳过（只有 `skip` 会产生；`reject` 不返回句柄），3 = 转到后台链（defer，标记，完成后不回零），4 = 到达已退订的 SV 订阅者而跳过（已计入 1 与 `dropped`）。未知 `pub_id` 返回 -1 |
 | `shuttle_c_subscribe` | `(string topic, int caps, string type_tag, int sv_sid) → int` | 不阻塞 | 注册 SV 订阅者。`caps` 必须恰好是 `1`（`SHUTTLE_CAP_BLOCKING`）或 `2`（`SHUTTLE_CAP_NONBLOCKING`），其余值返回非 0 并置 last_error；`type_tag` 非空时校验与 topic 类型绑定是否一致，不一致返回非 0；`sv_sid` 是 SV 注册表编号，C++ 原样记录并在分发时带回，两侧无需维护 id 映射。topic 支持通配符（`*` 匹配单级，`>` 匹配其后至少一级、不匹配前缀本身） |
 | `shuttle_c_unsubscribe` | `(int sv_sid)` | 不阻塞 | 退订（幂等）。退订即生效：已快照但尚未投递的帧仍会到达 SV 侧（注册表里已无 sink），由注册表丢弃并经 `shuttle_c_sub_retired` 回告，C++ 记 `retired` |
 | `shuttle_c_set_retained` | `(string topic, bit retained)` | 不阻塞 | 开启或关闭 retained（latched）：开启后 broker 缓存最新一帧，新订阅者注册时补发 |
@@ -66,7 +66,7 @@ VCS 对"枚举变量接收 `int`"会报 `Warning-[ENUMASSIGN] Illegal assignment
 | 入口：blocking | `Capability::blocking` | `SHUTTLE_CAP_BLOCKING` | 1 | 一次注册只含此位：`shuttle_subscribe` / C++ `subscribe(t, fn)`。使用 `invoke`（export task），可消耗仿真时间 |
 | 入口：nonblocking | `Capability::nonblocking` | `SHUTTLE_CAP_NONBLOCKING` | 2 | 一次注册只含此位：`shuttle_subscribe_nb` / C++ `subscribe(t, nb(fn))`。使用 `invoke_nb`（export function），零延时 |
 | 策略：报错 | `NowPolicy::reject` | `SHUTTLE_NOW_REJECT` | 0 | `publish_now` 遇到入口为 blocking 的订阅者时抛 `CapabilityError` / 返回错误，帧不发布 |
-| 策略：跳过 | `NowPolicy::drop` | `SHUTTLE_NOW_DROP` | 1 | 跳过这些订阅者，计入 `excluded()` 与 `dropped()` |
+| 策略：跳过 | `NowPolicy::skip` | `SHUTTLE_NOW_SKIP` | 1 | 跳过这些订阅者，计入 `skipped()` 与 `dropped()` 的 `skipped` 分量 |
 | 策略：转后台（默认） | `NowPolicy::defer` | `SHUTTLE_NOW_DEFER` | 2 | 整帧交给该 topic 的后台串行链，返回可等待句柄 |
 | 触发：立即 | 空 `Trigger` | `SHUTTLE_TRIG_NONE` | 0 | 立即启动回调进程 |
 | 触发：延时 | `after(duration)` | `SHUTTLE_TRIG_DELAY` | 1 | `trig_arg` = 延时（飞秒） |

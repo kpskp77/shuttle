@@ -51,7 +51,7 @@ public:
 
   // publish_now：在发布者栈内同步调用入口为 nonblocking 的订阅者，返回本帧句柄。
   // 入口为 blocking 的订阅者不在栈内调用，按 policy 处置：defer（默认）交给本 topic 的后台
-  // 串行链稍后调用（句柄的 done() 覆盖这部分）；drop 跳过它们（计入 excluded() 与 dropped）；
+  // 串行链稍后调用（句柄的 done() 覆盖这部分）；skip 跳过它们（计入 skipped() 与 dropped）；
   // reject 抛 CapabilityError，且该帧从未发布过——类型绑定、seq 与 retained 快照都不推进。
   // 两拨目标按"该次注册的那一条入口"划分，互不干涉。同步段若回调抛异常：该目标计 failed，
   // 其余目标照常尝试，defer 段照常入链，最后才把第一个异常抛给调用者（句柄不返回）。

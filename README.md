@@ -61,7 +61,7 @@ h.wait_done();                                                    // 挂起当�
 ## 三种发布方式
 
 发布方式只决定**调度**；**给谁发**在三种方式下相同——都是本帧全部匹配订阅者
-（唯一例外是 `publish_now` 的 `drop` 策略会排除入口为 blocking 的目标）。
+（唯一例外是 `publish_now` 的 `skip` 策略会跳过入口为 blocking 的目标）。
 
 | 方式 | C++ | SV | 调度方式 | 顺序 | 返回时状态 |
 | --- | --- | --- | --- | --- | --- |
@@ -101,7 +101,7 @@ h.wait_done();                                                    // 挂起当�
 | 策略 | C++ | SV | 行为 |
 | --- | --- | --- | --- |
 | 报错 | `NowPolicy::reject` | `SHUTTLE_NOW_REJECT` | 抛 `CapabilityError`（SV 返回 `null` + `shuttle_c_last_error()`）。**帧从不发布**：`seq`、retained 快照、`published` 均不推进 |
-| 跳过 | `NowPolicy::drop` | `SHUTTLE_NOW_DROP` | 跳过这些目标，计入 `excluded()` 与该订阅者的 `dropped()` |
+| 跳过 | `NowPolicy::skip` | `SHUTTLE_NOW_SKIP` | 跳过这些目标，计入 `skipped()` 与该订阅者的 `dropped()`（`skipped` 分量） |
 | 转后台（默认） | `NowPolicy::defer` | `SHUTTLE_NOW_DEFER` | 整帧交给该 topic 的后台串行链（与 `serial` 同一条链），返回可等待句柄 |
 
 ## 完成句柄与计数
@@ -111,9 +111,9 @@ h.wait_done();                                                    // 挂起当�
 
 | 方法 | 含义 |
 | --- | --- |
-| `subscriber_count()` | 本帧目标数（名字 ∩ 类型，不含被 `drop` 排除的） |
+| `subscriber_count()` | 本帧目标数（名字 ∩ 类型，不含被 `skip` 跳过的） |
 | `finished()` | 已达终态的目标数 |
-| `excluded()` | 被 `drop` 排除的目标数（仅 `now`） |
+| `skipped()` | 被 `skip` 跳过的目标数（仅 `now`） |
 | `deferred()` | 转到后台链的目标数（仅 `now` 的 `defer`；返回时未开始，完成后不回零） |
 | `retired()` | 本帧快照后被退订、回调未进入的目标数（退订即生效，两种语言同口径） |
 | `failures()` / `first_error()` | 失败明细（`Failure{subscriber, error}`） |
@@ -125,7 +125,7 @@ h.wait_done();                                                    // 挂起当�
 
 1. `done()` 当且仅当 `finished() == subscriber_count()`；
 2. `finished()` 只累计三种终态：投递、退订跳过、失败；
-3. 订阅者侧 `received() + dropped() == 该订阅者被定为目标的帧数`。
+3. 订阅者侧 `received() + dropped() == 该订阅者被定为目标的帧数`，且 `dropped() == retired + skipped + failed`。
 
 失败聚合粒度不同：`concurrent` 逐订阅者记录全部失败；`serial` 只保留第一条；`now` 的同步段
 只抛出第一条（其余仍记入 `failures()`），被 defer 的部分按 `serial` 规则并入同一句柄。

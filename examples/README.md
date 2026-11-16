@@ -4,7 +4,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| `cpp/basic_demo.cpp` | 消息定义（`SHUTTLE_REFLECT`）、两个入口的订阅（普通 / `nb()`）、三种发布方式（`publish_now` / `publish_serial` / `publish_concurrent`）、`NowPolicy` 的 `drop` / `reject`、`Publication` 可见性计数、retained、通配符与原始字节订阅、broker 内省 |
+| `cpp/basic_demo.cpp` | 消息定义（`SHUTTLE_REFLECT`）、两个入口的订阅（普通 / `nb()`）、三种发布方式（`publish_now` / `publish_serial` / `publish_concurrent`）、`NowPolicy` 的 `skip` / `reject`、`Publication` 可见性计数、retained、通配符与原始字节订阅、broker 内省 |
 | `cpp/trigger_demo.cpp` | 延迟触发：`after(Event/duration/Task)`、`after_all` 组合 |
 | `cpp/sc_main.cpp` | systemc 后端的本地运行入口 |
 | `sv/shuttle_demo.sv` | SV 侧示范：消息类约定（`pack()`/`type_tag`）、`shuttle_sink`/`shuttle_sink_nb` 订阅者、`shuttle_pub#(T)` 三种发布方式与 `SHUTTLE_NOW_*` 策略、`shuttle_handle::wait_done` 与计数字、`shuttle_trigger` |

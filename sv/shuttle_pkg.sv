@@ -88,7 +88,7 @@ package shuttle_pkg;
   localparam int SHUTTLE_CAP_NONBLOCKING = 2;  // nonblocking 入口：shuttle_subscribe_nb
   // publish_now 遇到入口为 blocking 的订阅者时的策略（shuttle_c_publish_now 的 now_policy 参数）
   localparam int SHUTTLE_NOW_REJECT = 0;  // 报错（不投递任何订阅者）
-  localparam int SHUTTLE_NOW_DROP   = 1;  // 跳过这些订阅者（计入诊断计数）
+  localparam int SHUTTLE_NOW_SKIP   = 1;  // 跳过这些订阅者：不进 subscriber_count()，只进 skipped()
   localparam int SHUTTLE_NOW_DEFER  = 2;  // 默认：交给本 topic 的后台串行链，稍后回调
   // 触发器种类（shuttle_c_publish_serial / _concurrent 的 trig_kind 参数）
   localparam int SHUTTLE_TRIG_NONE  = 0;  // 立即启动
@@ -289,8 +289,8 @@ package shuttle_pkg;
     function int finished();
       return valid() ? shuttle_c_pub_stat(pub_id_, 1) : 0;
     endfunction
-    // 被策略排除、本帧不会投递给它们的订阅者数
-    function int excluded();
+    // 被策略跳过、本帧不会投递给它们的订阅者数
+    function int skipped();
       return valid() ? shuttle_c_pub_stat(pub_id_, 2) : 0;
     endfunction
     // 被推迟到后台串行链、稍后才投递的订阅者数
@@ -426,8 +426,8 @@ package shuttle_pkg;
     // policy：入口为 blocking（无法在调用栈内被调用，即 shuttle_sink 的 invoke task）的
     //         那些目标怎么处置，默认 SHUTTLE_NOW_DEFER（转后台串行链，稍后回调）。
     //         — 一条注册只有一条入口，处置只看该策略，与本 topic 有无 nonblocking 订阅者无关。
-    // 返回本帧句柄（与 `serial`/`concurrent` 同一类型）：nonblocking 部分返回时已全部结束，被 drop 的计入
-    // excluded()，被 defer 的仍在后台链上——done()/wait_done() 覆盖这部分。
+    // 返回本帧句柄（与 `serial`/`concurrent` 同一类型）：nonblocking 部分返回时已全部结束，被 skip 的计入
+    // skipped()，被 defer 的仍在后台链上——done()/wait_done() 覆盖这部分。
     // 失败返回 null（原因见 shuttle_c_last_error()）。
     function shuttle_handle publish_now(T msg, int policy = SHUTTLE_NOW_DEFER);
       byte payload[];

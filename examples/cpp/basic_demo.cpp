@@ -50,8 +50,8 @@ WEAVE_TEST(basic_demo) {
 
   // ── `publish_now`：同步回调，发布者全程不挂起 ─────────────────────────────────
   // 投递给 sync_mon；async_mon 的注册入口是 blocking，按 NowPolicy 处置：
-  // 默认 defer（转后台串行链），此处演示 drop（跳过并计诊断）。
-  pub.publish_now(UartTx{0x10, 0xA5}, shuttle::NowPolicy::drop);
+  // 默认 defer（转后台串行链），此处演示 skip（跳过并计诊断）。
+  pub.publish_now(UartTx{0x10, 0xA5}, shuttle::NowPolicy::skip);
   if (last.addr != 0x10 || last.data != 0xA5)
     throw std::logic_error("basic_demo: publish_now 未同步投递");
 
@@ -71,7 +71,7 @@ WEAVE_TEST(basic_demo) {
 
   // ── retained（latched）：新订阅者立即收到最新一帧 ─────────────────────
   pub.set_retained(true);
-  pub.publish_now(UartTx{0x13, 0xC3}, shuttle::NowPolicy::drop);
+  pub.publish_now(UartTx{0x13, 0xC3}, shuttle::NowPolicy::skip);
   bool got_retained = false;
   auto late_joiner = shuttle::subscribe<UartTx>(
       "uart0.tx",
@@ -86,7 +86,7 @@ WEAVE_TEST(basic_demo) {
       "uart0.>", [](const std::vector<std::byte>& bytes, const shuttle::Meta& m) {
         std::printf("[raw] topic=%s payload=%zu 字节\n", m.topic.c_str(), bytes.size());
       });
-  pub.publish_now(UartTx{0x14, 0x44}, shuttle::NowPolicy::drop);
+  pub.publish_now(UartTx{0x14, 0x44}, shuttle::NowPolicy::skip);
 
   // ── 内省：只读快照，不影响投递路径 ────────────────────────────────────
   if (auto info = shuttle::broker::topic_info("uart0.tx")) {
@@ -103,7 +103,7 @@ WEAVE_TEST(basic_demo) {
   // 多个驱动组件各自实例化 Publisher 发布到同一 topic；
   // 每个订阅者独立收到每个 Publisher 的每个发布帧。
   shuttle::Publisher<UartTx> other_pub("uart0.tx");
-  other_pub.publish_now(UartTx{0x15, 0x55}, shuttle::NowPolicy::drop);
+  other_pub.publish_now(UartTx{0x15, 0x55}, shuttle::NowPolicy::skip);
   if (last.addr != 0x15) throw std::logic_error("basic_demo: 多发布者未投递");
 
   // ── 边界：`publish_now` 遇入口为 blocking 的订阅者 → CapabilityError；等待超时 ──────────────

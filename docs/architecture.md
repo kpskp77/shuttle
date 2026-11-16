@@ -38,7 +38,7 @@ shuttle 在 weave 之上提供三件事，不重复 weave 的职责：
 | **投递**（delivery） | broker 把一个目标与一帧配对的尝试，结果是终态之一（§9） |
 | **投递单元** | 承载投递的后台执行体：`serial` 为每帧一个 weave task，`concurrent` 为每订阅者一个 task（§5） |
 | **串行链** | 每个 topic 一条 FIFO 链（`Topic::chain`），`serial` 与 `now` 的 `defer` 共用（§6） |
-| **终态** | 目标对本帧的结局：delivered / retired / failed / deferred / excluded（§9） |
+| **终态** | 目标对本帧的结局：delivered / retired / failed / deferred / skipped（§9） |
 | **记账** | 上述终态在 `PubState`、`Topic`、`Subscriber` 三层的计数 |
 
 术语与两侧枚举同名（`Capability::blocking` / `SHUTTLE_CAP_BLOCKING`）；在 SV 侧
@@ -123,7 +123,7 @@ publisher 进程
   │                    ├─ 逐个 nonblocking 目标：deliver(sub, env)
   │                    │     （这些注册的 cap 已是 nonblocking → export function）
   │                    │     失败 → 记 failures / dropped，继续下一个目标
-  │                    ├─ policy==drop  → 计 excluded + dropped
+  │                    ├─ policy==skip  → 计 skipped + dropped
   │                    └─ policy==defer → start_serial(topic, env, {}, blocking_targets)
   │                                       完成钩子把失败与计数并回本帧
   └ 返回 Publication（nonblocking 部分已结束，deferred 部分未结束）
@@ -241,10 +241,10 @@ SV 桥的 `caps` 参数只接受恰好为 1 或 2，其他值直接拒绝——�
 | 策略 | 行为 | 对时序的影响 |
 | --- | --- | --- |
 | `reject` | 抛 `CapabilityError`（C++）/ 返回 `null` + last_error（SV） | 帧从不发布（`seq`、retained、`published` 均不推进） |
-| `drop` | 跳过这些目标，计入 `excluded()` 与 `dropped()` | 其余目标不受影响 |
+| `skip` | 跳过这些目标，计入 `skipped()` 与 `dropped()` 的 `skipped` 分量 | 其余目标不受影响 |
 | `defer`（默认） | 整帧交给本 topic 的串行链（与 `serial` 同一条） | 这些回调在 `publish_now` 返回之后执行 |
 
-对 nonblocking 目标，`drop` 与 `defer` 无差别：两者都在 `publish_now` 返回前执行完毕。
+对 nonblocking 目标，`skip` 与 `defer` 无差别：两者都在 `publish_now` 返回前执行完毕。
 
 ## 8. 数据结构
 
@@ -259,7 +259,8 @@ struct Topic {
   // struct Binding { std::string tag;    // C++ SHUTTLE_REFLECT 名 / SV type_tag
   //                  const detail::TypeOps* ops; };  // raw_ops = 纯字节流
   std::uint64_t seq;                     // topic 级序号（跨多个 Publisher 单调递增）
-  std::uint64_t published, delivered, dropped, deferred;  // deferred = 被 defer 进链的次数
+  std::uint64_t published, delivered, deferred;           // deferred = 被 defer 进链的次数
+  std::uint64_t retired, skipped, failed;                // 未投递的三分解，dropped() = 三者之和
   bool retained_on; std::shared_ptr<const Envelope> retained_env;
   weave::Event chain;                    // 后台链尾（serial 与 now 的 defer 共用，初始已 set）
 };
@@ -272,7 +273,7 @@ struct Subscriber {
   Capability cap;                        // 该次注册唯一的那条入口（§7）
   ErasedCallback cb; ByteCallback cb_bytes;
   const detail::TypeOps* ops;            // typed 订阅者的类型（供字节流物化）
-  std::uint64_t received, dropped;
+  std::uint64_t received, retired, skipped, failed;  // dropped() = retired + skipped + failed
 };
 
 struct Envelope {                        // 一帧的不可变快照
@@ -292,7 +293,7 @@ struct Envelope {                        // 一帧的不可变快照
 struct PubState {
   int id;
   std::size_t expected, finished;         // 单位是"订阅者"，不是"投递单元"
-  std::size_t excluded, deferred, retired;  // 见 §9
+  std::size_t skipped, deferred, retired;  // 见 §9
   bool done_flag; weave::Event done_ev;
   std::vector<Publication::Failure> failures; std::string first_error;
   std::vector<std::function<void()>> on_complete;   // 完成瞬间钩子（SV wait_done 用）
@@ -312,10 +313,10 @@ struct PubState {
 | 终态 | 含义 | 计数落点 |
 | --- | --- | --- |
 | `delivered` | 回调执行完毕（SV 侧 = export 返回） | `Topic::delivered`、`Subscriber::received` |
-| `retired` | 未进入回调，且无人的错：快照之后、回调之前被退订（C++ 的 `Subscriber::removed` 或 SV 注册表丢弃，§9.1.1） | `Publication::retired()`、`Topic::dropped`、`Subscriber::dropped` |
-| `failed` | 尝试但未成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败 | `Topic::dropped`、`Subscriber::dropped`、`failures()` |
+| `retired` | 未进入回调，且无人的错：快照之后、回调之前被退订（C++ 的 `Subscriber::removed` 或 SV 注册表丢弃，§9.1.1） | `Publication::retired()`、`Topic::retired`、`Subscriber::retired` |
+| `failed` | 尝试但未成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败 | `Topic::failed`、`Subscriber::failed`、`failures()` |
 | `deferred` | 返回时尚未开始（仅 `now` 的 `defer` 段），之后必落入前三种之一 | `Publication::deferred()`（标记） |
-| `excluded` | 策略不投（仅 `now` 的 `drop`），不进入目标集合 | `Publication::excluded()`、`Topic::dropped`、`Subscriber::dropped` |
+| `skipped` | 策略不投（仅 `now` 的 `skip`），不进入目标集合 | `Publication::skipped()`、`Topic::skipped`、`Subscriber::skipped` |
 
 `reject` 不产生终态：它在建帧之前判定（`Broker::now_preflight`，§5.1），被拒绝的帧不推进
 类型绑定、`seq`、retained 快照与 `published`，等价于从未发布。
@@ -323,9 +324,9 @@ struct PubState {
 `PubState` 的字段即上表的帧级投影：
 
 ```cpp
-expected;  // 目标数（不含 excluded）
+expected;  // 目标数（不含 skipped）
 finished;  // 已达终态的目标数 = delivered + retired + failed
-excluded;  // 被 drop 排除的目标数（不进 expected）
+skipped;   // 被 skip 跳过的目标数（不进 expected）
 deferred;  // 转到后台链、返回时尚未开始的目标数（标记，不回零）
 retired;   // 快照后被退订而跳过、但计入 finished 的目标数（不分语言，§9.1.1）
 ```
@@ -370,12 +371,13 @@ topic 级与订阅者级 `dropped`，所以"名额给了、内容没进回调"�
 ### 9.2 不变量
 
 1. `done()` 当且仅当 `finished() == subscriber_count()`，三种方式无例外；
-2. `subscriber_count() + excluded() == 本帧的目标订阅者数`（名字 ∩ 类型，且未被策略排除）；
+2. `subscriber_count() + skipped() == 本帧的目标订阅者数`（名字 ∩ 类型，且未被策略跳过）；
 3. `finished()` 只累计 delivered + retired + failed；`deferred` 完成后必落入这三者之一，
    因此 `finished() ≤ subscriber_count()`；
 4. 订阅者级 `received() + dropped() == 该订阅者被定为目标的帧数`（失败、退订丢弃、策略
-   排除都计入 `dropped`，回调异常亦然）；
-5. 同一事件在 topic 级与订阅者级 `dropped` 中的口径一致（退订丢弃、策略排除、失败三类）。
+   跳过都计入 `dropped`，回调异常亦然；`dropped() == retired + skipped + failed`）；
+5. 同一事件在 topic 级与订阅者级 `dropped` 中的口径一致（退订丢弃、策略跳过、失败三类）；
+   两级的三个分量都恒有 `dropped == retired + skipped + failed`（`broker::TopicInfo` 三个字段同口径）。
 
 ### 9.3 唯一推进入口
 
@@ -399,9 +401,9 @@ void target_finished(const std::shared_ptr<PubState>& pub) {
 
 | 层 | API | 语义 |
 | --- | --- | --- |
-| 帧 | `Publication::subscriber_count()/finished()/excluded()/deferred()/retired()` | 本帧的可见性计数 |
+| 帧 | `Publication::subscriber_count()/finished()/skipped()/deferred()/retired()` | 本帧的可见性计数 |
 | 订阅者 | `Subscription::received()/dropped()` | 该注册在生命周期内的累计 |
-| topic | `broker::topic_info().published/delivered/dropped/deferred` | 该 topic 的累计（`deferred` 只统计 `now` 的 defer 段） |
+| topic | `broker::topic_info().published/delivered/dropped/retired/skipped/failed/deferred` | 该 topic 的累计（`dropped = retired + skipped + failed`；`deferred` 只统计 `now` 的 defer 段） |
 
 SV 侧同名方法经 `shuttle_c_pub_stat(pub_id, kind)` 读取，`kind` 0/1/2/3/4 分别对应
 目标 / 已结束 / 排除 / deferred / 退订跳过（见 `dpi_protocol.md` 的 import 表）。
@@ -509,7 +511,7 @@ DPI `function` import 的调用链内不允许出现 export **task**（`Error-[D
 因此 `publish_now` 的同步段只能碰 nonblocking 入口的注册：`dispatch_now` 先按 `cap` 分拨，
 同步循环里只有它们（C++ 直接函数调用、SV 侧 `shuttle_sv_dispatch_nb`）。入口为 blocking 的
 目标不进同步段：`defer` 转后台（此时已脱离 import 调用链，可走 `shuttle_sv_dispatch`
-export task），`drop` 直接不投递，`reject` 前置抛错。
+export task），`skip` 直接不投递，`reject` 前置抛错。
 
 ### 11.4 SV 侧注册表与分派
 
@@ -560,10 +562,10 @@ broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV
 
 | 对象 | 语义 |
 | --- | --- |
-| `Publication` | `shared_ptr<Impl>`，可拷贝；`done()/wait()/wait(timeout)/finished()/subscriber_count()/excluded()/deferred()/retired()/failures()/result()` |
+| `Publication` | `shared_ptr<Impl>`，可拷贝；`done()/wait()/wait(timeout)/finished()/subscriber_count()/skipped()/deferred()/retired()/failures()/result()` |
 | `Subscription` | `shared_ptr<Impl>`，**最后一份副本析构即退订**（`Impl::~Impl` → `Broker::remove_sub`）；`unsubscribe()` 幂等 |
 | `shuttle_sub`（SV） | `id_` + `active_`，`unsubscribe()` 幂等；销毁不退订（SV 无确定性析构） |
-| `shuttle_handle`（SV） | 持 `pub_id`，方法名与 `Publication` 对应：`wait_done(timeout_fs)` / `done()` / `subscriber_count()` / `finished()` / `excluded()` / `deferred()` / `retired()` / `first_error()` |
+| `shuttle_handle`（SV） | 持 `pub_id`，方法名与 `Publication` 对应：`wait_done(timeout_fs)` / `done()` / `subscriber_count()` / `finished()` / `skipped()` / `deferred()` / `retired()` / `first_error()` |
 | `shuttle_event`（SV） | C++ 注册表持有的 id，`set()` / `close()` |
 
 退订即生效：它立刻把订阅者移出目标集（此后的帧不再选中它），也让**已快照**但尚未投递的帧
@@ -593,7 +595,7 @@ SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 过 DPI：`NONE` / `D
 
 | 手段 | 用途 |
 | --- | --- |
-| `broker::topics()` / `topic_info(name)` | 每个 topic 的 `type_tag`、订阅者数、retained、`published` / `delivered` / `dropped` / `deferred` |
+| `broker::topics()` / `topic_info(name)` | 每个 topic 的 `type_tag`、订阅者数、retained、`published` / `delivered` / `dropped`（含 `retired` / `skipped` / `failed` 分解）/ `deferred` |
 | `Publication` 的计数 | 本帧目标 / 已结束 / 排除 / 转后台 / 退订跳过（§9） |
 | `Publication::failures()` / `result()` | 失败记录 `Failure{subscriber, error}`；`subscriber` 是描述串（`cpp sub N` / `sv sid N` / `<trigger>` / `<delivery>`），文本取自 `error.what()` |
 | `shuttle_c_last_error()` / `last_error()` | 立即型 import 的失败原因（thread_local，每进程独立） |

@@ -34,7 +34,8 @@ enum class Capability {
 // 调用栈内被调用）。策略只作用于这些目标，与同一 topic 上是否还有 nonblocking 订阅者无关。
 enum class NowPolicy {
   reject = 0,  // 抛 CapabilityError：本帧从不发布（类型绑定 / seq / retained 都不动）
-  drop = 1,    // 跳过这些订阅者（计入 Publication::excluded()、`dropped()` 与 topic 计数）
+  skip = 1,    // 跳过这些订阅者：不进 expected，只进 Publication::skipped() 与 dropped 的三分解
+               //            （`skipped`；帧本身照发，其他订阅者照收——不是"丢弃消息"）
   defer = 2,   // 默认：交给本 topic 的后台串行链（与 publish_serial 共用同一条链），
                //       返回可等待句柄；于是"同一 topic 的后台投递顺序 = 发布调用顺序"
 };

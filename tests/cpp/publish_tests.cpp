@@ -67,7 +67,7 @@ WEAVE_TEST(publish_tests) {
     expect(h.done(), "deferred 完成后句柄完成");
   });
 
-  // case3：drop 策略 —— 跳过仅有 blocking 入口的订阅者，不抛异常且计数可见
+  // case3：skip 策略 —— 跳过仅有 blocking 入口的订阅者，不抛异常且计数可见
   run_case(__func__, "case3", [] {
     shuttle::Publisher<PubMsg> pub("pub.now.drop");
     std::size_t blocking_frames = 0;
@@ -78,10 +78,10 @@ WEAVE_TEST(publish_tests) {
     auto n = shuttle::subscribe<PubMsg>("pub.now.drop", shuttle::nb(
         [&](const PubMsg&, const shuttle::Meta&) { ++nb_frames; }));
 
-    auto h = pub.publish_now(PubMsg{1}, shuttle::NowPolicy::drop);
-    expect_eq(static_cast<long long>(blocking_frames), 0, "drop 跳过仅有 blocking 入口的订阅者");
+    auto h = pub.publish_now(PubMsg{1}, shuttle::NowPolicy::skip);
+    expect_eq(static_cast<long long>(blocking_frames), 0, "skip 跳过仅有 blocking 入口的订阅者");
     expect_eq(static_cast<long long>(nb_frames), 1, "nonblocking 入口的订阅者照常投递");
-    expect_eq(static_cast<long long>(h.excluded()), 1, "drop 计入 excluded");
+    expect_eq(static_cast<long long>(h.skipped()), 1, "skip 计入 skipped");
   });
 
   // case4：reject / defer —— reject 报错且不部分投递；defer 不阻塞发布者
@@ -249,9 +249,9 @@ WEAVE_TEST(publish_tests) {
     auto sn = shuttle::subscribe<PubMsg>("pub.once", shuttle::nb(
         [&](const PubMsg&, const shuttle::Meta&) { ++nb_frames; }));
 
-    pub.publish_now(PubMsg{1}, shuttle::NowPolicy::drop);  // 只命中 nonblocking 入口
+    pub.publish_now(PubMsg{1}, shuttle::NowPolicy::skip);  // 只命中 nonblocking 入口
     expect_eq(static_cast<long long>(nb_frames), 1, "publish_now 命中 nonblocking 入口");
-    expect_eq(static_cast<long long>(blocking_frames), 0, "publish_now drop 不命中 blocking 入口");
+    expect_eq(static_cast<long long>(blocking_frames), 0, "publish_now skip 不命中 blocking 入口");
 
     // `serial`/`concurrent` 的目标集合是"全部匹配订阅者"：两者各收到一帧
     auto hp = pub.publish_concurrent(PubMsg{2});
@@ -281,7 +281,7 @@ WEAVE_TEST(publish_tests) {
     auto h = pub.publish_now(PubMsg{1}, shuttle::NowPolicy::defer);
     expect_eq(static_cast<long long>(h.subscriber_count()), 2, "目标含 nonblocking 与 deferred 两部分");
     expect_eq(static_cast<long long>(h.deferred()), 1, "deferred 计数为 1");
-    expect_eq(static_cast<long long>(h.excluded()), 0, "defer 不排除任何人");
+    expect_eq(static_cast<long long>(h.skipped()), 0, "defer 不排除任何人");
     expect_eq(static_cast<long long>(nbh), 1, "nonblocking 部分返回时已结束");
     expect_eq(static_cast<long long>(blk), 0, "deferred 部分还没开始");
     expect(!h.done(), "deferred 未完成 → 句柄未完成");
@@ -290,9 +290,9 @@ WEAVE_TEST(publish_tests) {
     expect_eq(static_cast<long long>(blk), 1, "deferred 订阅者最终收到");
     expect_eq(static_cast<long long>(h.finished()), 2, "finished 覆盖两部分");
 
-    auto drop_h = pub.publish_now(PubMsg{2}, shuttle::NowPolicy::drop);
-    expect_eq(static_cast<long long>(drop_h.excluded()), 1, "drop 计入 excluded");
-    expect_eq(static_cast<long long>(drop_h.deferred()), 0, "drop 不计入 deferred");
+    auto skip_h = pub.publish_now(PubMsg{2}, shuttle::NowPolicy::skip);
+    expect_eq(static_cast<long long>(skip_h.skipped()), 1, "skip 计入 skipped");
+    expect_eq(static_cast<long long>(skip_h.deferred()), 0, "skip 不计入 deferred");
 
     auto info = shuttle::broker::topic_info("pub.vis");
     expect(info.has_value(), "topic 存在");

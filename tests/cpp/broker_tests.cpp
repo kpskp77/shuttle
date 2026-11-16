@@ -67,8 +67,8 @@ WEAVE_TEST(broker_tests) {
     shuttle::Subscription keep;
     auto rec = tap(keep, "bkr.w.*");
 
-    pub_a.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
-    pub_ab.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::drop);
+    pub_a.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
+    pub_ab.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::skip);
 
     expect_eq(static_cast<long long>(rec->frames), 1, "\"*\" 只收到单级 topic");
     expect(rec->topics.at(0) == "bkr.w.a", "收到的是单级 topic");
@@ -81,8 +81,8 @@ WEAVE_TEST(broker_tests) {
     shuttle::Subscription keep;
     auto rec = tap(keep, "bkr.m.>");
 
-    pub_a.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
-    pub_ab.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::drop);
+    pub_a.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
+    pub_ab.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::skip);
 
     expect_eq(static_cast<long long>(rec->frames), 2, "\">\" 收到任意多级");
     // 线长 = 两个 u32
@@ -96,8 +96,8 @@ WEAVE_TEST(broker_tests) {
     shuttle::Subscription keep;
     auto rec = tap(keep, "bkr.x.one");
 
-    pub_x.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
-    pub_y.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::drop);
+    pub_x.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
+    pub_y.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::skip);
 
     expect_eq(static_cast<long long>(rec->frames), 1, "只收到精确 topic 的帧");
   });
@@ -106,7 +106,7 @@ WEAVE_TEST(broker_tests) {
   run_case(__func__, "case4", [] {
     shuttle::Publisher<BkrTx> pub("bkr.ret.tx");
     pub.set_retained(true);
-    pub.publish_now(BkrTx{0x13, 0xC3}, shuttle::NowPolicy::drop);
+    pub.publish_now(BkrTx{0x13, 0xC3}, shuttle::NowPolicy::skip);
 
     BkrTx seen{};
     std::size_t frames = 0;
@@ -118,7 +118,7 @@ WEAVE_TEST(broker_tests) {
     expect_eq(static_cast<long long>(frames), 1, "retained 帧同步补发");
     expect(seen.addr == 0x13, "retained 帧内容为最新一次发布");
 
-    pub.publish_now(BkrTx{0x14, 0xC4}, shuttle::NowPolicy::drop);
+    pub.publish_now(BkrTx{0x14, 0xC4}, shuttle::NowPolicy::skip);
     expect_eq(static_cast<long long>(frames), 2, "补发后仍正常接收后续帧");
   });
 
@@ -126,7 +126,7 @@ WEAVE_TEST(broker_tests) {
   run_case(__func__, "case5", [] {
     shuttle::Publisher<BkrTx> pub("bkr.ret.off");
     pub.set_retained(true);
-    pub.publish_now(BkrTx{0x20, 0x20}, shuttle::NowPolicy::drop);
+    pub.publish_now(BkrTx{0x20, 0x20}, shuttle::NowPolicy::skip);
     pub.set_retained(false);
 
     std::size_t frames = 0;
@@ -143,14 +143,14 @@ WEAVE_TEST(broker_tests) {
     auto sub = shuttle::subscribe<BkrTx>(
         "bkr.unsub", shuttle::nb([&](const BkrTx&, const shuttle::Meta&) { ++frames; }));
 
-    pub.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
+    pub.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
     expect_eq(static_cast<long long>(frames), 1, "退订前正常收到");
     expect_eq(static_cast<long long>(sub.received()), 1, "received() 计数");
 
     sub.unsubscribe();
     expect(sub.valid() && sub.received() == 1, "退订后句柄仍可查询计数");
     sub.unsubscribe();  // 幂等，不得抛
-    pub.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::drop);
+    pub.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::skip);
     expect_eq(static_cast<long long>(frames), 1, "退订后不再收到");
     expect_eq(static_cast<long long>(sub.received()), 1, "不再投递后计数不增");
   });
@@ -163,10 +163,10 @@ WEAVE_TEST(broker_tests) {
       auto a = shuttle::subscribe<BkrTx>(
           "bkr.raii", shuttle::nb([&](const BkrTx&, const shuttle::Meta&) { ++frames; }));
       shuttle::Subscription b = a;  // 共享同一订阅
-      pub.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
+      pub.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
       expect_eq(static_cast<long long>(frames), 1, "共享句柄期间正常投递");
     }  // 两份都析构 → 自动退订
-    pub.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::drop);
+    pub.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::skip);
     expect_eq(static_cast<long long>(frames), 1, "全部句柄析构后自动退订");
   });
 
@@ -175,7 +175,7 @@ WEAVE_TEST(broker_tests) {
     shuttle::Publisher<BkrTx> pub("bkr.info");
     auto s1 = shuttle::subscribe<BkrTx>("bkr.info", shuttle::nb([](const BkrTx&,
                                                                    const shuttle::Meta&) {}));
-    pub.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
+    pub.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
 
     const auto info = shuttle::broker::topic_info("bkr.info");
     expect(info.has_value(), "topic_info 应返回已绑定的 topic");
@@ -207,9 +207,9 @@ WEAVE_TEST(broker_tests) {
           addrs.push_back(tx.addr);
         }));
 
-    pub_a.publish_now(BkrTx{0xA1, 0}, shuttle::NowPolicy::drop);
-    pub_b.publish_now(BkrTx{0xB1, 0}, shuttle::NowPolicy::drop);
-    pub_a.publish_now(BkrTx{0xA2, 0}, shuttle::NowPolicy::drop);
+    pub_a.publish_now(BkrTx{0xA1, 0}, shuttle::NowPolicy::skip);
+    pub_b.publish_now(BkrTx{0xB1, 0}, shuttle::NowPolicy::skip);
+    pub_a.publish_now(BkrTx{0xA2, 0}, shuttle::NowPolicy::skip);
 
     expect_eq(static_cast<long long>(seqs.size()), 3, "三个发布帧都到达");
     expect(seqs[0] < seqs[1] && seqs[1] < seqs[2], "seq 跨 Publisher 全局单调");
@@ -219,7 +219,7 @@ WEAVE_TEST(broker_tests) {
   // case10：类型绑定冲突 —— 同 topic 用不同类型发布/订阅都被拒绝
   run_case(__func__, "case10", [] {
     shuttle::Publisher<BkrTx> pub("bkr.typed");
-    pub.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
+    pub.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
 
     bool threw = false;
     try {
@@ -251,8 +251,8 @@ WEAVE_TEST(broker_tests) {
 
     shuttle::Publisher<BkrTx> pub_u("bkr.mix.uart");
     shuttle::Publisher<BkrOther> pub_o("bkr.mix.other");
-    pub_u.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
-    pub_o.publish_now(BkrOther{7}, shuttle::NowPolicy::drop);
+    pub_u.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
+    pub_o.publish_now(BkrOther{7}, shuttle::NowPolicy::skip);
 
     expect_eq(static_cast<long long>(uart_frames), 1, "只投递 tag 匹配的帧");
     expect_eq(static_cast<long long>(wild.received()), 1, "只把匹配的帧记成 receive");
@@ -291,6 +291,13 @@ WEAVE_TEST(broker_tests) {
     expect_eq(static_cast<long long>(p.retired()), 1, "被退订的那个记 retired");
     expect_eq(static_cast<long long>(a.dropped()), 1, "退订丢弃计入该订阅者的 dropped");
     expect(b.valid(), "b 未退订");
+    // 三分解：dropped 是 retired / skipped / failed 的求和（口径同构，见 architecture §9.2 第 5 条）
+    expect_eq(static_cast<long long>(info->retired), 1, "retired 分量单独可读");
+    expect_eq(static_cast<long long>(info->skipped), 0, "没有策略跳过");
+    expect_eq(static_cast<long long>(info->failed), 0, "没有失败");
+    expect_eq(static_cast<long long>(info->dropped),
+              static_cast<long long>(info->retired + info->skipped + info->failed),
+              "topic 级 dropped == retired + skipped + failed");
   });
 
   // case13：">" 与 "*" 都不匹配"前缀本身"（至少要再多一级）。
@@ -303,11 +310,11 @@ WEAVE_TEST(broker_tests) {
     auto gt = tap(keep_a, "bkr.deep.>");
     auto star = tap(keep_b, "bkr.deep.*");
 
-    p_prefix.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
+    p_prefix.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::skip);
     expect_eq(static_cast<long long>(gt->frames), 0, "\">\" 不匹配前缀本身");
     expect_eq(static_cast<long long>(star->frames), 0, "\"*\" 不匹配前缀本身");
 
-    p_child.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::drop);
+    p_child.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::skip);
     expect_eq(static_cast<long long>(gt->frames), 1, "\">\" 收到子级");
     expect_eq(static_cast<long long>(star->frames), 1, "\"*\" 收到单级子 topic");
   });

@@ -20,11 +20,15 @@
 //   failed     尝试了但没成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败
 //              （同时计入 dropped，并留下一条 Failure）
 //   deferred   返回时尚未开始（仅 publish_now 的 defer 段，后台串行链接走）
-//   excluded   策略干脆不投（仅 publish_now 的 drop），不算目标、也不入 subscriber_count()
-// reject 不产生帧，故没有终态。不变量（三种方式都成立）：
+//   skipped    发布者策略干脆不投（仅 publish_now 的 NowPolicy::skip），不算目标、
+//              也不入 subscriber_count()
+// reject 不产生帧，故没有终态。三种“没进回调”的区别只在**谁的决定**：retired 是订阅者自己走了，
+// skipped 是发布者的策略，failed 是尝试了但没成功。不变量（三种方式都成立）：
 //   · finished() ≤ subscriber_count()，且 done() ≡ finished() == subscriber_count()
-//   · subscriber_count() + excluded() == 本帧的目标订阅者数（名字 ∩ 类型，且未被策略排除）
+//   · subscriber_count() + skipped() == 本帧的目标订阅者数（名字 ∩ 类型，且未被策略跳过）
 //   · finished() == delivered + retired + failed 的累计，deferred 完成后必落入前三者之一
+//   · 订阅者与 topic 侧的 dropped() 是这三个非投递终态的求和（skipped 也算在内）：
+//     dropped() == retired + skipped + failed
 //
 // 异常语义：单个订阅者回调抛异常不影响其余订阅者；失败聚合粒度因方式而异：`concurrent` 逐订阅者
 // 全收；`serial` 只保留第一条（其余只计入 dropped）；`now` 的同步段把每个失败都记入 failures，
@@ -68,16 +72,16 @@ public:
   // wait() + 若存在失败则重抛第一个失败（完成顺序）的异常
   void result();
 
-  // 本次发布的目标订阅者数量（发布瞬间的快照，含被 defer 的部分，不含被 drop 排除的部分）
+  // 本次发布的目标订阅者数量（发布瞬间的快照，含被 defer 的部分，不含被 skip 跳过的部分）
   [[nodiscard]] std::size_t subscriber_count() const;
   // 已到达终态（delivered / retired / failed）的订阅者数量
   // 完成态恒有 done() ≡ finished() == subscriber_count()（零目标的三种方式都立即完成）
   [[nodiscard]] std::size_t finished() const;
 
   // ── 可见性：任何"订阅者没收到本帧"都必须是数字（三种方式同一套术语）──
-  // 被策略排除、本帧不会投递给它们的订阅者数量：只有 `publish_now` 的 `drop` 会非零，
+  // 被策略跳过、本帧不会投递给它们的订阅者数量：只有 `publish_now` 的 `skip` 会非零，
   // `serial`/`concurrent` 恒为 0（`reject` 直接抛异常、不返回句柄，且该帧从未发布过）
-  [[nodiscard]] std::size_t excluded() const;
+  [[nodiscard]] std::size_t skipped() const;
   // 被推迟到后台串行链、稍后才投递的订阅者数量（publish_now 的 defer）；是标记，完成后不回零
   [[nodiscard]] std::size_t deferred() const;
   // 本帧快照之后被退订、因而未进入回调的订阅者数量（已计入 finished 与 dropped）。
