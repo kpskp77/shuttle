@@ -16,14 +16,16 @@
 // ── 记账语义：每个目标订阅者只有五种结局，三种方式完全一致 ─────────────────────
 //   delivered  回调执行完毕（SV 侧 = export 返回）
 //   retired    快照之后、回调之前被退订：目标已到终态，内容没进回调，但没有任何人出错；
-//              计入 retired() 与 dropped()。两种语言同一口径（退订即生效）
+//              计入 retired()，以及订阅者/topic 侧 dropped() 的 retired 分量。
+//              两种语言同一口径（退订即生效）
 //   failed     尝试了但没成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败
-//              （同时计入 dropped，并留下一条 Failure）
+//              （同时计入 dropped 的 failed 分量，并留下一条 Failure）
 //   deferred   返回时尚未开始（仅 publish_now 的 defer 段，后台串行链接走）
 //   skipped    发布者策略干脆不投（仅 publish_now 的 NowPolicy::skip），不算目标、
 //              也不入 subscriber_count()
-// reject 不产生帧，故没有终态。三种“没进回调”的区别只在**谁的决定**：retired 是订阅者自己走了，
-// skipped 是发布者的策略，failed 是尝试了但没成功。不变量（三种方式都成立）：
+// reject 不产生帧，故没有终态。三种“没成功投递”的区别在**谁的决定**：retired 是订阅者自己走了，
+// skipped 是发布者的策略，failed 是试了没成（回调进去了、抛出异常，或帧没能物化、投递被取消）。
+// 不变量（三种方式都成立）：
 //   · finished() ≤ subscriber_count()，且 done() ≡ finished() == subscriber_count()
 //   · subscriber_count() + skipped() == 本帧的目标订阅者数（名字 ∩ 类型，且未被策略跳过）
 //   · finished() == delivered + retired + failed 的累计，deferred 完成后必落入前三者之一
@@ -31,7 +33,7 @@
 //     dropped() == retired + skipped + failed
 //
 // 异常语义：单个订阅者回调抛异常不影响其余订阅者；失败聚合粒度因方式而异：`concurrent` 逐订阅者
-// 全收；`serial` 只保留第一条（其余只计入 dropped）；`now` 的同步段把每个失败都记入 failures，
+// 全收；`serial` 只保留第一条（其余只计入 dropped 的 failed 分量）；`now` 的同步段把每个失败都记入 failures，
 // 但**先把所有目标尝试完、并把 defer 段交给后台链**，最后才把第一个异常抛给发布者（句柄仍不返回，
 // 但本帧的其余目标照常投递），defer 段按 `serial` 的规则并入同一句柄。
 
@@ -78,13 +80,13 @@ public:
   // 完成态恒有 done() ≡ finished() == subscriber_count()（零目标的三种方式都立即完成）
   [[nodiscard]] std::size_t finished() const;
 
-  // ── 可见性：任何"订阅者没收到本帧"都必须是数字（三种方式同一套术语）──
+  // ── 可见性：任何"本帧没能成功送到某订阅者"都必须是数字（三种方式同一套术语）──
   // 被策略跳过、本帧不会投递给它们的订阅者数量：只有 `publish_now` 的 `skip` 会非零，
   // `serial`/`concurrent` 恒为 0（`reject` 直接抛异常、不返回句柄，且该帧从未发布过）
   [[nodiscard]] std::size_t skipped() const;
   // 被推迟到后台串行链、稍后才投递的订阅者数量（publish_now 的 defer）；是标记，完成后不回零
   [[nodiscard]] std::size_t deferred() const;
-  // 本帧快照之后被退订、因而未进入回调的订阅者数量（已计入 finished 与 dropped）。
+  // 本帧快照之后被退订、因而未进入回调的订阅者数量（计入 finished，以及 dropped 的 retired 分量）。
   // 快照保证"谁被选中"，不保证"一定被调用"：退订即生效，不分语言。
   // 这是终端计数，不是错误明细，不进 failures()
   [[nodiscard]] std::size_t retired() const;

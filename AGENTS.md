@@ -34,14 +34,15 @@ just test-all       # 测试套件：systemc（45 用例）+ VCS（48 用例 + 7
    语言里不一致）。两入口都要 = 注册两次。三种方式的目标集合都是"全部匹配订阅者"；`publish_now`
    是唯一无法提供 blocking 入口上下文的调度，所以它是唯一需要策略的地方
    （`NowPolicy{reject,skip,defer}`，默认 `defer`）。别把"入口为 blocking 的订阅者"当成 `publish_now`
-   的**错误**，也别让 `serial`/`concurrent` 静默丢帧——"没收到"必须体现为计数。
+   的**错误**，也别让 `serial`/`concurrent` 静默丢帧——"没成功投递"必须体现为计数。
 5. **后台投递的 per-topic 串行链**：`src/broker.cpp` 的 `start_serial` 必须在发布瞬间捕获
    "本帧要放行的链尾事件"并在完成时 set 它；用当时的 `topics[topic].chain` 会放错帧、
    让后续帧永久阻塞（曾引发整机 hang，表现为仿真时间停在最后一个事件处、无报错）。
 6. **SV 打包方向是 `{>>{...}}`**（声明序、每字段高位在前），与 C++ `Writer` 的大端逐字节一致；
    `{<<{...}}` 会整段反转比特流。string 先写 32 位长度前缀。
 7. **退订即生效（在途投递记 retired）**：快照只保证"谁被选中"，不保证"一定被调用"。
-   两个来源都必须记成 `Delivery::retired`（进 `dropped`，不进 `delivered`、不留 `Failure`）：
+   两个来源都必须记成 `Delivery::retired`（进 `dropped` 的 `retired` 分量，不进 `delivered`、
+   不留 `Failure`）：
    - C++ 侧：`Broker::remove_sub` 置 `Subscriber::removed`，`deliver` 在 kind 分支**之前**检查。
      快照持有 `shared_ptr`、对象还活着，漏了这一查就会真的调进已退订的回调；
    - SV 侧：`shuttle_registry` 用 `retired_` 静默丢弃（不 `$error`，只有从未登记过的 id 才
@@ -65,8 +66,9 @@ just test-all       # 测试套件：systemc（45 用例）+ VCS（48 用例 + 7
     不能在函数末尾"一次性把 `finished` 置成 `expected`"（那样 `done()` 会先于真实完成成立）。
     由此得到三条不变量：`done() ≡ finished() == subscriber_count()`（无例外路径）；
     `finished() == 投递 + 退订跳过 + 失败`；`retired() ≤ finished()`（退订跳过同时计入 `dropped()`）。
-    零目标的发布必须立即完成（`publish_serial` 也要短路，不能建投递单元）。被排除出目标集的
-    目标（策略 `skip` 的 `skipped`、类型不相交的）都必须可数，别让"没收到"变成无记录。
+    零目标的发布必须立即完成（`publish_serial` 也要短路，不能建投递单元）。所有"没收到"都必须
+    可数：策略 `skip` 的落 `skipped()`、快照后被退订的落 `retired()`、类型不相交的不进目标集
+    （这不是"没收到"，是"本就不是它的帧"）。别让任何一类变成无记录。
 11. **`defer` 复用 `publish_serial` 的同一条链**（不要另起并发投递）：由此得到可测定律"同一 topic 的
     后台投递顺序 = 发布调用顺序"。串行链的跨订阅者队头阻塞是显式接受的代价——想要并发请用
     `publish_concurrent`。

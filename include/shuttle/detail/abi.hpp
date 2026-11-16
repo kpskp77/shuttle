@@ -74,7 +74,7 @@ void topic_declare(const std::string& topic, const TypeOps* ops);
 // pub_now（= 公开 API 的 publish_now）：在发布者栈内同步回调所有 nonblocking 入口的订阅者。
 // msg 在调用点已完成拷贝（快照语义）。policy 见 NowPolicy。
 // 返回值覆盖本帧的**目标**（nonblocking 部分返回时已结束，deferred 部分在后台串行链里）；
-// `skip` 排除的目标不计入 `expected`，只体现在 `skipped()` / `dropped()`；`reject` 直接抛
+// `skip` 跳过的目标不计入 `expected`，只体现在 `skipped()` 与 `dropped()` 的 `skipped` 分量；`reject` 直接抛
 // CapabilityError，没有返回值。
 Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg,
                        const TypeOps* ops, NowPolicy policy);

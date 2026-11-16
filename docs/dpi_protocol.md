@@ -22,13 +22,13 @@
 | `shuttle_c_wait_pub` | `(int pub_id, longint timeout_fs, output int status)` | **阻塞**（task） | 阻塞当前 SV 进程直至该发布的全部订阅者回调结束。`timeout_fs` = 0 表示无限等待。`status` 见常量表。实现复用 weave 的挂起机制（`weave_sv_wait`），可挂起任意调用它的 SV 进程 |
 | `shuttle_c_pub_done` | `(int pub_id) → int` | 不阻塞 | 轮询：非 0 表示全部订阅者回调已结束（含失败） |
 | `shuttle_c_pub_error` | `(int pub_id) → string` | 不阻塞 | 第一个失败订阅者的错误信息；空串表示无失败 |
-| `shuttle_c_pub_stat` | `(int pub_id, int kind) → int` | 不阻塞 | 发布句柄的可见性计数。`kind`：0 = 目标订阅者数（名字 ∩ 类型），1 = 已结束（delivered / retired / failed 三种终态都算），2 = 被策略跳过（只有 `skip` 会产生；`reject` 不返回句柄），3 = 转到后台链（defer，标记，完成后不回零），4 = 到达已退订的 SV 订阅者而跳过（已计入 1 与 `dropped`）。未知 `pub_id` 返回 -1 |
+| `shuttle_c_pub_stat` | `(int pub_id, int kind) → int` | 不阻塞 | 发布句柄的可见性计数。`kind`：0 = 目标订阅者数（名字 ∩ 类型），1 = 已结束（delivered / retired / failed 三种终态都算），2 = 被策略跳过（只有 `skip` 会产生；`reject` 不返回句柄），3 = 转到后台链（defer，标记，完成后不回零），4 = 到达已退订的 SV 订阅者而跳过（已计入 1 与 `dropped` 的 `retired` 分量）。未知 `pub_id` 返回 -1 |
 | `shuttle_c_subscribe` | `(string topic, int caps, string type_tag, int sv_sid) → int` | 不阻塞 | 注册 SV 订阅者。`caps` 必须恰好是 `1`（`SHUTTLE_CAP_BLOCKING`）或 `2`（`SHUTTLE_CAP_NONBLOCKING`），其余值返回非 0 并置 last_error；`type_tag` 非空时校验与 topic 类型绑定是否一致，不一致返回非 0；`sv_sid` 是 SV 注册表编号，C++ 原样记录并在分发时带回，两侧无需维护 id 映射。topic 支持通配符（`*` 匹配单级，`>` 匹配其后至少一级、不匹配前缀本身） |
 | `shuttle_c_unsubscribe` | `(int sv_sid)` | 不阻塞 | 退订（幂等）。退订即生效：已快照但尚未投递的帧仍会到达 SV 侧（注册表里已无 sink），由注册表丢弃并经 `shuttle_c_sub_retired` 回告，C++ 记 `retired` |
 | `shuttle_c_set_retained` | `(string topic, bit retained)` | 不阻塞 | 开启或关闭 retained（latched）：开启后 broker 缓存最新一帧，新订阅者注册时补发 |
 | `shuttle_c_frame_len` | `() → int` | 不阻塞 | 当前帧的字节流长度。**只能在 export 体内**（`shuttle_sv_dispatch[_nb]`）调用，数据来自 C++ 侧的 thread_local `FrameContext` |
 | `shuttle_c_frame_qword` | `(int index) → longint` | 不阻塞 | 取第 `index` 个 8 字节块（SV 侧按小端拼装，末块不足 8 字节的部分补零）。帧因此不经过 export 形参，绕开"C++ 无法构造 open array"的限制 |
-| `shuttle_c_sub_retired` | `(int sv_sid)` | 不阻塞 | **由 SV 侧调回 C++**：`shuttle_registry::dispatch[_nb]` 发现目标已退订（`retired_`）时静默丢弃这次在途投递，同时调用本函数回告。C++ 在 export 返回后把该次投递记为 retired（计入 `dropped`，不计 `delivered`，不留 `Failure`） |
+| `shuttle_c_sub_retired` | `(int sv_sid)` | 不阻塞 | **由 SV 侧调回 C++**：`shuttle_registry::dispatch[_nb]` 发现目标已退订（`retired_`）时静默丢弃这次在途投递，同时调用本函数回告。C++ 在 export 返回后把该次投递记为 retired（计入 `dropped` 的 `retired` 分量，不计 `delivered`，不留 `Failure`） |
 | `shuttle_c_event_create` | `() → int` | 不阻塞 | 创建一个由 C++ 注册表持有的事件 id（>0；0 表示失败），可作 `SHUTTLE_TRIG_EVENT` 的 `trig_arg`，也是 SV `shuttle_event` 的底层对象 |
 | `shuttle_c_event_set` | `(int ev_id)` | 不阻塞 | 置位并唤醒所有等待者（C++ 侧 `after(Event&)` 与 `TRIG_EVENT` 的投递单元） |
 | `shuttle_c_event_destroy` | `(int ev_id)` | 不阻塞 | 释放 id（SV `shuttle_event::close()`）。仿真结束时不调用亦可随进程消亡 |

@@ -44,7 +44,7 @@ void ext_unsub(int handle);
 
 // Publication 完成跟踪（pub_id 由发布时分配）
 bool pub_done(int pub_id);
-// 发布计数查询：kind 0=目标数 1=已完成 2=排除 3=deferred；未知 pub_id 返回 -1
+// 发布计数查询：kind 0=目标数 1=已完成 2=策略跳过 3=deferred 4=退订跳过；未知 pub_id 返回 -1
 long long pub_stat(int pub_id, int kind);
 std::string pub_error(int pub_id);
 // 阻塞等待（必须在 weave task / 仿真进程上下文中调用）。

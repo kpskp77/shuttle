@@ -84,9 +84,11 @@ struct Subscriber {
   // 已退订（`remove_sub` 置位）。快照持有 shared_ptr，所以对象在退订后仍然活着——本标记
   // 是"这一帧还该不该进回调"的唯一判据：退订即生效，不问投递进程此刻在哪。
   bool removed = false;
-  // 诊断计数：三种"没进回调"的终态各自记一份，dropped() 是它们的和。
+  // 诊断计数：三种"没有成功投递"的终态各自记一份，dropped() 是它们的和。
   // 分开的理由是责任归属不同——退订是订阅者自己的决定，skip 是发布者的策略，
   // failed 是有人出错了；合成一个数就只能靠翻 Publication::failures() 猜。
+  // 注意 failed 与另两个不同：回调**进去了**（拿到内容）但抛了异常、或帧没物化、
+  // 或被取消——所以 dropped 的判据是"没有以成功回调收尾"，不是"没进回调"。
   std::uint64_t received = 0;
   std::uint64_t retired = 0;  // 快照之后、回调之前被退订
   std::uint64_t skipped = 0;  // 发布者策略跳过（NowPolicy::skip）
@@ -118,9 +120,9 @@ struct Topic {
   std::uint64_t seq = 0;        // topic 内全局单调（跨发布者连续，多对多契约）
   std::uint64_t published = 0;  // 累计发布帧数
   std::uint64_t delivered = 0;  // 累计投递次数（所有订阅者合计）
-  std::uint64_t retired = 0;    // 累计未投递：快照后被退订
-  std::uint64_t skipped = 0;    // 累计未投递：发布者策略跳过（NowPolicy::skip）
-  std::uint64_t failed = 0;     // 累计未投递：尝试了但没成功
+  std::uint64_t retired = 0;    // 累计未成功投递：快照后被退订
+  std::uint64_t skipped = 0;    // 累计未成功投递：发布者策略跳过（NowPolicy::skip）
+  std::uint64_t failed = 0;     // 累计未成功投递：尝试了但没成功
   std::uint64_t deferred = 0;   // 累计被 defer 到后台串行链的投递数
   [[nodiscard]] std::uint64_t dropped() const { return retired + skipped + failed; }
   weave::Event chain;           // 后台投递的 per-topic 串行链尾（`publish_serial` 与 `now` 的 defer 共用）
@@ -134,7 +136,7 @@ struct PubState {
   // +（仅 defer 时）blocking 目标数（`skip` 掉的照算目标、只是不投）
   std::size_t expected = 0;
   std::size_t finished = 0;
-  // 可见性计数：本帧没收到 / 稍后才收到的订阅者（都是标记，不是余额；
+  // 可见性计数：本帧没成功投递 / 稍后才投递的订阅者（都是标记，不是余额；
   // 见 docs/architecture.md 的"记账契约"一章）
   std::size_t skipped = 0;   // 发布者策略跳过（未尝试，不是失败）
   std::size_t deferred = 0;
@@ -503,7 +505,7 @@ public:
         failure = failure_of("<trigger>", unknown_exc());
       }
       // 单元级失败（触发条件抛异常 / 被取消 / 其余目标未尝试）：本单元未到达终态的目标
-      // 全部记 failed —— 没收到就必须落在计数里，不能只留一条 Failure。
+      // 全部记 failed —— 没成功就必须落在计数里，不能只留一条 Failure。
       for (; idx < targets.size(); ++idx) {
         ++t.failed;
         ++targets[idx]->failed;
@@ -541,7 +543,7 @@ public:
           else
             ++pub->retired;
         } catch (const weave::CancelledError&) {
-          // 取消与异常同一口径：没收到内容就是 failed（dropped 的一部分）
+          // 取消与异常同一口径：没有成功收尾就是 failed（dropped 的一部分）
           count_failed(t, sub);
           failure = failure_of(describe(sub), cancelled_exc());
         } catch (const std::exception&) {

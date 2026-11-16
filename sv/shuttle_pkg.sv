@@ -53,7 +53,7 @@ package shuttle_pkg;
   import "DPI-C" context task shuttle_c_wait_pub(
       int pub_id, longint timeout_fs, output int status);
   import "DPI-C" context function int shuttle_c_pub_done(int pub_id);
-  // 发布计数查询：kind 0=目标数 1=已完成 2=排除 3=deferred 4=退订跳过
+  // 发布计数查询：kind 0=目标数 1=已完成 2=策略跳过 3=deferred 4=退订跳过
   import "DPI-C" context function int shuttle_c_pub_stat(int pub_id, int kind);
   import "DPI-C" context function string shuttle_c_pub_error(int pub_id);
   // 在途投递到达一个已退订的 id 时回告 C++（不报错，只让 C++ 把该次投递记成 retired）

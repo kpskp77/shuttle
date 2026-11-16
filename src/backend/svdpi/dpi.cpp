@@ -235,7 +235,7 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
 
 int shuttle_c_pub_done(int pub_id) { return shuttle::detail::pub_done(pub_id) ? 1 : 0; }
 
-// 发布计数查询：kind 0=目标数 1=已完成 2=排除 3=deferred 4=退订跳过；未知 pub_id 返回 -1
+// 发布计数查询：kind 0=目标数 1=已完成 2=策略跳过 3=deferred 4=退订跳过；未知 pub_id 返回 -1
 int shuttle_c_pub_stat(int pub_id, int kind) {
   const long long v = shuttle::detail::pub_stat(pub_id, kind);
   return v > 2147483647LL ? 2147483647 : static_cast<int>(v);

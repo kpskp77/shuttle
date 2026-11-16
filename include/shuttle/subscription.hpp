@@ -40,9 +40,12 @@ public:
   [[nodiscard]] const std::string& topic() const;       // 订阅的 topic（含通配符原样）
   [[nodiscard]] Capability capability() const;
 
-  // 诊断计数（口径：received + dropped == 它被本帧定为目标的次数）
+  // 诊断计数（口径：received + dropped == 本帧名字∩类型命中它的次数）
   [[nodiscard]] std::uint64_t received() const;  // 已投递帧数
-  // 没收到本帧内容的帧数，等于下面三种原因之和（拆分见 broker::TopicInfo）
+  // 没有成功投递的帧数 = 快照后被退订 + 被策略 skip + 失败，三者之和
+  // （细分项不在本句柄上，读 broker::topic_info() 的三个字段）。判据是"没有以成功回调收尾"，
+  // 不是"回调没跑"——失败的那一类回调是进去了的（拿到内容后抛出）。注意它**含**被 skip 的帧：
+  // 帧级 subscriber_count() 不数它们，订阅者级 dropped 数它们——"我没成功收到"必须可观测。
   [[nodiscard]] std::uint64_t dropped() const;
 
 private:

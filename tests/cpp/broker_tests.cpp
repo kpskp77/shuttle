@@ -289,7 +289,7 @@ WEAVE_TEST(broker_tests) {
     const auto info = shuttle::broker::topic_info("bkr.inflight");
     expect(info.has_value() && info->delivered == 1, "delivered 只数真正进回调的");
     expect_eq(static_cast<long long>(p.retired()), 1, "被退订的那个记 retired");
-    expect_eq(static_cast<long long>(a.dropped()), 1, "退订丢弃计入该订阅者的 dropped");
+    expect_eq(static_cast<long long>(a.dropped()), 1, "退订记 retired，计入该订阅者的 dropped");
     expect(b.valid(), "b 未退订");
     // 三分解：dropped 是 retired / skipped / failed 的求和（口径同构，见 architecture §9.2 第 5 条）
     expect_eq(static_cast<long long>(info->retired), 1, "retired 分量单独可读");

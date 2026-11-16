@@ -69,19 +69,23 @@ WEAVE_TEST(publish_tests) {
 
   // case3：skip 策略 —— 跳过仅有 blocking 入口的订阅者，不抛异常且计数可见
   run_case(__func__, "case3", [] {
-    shuttle::Publisher<PubMsg> pub("pub.now.drop");
+    shuttle::Publisher<PubMsg> pub("pub.now.skip");
     std::size_t blocking_frames = 0;
-    auto s = shuttle::subscribe<PubMsg>("pub.now.drop", [&](const PubMsg&, const shuttle::Meta&) {
+    auto s = shuttle::subscribe<PubMsg>("pub.now.skip", [&](const PubMsg&, const shuttle::Meta&) {
       ++blocking_frames;
     });
     std::size_t nb_frames = 0;
-    auto n = shuttle::subscribe<PubMsg>("pub.now.drop", shuttle::nb(
+    auto n = shuttle::subscribe<PubMsg>("pub.now.skip", shuttle::nb(
         [&](const PubMsg&, const shuttle::Meta&) { ++nb_frames; }));
 
     auto h = pub.publish_now(PubMsg{1}, shuttle::NowPolicy::skip);
     expect_eq(static_cast<long long>(blocking_frames), 0, "skip 跳过仅有 blocking 入口的订阅者");
     expect_eq(static_cast<long long>(nb_frames), 1, "nonblocking 入口的订阅者照常投递");
     expect_eq(static_cast<long long>(h.skipped()), 1, "skip 计入 skipped");
+    // 被策略摘掉的目标在帧级不算目标（不进 subscriber_count），但在订阅者级必须可数：
+    // dropped 的三个分量里 skipped 就是它。两个口径的差异写在 publication.hpp 头部。
+    expect_eq(static_cast<long long>(s.dropped()), 1, "被跳过的目标计入该订阅者的 dropped（skipped 分量）");
+    expect_eq(static_cast<long long>(n.dropped()), 0, "被投递的订阅者没有 dropped");
   });
 
   // case4：reject / defer —— reject 报错且不部分投递；defer 不阻塞发布者
@@ -171,6 +175,15 @@ WEAVE_TEST(publish_tests) {
     expect_eq(static_cast<long long>(ok), 1, "失败不阻断后续订阅者");
     expect_eq(static_cast<long long>(h.failures().size()), 1, "失败被逐订阅者聚合");
     expect(!h.failures().at(0).subscriber.empty(), "失败记录含订阅者描述");
+    // 失败在订阅者级与 topic 级都记成 failed（dropped 的第三分量；retired/skipped 都应为 0）
+    expect_eq(static_cast<long long>(bad.dropped()), 1, "失败的订阅者记 dropped");
+    expect_eq(static_cast<long long>(good.dropped()), 0, "成功的订阅者不记 dropped");
+    const auto info = shuttle::broker::topic_info("pub.seq.fail");
+    expect(info.has_value(), "topic 可内省");
+    expect_eq(static_cast<long long>(info->failed), 1, "topic 级记 failed");
+    expect_eq(static_cast<long long>(info->retired), 0, "没有退订");
+    expect_eq(static_cast<long long>(info->skipped), 0, "没有策略跳过");
+    expect_eq(static_cast<long long>(info->dropped), 1, "topic 级 dropped == retired + skipped + failed");
 
     bool threw = false;
     std::string what;
@@ -281,7 +294,7 @@ WEAVE_TEST(publish_tests) {
     auto h = pub.publish_now(PubMsg{1}, shuttle::NowPolicy::defer);
     expect_eq(static_cast<long long>(h.subscriber_count()), 2, "目标含 nonblocking 与 deferred 两部分");
     expect_eq(static_cast<long long>(h.deferred()), 1, "deferred 计数为 1");
-    expect_eq(static_cast<long long>(h.skipped()), 0, "defer 不排除任何人");
+    expect_eq(static_cast<long long>(h.skipped()), 0, "defer 不跳过任何人");
     expect_eq(static_cast<long long>(nbh), 1, "nonblocking 部分返回时已结束");
     expect_eq(static_cast<long long>(blk), 0, "deferred 部分还没开始");
     expect(!h.done(), "deferred 未完成 → 句柄未完成");

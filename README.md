@@ -107,7 +107,7 @@ h.wait_done();                                                    // 挂起当�
 ## 完成句柄与计数
 
 三种方式返回同一个句柄类型：C++ `Publication`，SV `shuttle_handle`。句柄同时是**可见性
-凭证**——任何"订阅者没收到本帧"都能查到数字：
+凭证**——任何"本帧没能成功送到某订阅者"都能查到数字：
 
 | 方法 | 含义 |
 | --- | --- |
@@ -125,7 +125,8 @@ h.wait_done();                                                    // 挂起当�
 
 1. `done()` 当且仅当 `finished() == subscriber_count()`；
 2. `finished()` 只累计三种终态：投递、退订跳过、失败；
-3. 订阅者侧 `received() + dropped() == 该订阅者被定为目标的帧数`，且 `dropped() == retired + skipped + failed`。
+3. 订阅者侧 `received() + dropped() == 本帧名字∩类型命中它的次数`（含被 `skip` 跳过的），且
+   `dropped() == retired + skipped + failed`；帧级 `subscriber_count()` 则不含被 `skip` 的。
 
 失败聚合粒度不同：`concurrent` 逐订阅者记录全部失败；`serial` 只保留第一条；`now` 的同步段
 只抛出第一条（其余仍记入 `failures()`），被 defer 的部分按 `serial` 规则并入同一句柄。
