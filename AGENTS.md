@@ -19,7 +19,7 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
 ## 必须守住的不变量
 
 1. **单活跃进程**（weave 的 port 契约）：任一时刻只有一个进程执行 C++ 侧记账代码；
-   挂起 ≡ 交出调度权。shuttle 的"投递时把帧字节流放在 thread_local 上下文里让 SV 拉取"
+   挂起 ≡ 交出调度权。shuttle 的"投递时把帧字节流放在进程级上下文里让 SV 拉取"
    （`src/backend/svdpi/` 的 `FrameContext` + `shuttle_c_frame_len/qword`）就依赖这一点。
 2. **作用域修正**：调用包级 export 前必须切 `svScope`（`svScope` 会被 import 调用污染，
    VCS 报 `Error-[DPI-DXFNF]`）。见 `src/backend/svdpi/svdpi_internal.hpp` 的 `SvScopeGuard`；驱动 weave 的
@@ -50,7 +50,7 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
      `take_retired_delivery()` 把这次投递转成 retired。
    少任何一边都是"幻影成功"（`delivered`/`received` 涨了但帧没进回调），或者两边口径不一致
    （C++ 记 delivered、SV 记 retired）。别再引入"后端专属终态"。
-8. **跨 DSO 的异常**：异常类与 `shuttle::Event` 都要有 out-of-line 定义（key function），
+8. **跨 DSO 的异常**：异常类要有 out-of-line 定义（key function），
    否则 `simv` 直接 `undefined symbol`。
 9. **typed 订阅者只能收到已物化的对象**：SV 发布时若 topic 未绑定 C++ 类型，帧只能是纯字节流
    （`raw_ops`），此帧绝不能投给 `SubKind::typed` 订阅者（否则把 `vector<byte>` 强转成 T，
@@ -109,8 +109,8 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
   `add_files("src/backend/" .. 后端 .. "/**.cpp")`）。两个目录互不相见、不许互相 include，
   也不许再加 `SHUTTLE_BACKEND_*` 之类的宏——换后端 = 换目录。新增后端只需实现
   `src/internal/backend.hpp` 的 6 个入口。
-- `src/entry.cpp` 里是外部接入门面（`ext_*` / 按 `pub_id` 的 `pub_*`）：与后端无关，
-  后端目录整个删掉也能编译。
+- `src/entry.cpp` 里是外部接入门面（`ext_*` / 按 `pub_id` 的 `pub_*` / 跨语言事件注册表
+  `event_registry_*`）：与后端无关，后端目录整个删掉也能编译；`broker.cpp` 只剩纯 C++ 路径。
 - `xmake.lua` 的 `add_headerfiles` 必须覆盖 `include/(shuttle/**.hpp)`——写成 `shuttle/*.hpp`
   会让安装出来的包缺 `detail/abi.hpp`，使用者一 include `publisher.hpp` 就编译失败。
 

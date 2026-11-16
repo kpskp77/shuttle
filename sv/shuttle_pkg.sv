@@ -7,7 +7,7 @@
 //   export（SV 提供） ：shuttle_sv_* —— 订阅者回调分发入口 + 仿真时间
 //
 // 帧拉取协议（dispatch 的 payload 不走 DPI 参数）：
-//   C++ 调 shuttle_sv_dispatch[_nb] 前把当前帧字节流设为线程上下文；
+//   C++ 调 shuttle_sv_dispatch[_nb] 前把当前帧字节流设为进程级上下文；
 //   SV 在 export 体内经 shuttle_c_frame_len / shuttle_c_frame_qword（8 字节
 //   小端块）分块拉取。依赖仿真器单活跃进程不变性（与 weave 相同前提）。
 //
@@ -64,12 +64,12 @@ package shuttle_pkg;
   import "DPI-C" context function void shuttle_c_set_retained(string topic, bit retained);
   import "DPI-C" context function string shuttle_c_last_error();
 
-  // 帧拉取协议：C++ 调 shuttle_sv_dispatch[_nb] 前把当前帧字节流设为线程上下文，
+  // 帧拉取协议：C++ 调 shuttle_sv_dispatch[_nb] 前把当前帧字节流设为进程级上下文，
   // SV 在 export 体内经这两个标量 import 分块拉取（每块 8 字节小端序）。
   import "DPI-C" context function int shuttle_c_frame_len();
   import "DPI-C" context function longint shuttle_c_frame_qword(int index);
 
-  // 跨语言事件：C++ 侧 shuttle::Event 注册表的 DPI 入口（shuttle_event 使用）
+  // 跨语言事件：C++ 侧事件注册表的 DPI 入口（shuttle_event 使用）
   import "DPI-C" context function int shuttle_c_event_create();
   import "DPI-C" context function void shuttle_c_event_set(int ev_id);
   import "DPI-C" context function void shuttle_c_event_destroy(int ev_id);
@@ -308,10 +308,11 @@ package shuttle_pkg;
     endfunction
   endclass
 
-  // ── 跨语言事件句柄（对应 C++ 端 shuttle::Event）─────────────────────────
+  // ── 跨语言事件句柄（C++ 侧注册表持有底层对象，C++ 侧用 weave::Event 等待）──
   // 底层对象驻留在 C++ 侧的注册表里（由 C++ 持有，SV 只持 id）：
-  // C++ 侧可经 shuttle::after(Event) / TRIG_EVENT 等待，SV 侧 set() 唤醒；
-  // 也可作 shuttle_trigger::after_event() 的触发条件（见下）。
+  // SV 侧 set() 唤醒正在等它的 TRIG_EVENT 投递单元；
+  // 也可作 shuttle_trigger::after_event(id) 的触发条件（见下）。
+  // C++ 侧没有按 id 等待的公开入口：C++ 自己的事件用 weave::Event + after()。
   class shuttle_event;
     local int id_;
     local bit active_;
@@ -355,7 +356,7 @@ package shuttle_pkg;
       t.arg  = fs;
       return t;
     endfunction
-    // C++ 侧事件句柄 id（shuttle_event / C++ shuttle::Event / weave::Event id）。
+    // 事件句柄 id（只由 SV 侧创建；C++ 侧按 id 等待，见 detail::event_wait_id）。
     // 传 shuttle_event 时显式取 id：after_event(ev.id())
     //（类句柄与 int 只支持隐式单项转换，VCS 不接受二者构成重载）
     static function shuttle_trigger after_event(int ev_id);

@@ -50,7 +50,7 @@ constexpr const char* kFromSvTopic = "xlang.sv2cpp";    // SV → C++
 struct XlangState {
   shuttle::Subscription    ready;    // retained 就绪帧
   shuttle::Subscription    from_sv;  // SV → C++
-  shuttle::Event           ready_ev;
+  weave::Event             ready_ev;
   std::vector<XMsg>        got;
   std::vector<std::uint64_t> seqs;
   std::vector<std::string>  tags;

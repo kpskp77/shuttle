@@ -25,6 +25,7 @@
 #include <shuttle/subscription.hpp>
 #include <shuttle/trigger.hpp>
 #include <weave/event.hpp>
+#include <weave/sync.hpp>
 #include <weave/task.hpp>
 
 #include "internal/backend.hpp"
@@ -646,6 +647,31 @@ public:
     }
   }
 
+  // ── 订阅注册公共段 ─────────────────────────────────────────────────────
+  // 三种注册（C++ typed / C++ bytes / 外部句柄）共用的装配流程：模式校验 → 分配 id →
+  // 填字段 → 类型过滤预校验 → 入表 → retained 补发。调用方只给差异部分；
+  // typed 订阅的 topic_declare 副作用留在调用方（它只适用于无通配符模式）。
+  std::shared_ptr<Subscriber> register_sub(std::string pattern, SubKind kind, Capability cap,
+                                           std::string filter_tag, const TypeOps* ops,
+                                           ErasedCallback cb, ByteCallback cb_bytes,
+                                           int handle) {
+    check_pattern(pattern);
+    auto sub = std::make_shared<Subscriber>();
+    sub->id = next_sub_id++;
+    sub->pattern = std::move(pattern);
+    sub->kind = kind;
+    sub->cap = cap;
+    sub->filter_tag = std::move(filter_tag);
+    sub->ops = ops;
+    sub->cb = std::move(cb);
+    sub->cb_bytes = std::move(cb_bytes);
+    sub->handle = handle;
+    check_filter_early(*sub);
+    subs.push_back(sub);
+    retained_catchup(sub);
+    return sub;
+  }
+
   void remove_sub(const std::shared_ptr<Subscriber>& sub) {
     // 先置位再摘表：在途投递（快照仍持有 shared_ptr）据此记 retired 而不是 delivered。
     sub->removed = true;
@@ -727,6 +753,19 @@ inline std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
   // defer 链已经启动：此时才把同步段的第一个异常抛给调用者（句柄不返回，但后台目标照常投递）
   if (first_exc) std::rethrow_exception(first_exc);
   return pub;
+}
+
+// 带超时等待的公共骨架（Publication::wait(timeout) 与 detail::pub_wait 共用）：
+// 建 watcher task 与超时竞速。true=已完成，false=超时。须在 weave task / 仿真进程上下文调用。
+inline bool wait_pub_timed(const std::shared_ptr<PubState>& pub, weave::duration timeout) {
+  if (pub->done_flag) return true;
+  weave::Task watcher = weave::create_task("shuttle-pub-watch", [pub]() { pub->done_ev.wait(); });
+  try {
+    weave::wait_for(watcher, timeout);
+    return true;
+  } catch (const weave::TimeoutError&) {
+    return false;
+  }
 }
 
 }  // namespace shuttle::detail

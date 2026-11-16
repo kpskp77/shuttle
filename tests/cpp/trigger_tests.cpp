@@ -1,4 +1,4 @@
-// Trigger 语义自检：延迟触发（duration / Event / Task / all / any）与等待语义。
+// Trigger 语义自检：延迟触发（duration / weave::Event / Task / all / any）与等待语义。
 //
 // Trigger 的语义要点：
 //   · 发布瞬间完成快照（订阅者集合 + 消息拷贝），触发器只决定"何时开始回调"；
@@ -49,7 +49,7 @@ WEAVE_TEST(trigger_tests) {
     expect_eq(static_cast<long long>(seen.at(0)), 42, "消息内容不变（快照）");
   });
 
-  // case2：after(Event&) —— 事件 set 前不投递
+  // case2：after(weave::Event&) —— 事件 set 前不投递
   run_case(__func__, "case2", [] {
     shuttle::Publisher<TrigMsg> pub("trig.event");
     std::size_t frames = 0;
@@ -57,7 +57,7 @@ WEAVE_TEST(trigger_tests) {
       ++frames;
     });
 
-    shuttle::Event ev;
+    weave::Event ev;
     auto h = pub.publish_serial(TrigMsg{1}, shuttle::after(ev));
     expect(!h.wait(200_us), "事件未 set 时未完成");
     expect_eq(static_cast<long long>(frames), 0, "事件未 set 时不投递");
@@ -102,7 +102,7 @@ WEAVE_TEST(trigger_tests) {
       ++frames;
     });
 
-    shuttle::Event ev;
+    weave::Event ev;
     auto h = pub.publish_serial(TrigMsg{1}, shuttle::after_all({shuttle::after(200_us),
                                                       shuttle::after(ev)}));
     weave::sleep(400_us);  // 只满足时间腿
@@ -120,7 +120,7 @@ WEAVE_TEST(trigger_tests) {
       ++frames;
     });
 
-    shuttle::Event ev;  // 永不 set
+    weave::Event ev;  // 永不 set
     auto h = pub.publish_serial(TrigMsg{1}, shuttle::after_any({shuttle::after(ev),
                                                       shuttle::after(200_us)}));
     h.wait();
@@ -134,7 +134,7 @@ WEAVE_TEST(trigger_tests) {
     auto sa = shuttle::subscribe<TrigMsg>("trig.par", [&](const TrigMsg&, const shuttle::Meta&) { ++a; });
     auto sb = shuttle::subscribe<TrigMsg>("trig.par", [&](const TrigMsg&, const shuttle::Meta&) { ++b; });
 
-    shuttle::Event ev;
+    weave::Event ev;
     auto h = pub.publish_concurrent(TrigMsg{1}, shuttle::after(ev));
     expect_eq(static_cast<long long>(h.subscriber_count()), 2, "两个订阅者都在快照里");
     expect(!h.wait(200_us), "未触发");
@@ -155,7 +155,7 @@ WEAVE_TEST(trigger_tests) {
       auto s = shuttle::subscribe<TrigMsg>("trig.unsub", [&](const TrigMsg&, const shuttle::Meta&) {
         ++frames;
       });
-      shuttle::Event ev;
+      weave::Event ev;
       h = pub.publish_serial(TrigMsg{1}, shuttle::after(ev));
       s.unsubscribe();  // 帧已快照，但目标已退订
       ev.set();

@@ -1,5 +1,7 @@
 // broker 核心：topic 表、通配符路由、类型绑定、三种发布方式的投递编排、
-// Publication / Subscription 句柄、retained、shuttle::Event 注册表、内省。
+// Publication / Subscription 句柄、retained、内省。
+// 跨语言事件注册表（SV shuttle_event / SHUTTLE_TRIG_EVENT）与外部接入门面
+// 同属"外部通道"，实现在 src/entry.cpp；本文件只剩纯 C++ 类型化路径。
 //
 // 并发模型：weave 保证任意时刻至多一个仿真进程在执行 C++ 代码
 // （阻塞原语 ≡ 交出调度权），因此 broker 状态是普通数据结构，无需锁。
@@ -37,7 +39,7 @@ using detail::Subscriber;
 using detail::Topic;
 
 namespace {
-thread_local std::string g_last_error;
+std::string g_last_error;
 
 }  // namespace
 
@@ -106,23 +108,13 @@ Publication pub_concurrent(const std::string& topic, std::shared_ptr<const void>
 Subscription sub_typed(std::string pattern, const TypeOps* ops, ErasedCallback cb, Capability cap,
                        SubOptions opts) {
   (void)opts;
-  Broker::check_pattern(pattern);
   Broker& b = Broker::get();
   // 精确 topic 的订阅即声明该 topic 的类型绑定（这样"SV 先发布、C++ 后订阅"
   // 或"C++ 只订阅不发布"的 topic 也能在发布时正确物化）。通配符订阅无法
   // 声明具体 topic 的绑定，交给 make_envelope_bytes 在发布时按订阅者类型绑定。
   if (ops && !Broker::has_wildcard(pattern)) topic_declare(pattern, ops);
-  auto sub = std::make_shared<Subscriber>();
-  sub->id = b.next_sub_id++;
-  sub->pattern = std::move(pattern);
-  sub->kind = SubKind::typed;
-  sub->cap = cap;
-  sub->filter_tag = ops ? ops->tag : "";
-  sub->ops = ops;
-  sub->cb = std::move(cb);
-  b.check_filter_early(*sub);
-  b.subs.push_back(sub);
-  b.retained_catchup(sub);
+  const auto sub = b.register_sub(std::move(pattern), SubKind::typed, cap,
+                                  ops ? ops->tag : "", ops, std::move(cb), {}, 0);
   auto impl = std::make_shared<Subscription::Impl>();
   impl->sub = sub;
   return Subscription(std::move(impl));
@@ -130,20 +122,21 @@ Subscription sub_typed(std::string pattern, const TypeOps* ops, ErasedCallback c
 
 Subscription sub_raw(std::string pattern, ByteCallback cb, Capability cap, SubOptions opts) {
   (void)opts;
-  Broker::check_pattern(pattern);
   Broker& b = Broker::get();
-  auto sub = std::make_shared<Subscriber>();
-  sub->id = b.next_sub_id++;
-  sub->pattern = std::move(pattern);
-  sub->kind = SubKind::bytes;
-  sub->cap = cap;
-  sub->cb_bytes = std::move(cb);
-  b.subs.push_back(sub);
-  b.retained_catchup(sub);
+  const auto sub =
+      b.register_sub(std::move(pattern), SubKind::bytes, cap, "", nullptr, {}, std::move(cb), 0);
   auto impl = std::make_shared<Subscription::Impl>();
   impl->sub = sub;
   return Subscription(std::move(impl));
 }
+
+// 公开入口（声明见 meta.hpp）：转发给当前后端。定义必须放在后端无关的 TU——
+// 它是安装头里的承诺，缺定义会让使用者链接失败（undefined symbol）。
+}  // namespace detail
+
+std::int64_t now_fs() { return detail::backend::now_fs(); }
+
+namespace detail {
 
 void topic_set_retained(const std::string& topic, bool on) {
   Broker::check_topic_name(topic);
@@ -174,15 +167,7 @@ void Publication::wait() {
 
 bool Publication::wait(weave::duration timeout) {
   if (!valid()) throw std::logic_error("shuttle: 空 Publication 句柄");
-  if (impl_->pub->done_flag) return true;
-  const std::shared_ptr<PubState> pub = impl_->pub;
-  weave::Task watcher = weave::create_task("shuttle-pub-watch", [pub]() { pub->done_ev.wait(); });
-  try {
-    weave::wait_for(watcher, timeout);
-    return true;
-  } catch (const weave::TimeoutError&) {
-    return false;
-  }
+  return detail::wait_pub_timed(impl_->pub, timeout);
 }
 
 void Publication::result() {
@@ -230,85 +215,6 @@ const std::string& Subscription::topic() const { return impl_->sub->pattern; }
 Capability Subscription::capability() const { return impl_->sub->cap; }
 std::uint64_t Subscription::received() const { return impl_->sub->received; }
 std::uint64_t Subscription::dropped() const { return impl_->sub->dropped(); }
-
-// ── shuttle::Event（句柄注册表）─────────────────────────────────────────────
-namespace {
-std::map<int, std::weak_ptr<Event::Impl>> g_event_registry;
-std::map<int, std::shared_ptr<Event::Impl>> g_sv_events;  // SV 侧创建：注册表持有
-int g_next_event_id = 1;
-
-// 惰性清理已失效条目（Event 全部副本析构后 weak_ptr 过期）
-void event_registry_prune() {
-  for (auto it = g_event_registry.begin(); it != g_event_registry.end();) {
-    if (it->second.expired())
-      it = g_event_registry.erase(it);
-    else
-      ++it;
-  }
-}
-std::shared_ptr<Event::Impl> event_lookup(int ev_id) {
-  if (const auto it = g_sv_events.find(ev_id); it != g_sv_events.end()) return it->second;
-  if (const auto it = g_event_registry.find(ev_id); it != g_event_registry.end())
-    return it->second.lock();
-  return nullptr;
-}
-}  // namespace
-
-struct Event::Impl {
-  explicit Impl(int i) : id(i) {}
-  int id;
-  weave::Event ev;
-};
-
-Event::Event() {
-  event_registry_prune();
-  auto impl = std::make_shared<Impl>(g_next_event_id++);
-  g_event_registry[impl->id] = impl;
-  impl_ = std::move(impl);
-}
-
-Event::~Event() = default;  // key function：析构定义在此，跨 DSO 只有一份
-
-void Event::set() {
-  if (!impl_) throw std::logic_error("shuttle: 空 Event");
-  impl_->ev.set();
-}
-void Event::wait() {
-  if (!impl_) throw std::logic_error("shuttle: 空 Event");
-  impl_->ev.wait();
-}
-bool Event::is_set() const { return impl_ && impl_->ev.is_set(); }
-int Event::id() const { return impl_ ? impl_->id : -1; }
-
-namespace detail {
-// TRIG_EVENT（SV 侧按 id 引用事件）的等待入口：必须在 weave task 上下文调用。
-void event_wait_id(int ev_id) {
-  const auto impl = event_lookup(ev_id);
-  if (!impl)
-    throw std::invalid_argument("shuttle: 未知或已销毁的 event id " + std::to_string(ev_id));
-  impl->ev.wait();
-}
-
-int event_registry_create() {
-  event_registry_prune();
-  auto impl = std::make_shared<Event::Impl>(g_next_event_id++);
-  const int id = impl->id;
-  g_sv_events[id] = std::move(impl);
-  return id;
-}
-
-void event_registry_set(int ev_id) {
-  const auto impl = event_lookup(ev_id);
-  if (!impl)
-    throw std::invalid_argument("shuttle: 未知或已销毁的 event id " + std::to_string(ev_id));
-  impl->ev.set();
-}
-
-void event_registry_destroy(int ev_id) {
-  g_event_registry.erase(ev_id);
-  g_sv_events.erase(ev_id);
-}
-}  // namespace detail
 
 // ── broker 内省 ─────────────────────────────────────────────────────────────
 namespace broker {

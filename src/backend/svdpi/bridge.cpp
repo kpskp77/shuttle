@@ -1,6 +1,6 @@
 // svdpi 后端：`detail::backend` 的实现（broker 认识的唯一接口面）。
 //
-// 帧的载荷不走 DPI 参数：C++ 调用 export 前把当前帧字节流放进线程上下文
+// 帧的载荷不走 DPI 参数：C++ 调用 export 前把当前帧字节流放进进程级上下文
 // （FrameContext），SV 侧在 export 体内经 shuttle_c_frame_len / _qword 标量 import
 // 分块拉取。DPI-C 导出面（shuttle_c_*）在 dpi.cpp。
 
@@ -29,7 +29,7 @@ namespace {
 
 // 本次 dispatch 期间 SV 注册表是否回告了"目标已退订"（见 dpi.cpp 的
 // shuttle_c_sub_retired）。单活跃进程保证无需原子操作。
-thread_local bool g_retired_hit = false;
+bool g_retired_hit = false;
 
 }  // namespace
 

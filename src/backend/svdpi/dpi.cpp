@@ -242,7 +242,7 @@ int shuttle_c_pub_stat(int pub_id, int kind) {
 }
 
 const char* shuttle_c_pub_error(int pub_id) {
-  static thread_local std::string msg;
+  static std::string msg;
   msg = shuttle::detail::pub_error(pub_id);
   return msg.c_str();
 }

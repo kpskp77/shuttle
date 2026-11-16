@@ -17,9 +17,9 @@ shuttle 在 weave 之上提供三件事，不重复 weave 的职责：
 
 | 层 | 内容 |
 | --- | --- |
-| broker（`src/broker.cpp`） | topic 表、通配符匹配、类型绑定、帧序号、三种发布编排、完成跟踪、retained |
+| broker（`src/broker.cpp`） | topic 表、通配符匹配、类型绑定、帧序号、三种发布编排、完成跟踪、retained、内省 |
 | 类型化载荷（`include/shuttle/codec.hpp`） | 编解码与跨语言物化，类型擦除边界在 `detail/abi.hpp` |
-| 外部接入门面（`src/entry.cpp`） | 字节帧发布（`ext_*`）、外部订阅者注册、按 `pub_id` 的查询/等待——与后端无关 |
+| 外部接入门面（`src/entry.cpp`） | 字节帧发布（`ext_*`）、外部订阅者注册、按 `pub_id` 的查询/等待、跨语言事件注册表——与后端无关 |
 | DPI 桥（`src/backend/svdpi/` / `sv/shuttle_pkg.sv`） | import/export、帧拉取、作用域修正、SV 侧分派注册表 |
 
 并发编排（task 创建、事件、等待、超时、取消）全部由 weave 提供。后端二选一：
@@ -74,8 +74,8 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 | --- | --- |
 | `include/shuttle/*.hpp` | 公开 API；`shuttle.hpp` 是伞头，被它暴露的才算公开 |
 | `include/shuttle/detail/abi.hpp` | **已安装但非公开**：公有模板需要 `pub_*` / `sub_*` 的声明，故随包安装；只被 `publisher.hpp` / `subscription.hpp` 间接包含 |
-| `src/broker.cpp` | broker 逻辑（唯一有状态的地方）：C++ 类型化入口 `pub_*` / `sub_typed` / `sub_raw`、`topic_*`、句柄方法、`Event` 注册表、`broker::` 内省 |
-| `src/entry.cpp` | 外部接入门面：`ext_pub_*`（字节帧）/ `ext_sub` / `ext_unsub` / 按 `pub_id` 的 `pub_*` 查询。**与后端无关**（svdpi 只是当前调用方） |
+| `src/broker.cpp` | broker 逻辑（唯一有状态的地方）：C++ 类型化入口 `pub_*` / `sub_typed` / `sub_raw`、`topic_*`、句柄方法、`shuttle::now_fs` 转发、`broker::` 内省（纯 C++ 路径） |
+| `src/entry.cpp` | 外部接入门面：`ext_pub_*`（字节帧）/ `ext_sub` / `ext_unsub` / 按 `pub_id` 的 `pub_*` 查询 / `Event` 注册表（SV `shuttle_event`、TRIG_EVENT）。**与后端无关**（svdpi 只是当前调用方） |
 | `src/internal/broker_impl.hpp` | `Broker` / `Subscriber` / `Topic` / `PubState` / `Envelope` 与 `dispatch_now` 的共享定义：`broker.cpp` 与 `entry.cpp` 各包含一次（不安装） |
 | `src/backend/svdpi/bridge.cpp` | `detail::backend` 的 svdpi 实现：`dispatch` / `dispatch_nb` / `now_fs` / `note_retired_delivery` + 帧拉取（`frame_len` / `frame_qword`） |
 | `src/backend/svdpi/dpi.cpp` | `shuttle_c_*` 的全部 DPI 导出面（import 被仿真器调用、export 反过来调仿真器） |
@@ -489,7 +489,7 @@ topic 首次被声明时绑定类型标签，之后所有发布与订阅都必�
 | 方向 | 入口 | 载荷如何过边界 |
 | --- | --- | --- |
 | SV → C++ | `shuttle_c_publish_now` / `_serial` / `_concurrent`（import function） | `byte payload[]` open array → `svGetArrElemPtr1` 逐字节拷贝 |
-| C++ → SV | `shuttle_sv_dispatch`（export task）/ `shuttle_sv_dispatch_nb`（export function） | **不走形参**：C++ 先把帧放进 thread_local `g_frame`，SV 在 export 体内用 `shuttle_c_frame_len()` + `shuttle_c_frame_qword(i)`（每块 8 字节）拉取 |
+| C++ → SV | `shuttle_sv_dispatch`（export task）/ `shuttle_sv_dispatch_nb`（export function） | **不走形参**：C++ 先把帧放进 `g_frame`（进程级全局），SV 在 export 体内用 `shuttle_c_frame_len()` + `shuttle_c_frame_qword(i)`（每块 8 字节）拉取 |
 
 反向拉取的原因：VCS 2018.09 的 `svdpi.h` 没有 `svCreateArray`，C++ 无法构造 open array，
 且以参数传递时载荷生命周期落在调用者栈帧上。拉取安全的前提是 §4 的单活跃进程不变量：
@@ -603,7 +603,7 @@ broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV
 | --- | --- |
 | 空 `Trigger` | 立即 |
 | `after(weave::duration)` | `weave::sleep(d)`，与其他触发单元互不影响 |
-| `after(weave::Event&)` / `after(shuttle::Event&)` | 等待该事件置位 |
+| `after(weave::Event&)` | 等待该事件置位（C++ 侧没有按 id 等待 SV 事件的入口：事件句柄 `shuttle_event` 是 SV 侧的） |
 | `after(const weave::Task&)` | 等待任务到达终态（不重抛其异常） |
 | `after_all(vector<Trigger>)` | 依次等待；任一子触发器抛异常（取消除外）立即中断，后续不再等待 |
 | `after_any(vector<Trigger>)` | 每个子触发器各建 task 竞速，先落定者置位（取消与失败也算落定）；空集合立即满足 |
@@ -620,7 +620,7 @@ SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 过 DPI：`NONE` / `D
 | `broker::topics()` / `topic_info(name)` | 每个 topic 的 `type_tag`、订阅者数、retained、`published` / `delivered` / `dropped`（含 `retired` / `skipped` / `failed` 分解）/ `deferred` |
 | `Publication` 的计数 | 本帧目标 / 已结束 / 策略跳过 / 转后台 / 退订跳过（§9） |
 | `Publication::failures()` / `result()` | 失败记录 `Failure{subscriber, error}`；`subscriber` 是描述串（`cpp sub N` / `sv sid N` / `<trigger>` / `<delivery>`），文本取自 `error.what()` |
-| `shuttle_c_last_error()` / `last_error()` | 立即型 import 的失败原因（thread_local，每进程独立） |
+| `shuttle_c_last_error()` / `last_error()` | 立即型 import 的失败原因（进程级全局，仿真内唯一） |
 | `AGENTS.md` | 改动前必读的硬约束清单 |
 
 已知限制与后续方向：

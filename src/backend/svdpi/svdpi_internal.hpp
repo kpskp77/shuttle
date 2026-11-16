@@ -61,9 +61,10 @@ private:
 };
 
 // 当前待拉取帧的字节流：C++ 调 export 前设置，SV 在 export 体内经
-// `shuttle_c_frame_len` / `shuttle_c_frame_qword` 分块拉取。线程局部即可见，
-// 因为"任一时刻只有一个进程执行 C++ 侧记账代码"（AGENTS.md 不变量 1）。
-inline thread_local const std::vector<std::byte>* g_frame = nullptr;
+// `shuttle_c_frame_len` / `shuttle_c_frame_qword` 分块拉取。全局变量即可见，
+// 因为"任一时刻只有一个进程执行 C++ 侧记账代码"（AGENTS.md 不变量 1）——
+// 仿真没有多线程，不需要 thread_local。
+inline const std::vector<std::byte>* g_frame = nullptr;
 
 class FrameContext {
 public:

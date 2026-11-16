@@ -19,8 +19,6 @@
 
 namespace shuttle {
 
-class Event;  // 前向声明：after(Event&) 工厂使用
-
 namespace detail {
 // 内部构造通道（定义在 src/internal/trigger_internal.hpp，不随包安装）。
 // 公开工厂见下方 after() 系列。
@@ -43,7 +41,6 @@ private:
   std::function<void()> fn_;  // 可拷贝、可被多个分发进程共享等待
 
   friend Trigger after(weave::Event& ev);
-  friend Trigger after(Event& ev);
   friend Trigger after(weave::duration d);
   friend Trigger after(const weave::Task& t);
   friend Trigger after_all(std::vector<Trigger> trigs);
@@ -51,39 +48,9 @@ private:
   friend struct detail::TriggerAccess;
 };
 
-// ── shuttle::Event ────────────────────────────────────────────────────────
-// 跨语言可引用的置位信号：set() 唤醒全部当前等待者并保持置位
-// （之后的 wait() 立即返回；本类不提供 clear()）。
-// C++ 侧直接持有；SV 侧经 shuttle_event（DPI 句柄 id）引用同一个事件，
-// id 可传给 shuttle_trigger::after_event() 做延迟触发条件。
-class Event {
-public:
-  Event();
-  ~Event();
-  Event(const Event&) = default;  // 共享语义：拷贝指向同一底层事件
-  Event& operator=(const Event&) = default;
-  Event(Event&&) noexcept = default;
-  Event& operator=(Event&&) noexcept = default;
-
-  void set();   // 唤醒所有当前等待者（level 语义：置位后新 wait 立即返回）
-  void wait();  // 阻塞原语，需 weave task / 仿真进程上下文
-  [[nodiscard]] bool is_set() const;
-  [[nodiscard]] int id() const;  // 跨语言句柄（SV shuttle_event / TRIG_EVENT 使用）
-
-public:
-  // 内部实现类型：broker 的事件注册表需要命名/构造它，用户请勿直接操作。
-  struct Impl;
-
-private:
-  std::shared_ptr<Impl> impl_;
-
-  friend Trigger after(Event& ev);
-};
-
-// 等待一个 weave 事件被 set
+// 等待一个事件被 set（C++ 侧一律用 weave::Event；SV 侧的事件句柄
+// `shuttle_event` 是另一套按 id 引用的东西，C++ 不持有它，见 shuttle_event）
 Trigger after(weave::Event& ev);
-// 等待一个 shuttle::Event 被 set
-Trigger after(Event& ev);
 
 // 等待一段仿真延时
 Trigger after(weave::duration d);

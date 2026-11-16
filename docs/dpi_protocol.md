@@ -26,11 +26,11 @@
 | `shuttle_c_subscribe` | `(string topic, int caps, string type_tag, int sv_sid) → int` | 不阻塞 | 注册 SV 订阅者。`caps` 必须恰好是 `1`（`SHUTTLE_CAP_BLOCKING`）或 `2`（`SHUTTLE_CAP_NONBLOCKING`），其余值返回非 0 并置 last_error；`type_tag` 非空时校验与 topic 类型绑定是否一致，不一致返回非 0；`sv_sid` 是 SV 注册表编号，C++ 原样记录并在分发时带回，两侧无需维护 id 映射。topic 支持通配符（`*` 匹配单级，`>` 匹配其后至少一级、不匹配前缀本身）。模式语法：每段要么是普通段，要么是独占一段的 `*`，要么是独占一段且必须为末段的 `>`；空段、空串、`a.>.b`、`a.rx*` 一律返回非 0 并置 last_error |
 | `shuttle_c_unsubscribe` | `(int sv_sid)` | 不阻塞 | 退订（幂等）。退订即生效：已快照但尚未投递的帧仍会到达 SV 侧（注册表里已无 sink），由注册表丢弃并经 `shuttle_c_sub_retired` 回告，C++ 记 `retired` |
 | `shuttle_c_set_retained` | `(string topic, bit retained)` | 不阻塞 | 开启或关闭 retained（latched）：开启后 broker 缓存最新一帧，新订阅者注册时补发。`topic` 不得含通配符，否则不生效并置 last_error |
-| `shuttle_c_frame_len` | `() → int` | 不阻塞 | 当前帧的字节流长度。**只能在 export 体内**（`shuttle_sv_dispatch[_nb]`）调用，数据来自 C++ 侧的 thread_local `FrameContext` |
+| `shuttle_c_frame_len` | `() → int` | 不阻塞 | 当前帧的字节流长度。**只能在 export 体内**（`shuttle_sv_dispatch[_nb]`）调用，数据来自 C++ 侧的 `FrameContext` |
 | `shuttle_c_frame_qword` | `(int index) → longint` | 不阻塞 | 取第 `index` 个 8 字节块（SV 侧按小端拼装，末块不足 8 字节的部分补零）。帧因此不经过 export 形参，绕开"C++ 无法构造 open array"的限制 |
 | `shuttle_c_sub_retired` | `(int sv_sid)` | 不阻塞 | **由 SV 侧调回 C++**：`shuttle_registry::dispatch[_nb]` 发现目标已退订（`retired_`）时静默丢弃这次在途投递，同时调用本函数回告。C++ 在 export 返回后把该次投递记为 retired（计入 `dropped` 的 `retired` 分量，不计 `delivered`，不留 `Failure`） |
 | `shuttle_c_event_create` | `() → int` | 不阻塞 | 创建一个由 C++ 注册表持有的事件 id（>0；0 表示失败），可作 `SHUTTLE_TRIG_EVENT` 的 `trig_arg`，也是 SV `shuttle_event` 的底层对象 |
-| `shuttle_c_event_set` | `(int ev_id)` | 不阻塞 | 置位并唤醒所有等待者（C++ 侧 `after(Event&)` 与 `TRIG_EVENT` 的投递单元） |
+| `shuttle_c_event_set` | `(int ev_id)` | 不阻塞 | 置位并唤醒所有等待者（C++ 侧 `detail::event_wait_id` 与 `TRIG_EVENT` 的投递单元） |
 | `shuttle_c_event_destroy` | `(int ev_id)` | 不阻塞 | 释放 id（SV `shuttle_event::close()`）。仿真结束时不调用亦可随进程消亡 |
 | `shuttle_c_last_error` | `() → string` | 不阻塞 | 最近一次 import 调用失败的详细原因（每进程独立） |
 
@@ -70,7 +70,7 @@ VCS 对"枚举变量接收 `int`"会报 `Warning-[ENUMASSIGN] Illegal assignment
 | 策略：转后台（默认） | `NowPolicy::defer` | `SHUTTLE_NOW_DEFER` | 2 | 整帧交给该 topic 的后台串行链，返回可等待句柄 |
 | 触发：立即 | 空 `Trigger` | `SHUTTLE_TRIG_NONE` | 0 | 立即启动回调进程 |
 | 触发：延时 | `after(duration)` | `SHUTTLE_TRIG_DELAY` | 1 | `trig_arg` = 延时（飞秒） |
-| 触发：事件 | `after(Event&)` | `SHUTTLE_TRIG_EVENT` | 2 | `trig_arg` = C++ 事件句柄 id |
+| 触发：事件 | `detail::event_wait_id(id)`（无公开 C++ 工厂） | `SHUTTLE_TRIG_EVENT` | 2 | `trig_arg` = 事件句柄 id（只由 SV 创建） |
 | 触发：发布完成 | —（SV `after_pub(h)`；C++ 经桥装配） | `SHUTTLE_TRIG_PUB` | 3 | `trig_arg` = 另一 Publication 的 `pub_id` |
 | 等待：完成 | — | `SHUTTLE_WAIT_OK` | 0 | 全部回调结束（不代表无订阅者失败） |
 | 等待：超时 | — | `SHUTTLE_WAIT_TIMEOUT` | 1 | |

@@ -22,11 +22,6 @@ Trigger after(weave::Event& ev) {
   return Trigger([evp]() { evp->wait(); });
 }
 
-Trigger after(Event& ev) {
-  auto evp = std::make_shared<Event>(ev);
-  return Trigger([evp]() { evp->wait(); });
-}
-
 Trigger after(weave::duration d) {
   return Trigger([d]() { weave::sleep(d); });
 }

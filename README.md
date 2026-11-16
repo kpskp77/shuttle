@@ -156,7 +156,7 @@ h.wait_done();                                                    // 挂起当�
 | --- | --- | --- |
 | 立即（默认） | 空 `Trigger{}` | `null` |
 | 固定延时 | `after(weave::duration)` | `shuttle_trigger::after_delay(fs)` |
-| 事件置位 | `after(shuttle::Event&)` | `shuttle_trigger::after_event(ev.id())` |
+| 事件置位 | `after(weave::Event&)`（C++ 自己的事件） | `shuttle_trigger::after_event(ev.id())`（SV `shuttle_event`） |
 | 另一个发布完成 | `after(const weave::Task&)` 或经桥装配 | `shuttle_trigger::after_pub(h)` |
 | 全部满足 / 任一满足 | `after_all(vector)` / `after_any(vector)` | —（组合在 C++ 侧构造） |
 
@@ -171,7 +171,7 @@ h.wait_done();                                                    // 挂起当�
 | `include/shuttle/publisher.hpp` | `Publisher<T>`：`publish_now` / `publish_serial` / `publish_concurrent` / `set_retained` |
 | `include/shuttle/subscription.hpp` | `subscribe<T>`（普通 / `nb()`）、`subscribe_bytes`、`Subscription` |
 | `include/shuttle/publication.hpp` | `Publication`：完成句柄、可见性计数、失败明细 |
-| `include/shuttle/trigger.hpp` | `Trigger`、`shuttle::Event` |
+| `include/shuttle/trigger.hpp` | `Trigger`（`after(weave::Event&)` 等工厂） |
 | `include/shuttle/types.hpp` | `Capability`、`NowPolicy`、`SubOptions`、`nb()` |
 | `include/shuttle/codec.hpp` | `Codec<T>`、`Reader`/`Writer`、`SHUTTLE_REFLECT` |
 | `include/shuttle/meta.hpp` | `Meta{topic, type_tag, seq, time_fs}`、`now_fs()` |
