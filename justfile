@@ -44,7 +44,7 @@ test-all: test-sc test-vcs
 
 # 格式化（工具缺失时跳过）：C++ / SV / Lua 配置各自独立
 fmt:
-    -bash -c 'command -v clang-format >/dev/null && clang-format -i $$(git ls-files "include/**/*.hpp" "src/*.cpp" "src/internal/**/*.hpp" "src/backend/**/*.{cpp,hpp}" "examples/cpp/*.cpp" "tests/cpp/*.cpp" "tests/cpp/*.hpp" 2>/dev/null || echo include/shuttle/*.hpp src/*.cpp examples/cpp/*.cpp tests/cpp/*.cpp)'
+    -bash -c 'command -v clang-format >/dev/null && clang-format -i $$(git ls-files "include/**/*.hpp" "src/*.cpp" "src/broker/*.{cpp,hpp}" "src/detail/*.hpp" "src/backend/**/*.{cpp,hpp}" "examples/cpp/*.cpp" "tests/cpp/*.cpp" "tests/cpp/*.hpp" 2>/dev/null || echo include/shuttle/*.hpp src/*.cpp examples/cpp/*.cpp tests/cpp/*.cpp)'
     -bash -c 'command -v verible-verilog-format >/dev/null && verible-verilog-format -i sv/shuttle_pkg.sv examples/sv/shuttle_demo.sv tests/sv/shuttle_tests.sv'
 
 # 清理

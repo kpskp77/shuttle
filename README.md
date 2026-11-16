@@ -228,8 +228,9 @@ just test-all   # 两者都跑
 
 ```
 include/shuttle/   公开头文件（用户只用这一层）
-src/               broker 实现（后端无关）+ entry.cpp（外部接入门面）
-                   + backend/svdpi/ | backend/systemc/（按目录选一个后端）
+src/               broker 实现（后端无关）
+                   + backend/svdpi/ | backend/systemc/（按目录选一个后端；
+                   svdpi 目录内含外部门面 facade.cpp，见 docs/architecture.md）
 sv/shuttle_pkg.sv  SV 侧包（依赖 ../weave/sv/weave_pkg.sv）
 docs/              architecture.md（实现） / dpi_protocol.md（边界协议）
 examples/          用户侧示范（C++ / SV）与运行说明

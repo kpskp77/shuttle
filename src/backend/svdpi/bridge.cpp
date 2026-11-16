@@ -10,7 +10,7 @@
 
 #include <svdpi.h>
 
-#include "internal/backend.hpp"
+#include "backend/backend.hpp"
 #include "svdpi_internal.hpp"
 
 // ── SV 侧 export 的 C 原型（定义在 shuttle_pkg.sv）────────────────────────

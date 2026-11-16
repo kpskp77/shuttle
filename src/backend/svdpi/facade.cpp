@@ -1,41 +1,59 @@
-// 外部接入门面：字节帧发布、外部订阅者注册、按 pub_id 的查询/等待、跨语言事件注册表。
+// svdpi 后端：外部门面——字节帧发布、外部订阅者注册、按 pub_id 的查询/等待、
+// 跨语言事件注册表（SV shuttle_event / SHUTTLE_TRIG_EVENT）。
 //
-// 这一层**与后端无关**——svdpi 只是当前唯一的调用方（Python 绑定、socket 桥会用同一组
-// 入口）。所以它放在 broker 旁边而不是 `src/backend/` 里：把某个后端目录整个删掉时，
-// 这里照样编译（只是没人调）。事件注册表（SV shuttle_event / SHUTTLE_TRIG_EVENT）
-// 同属"外部通道"，C++ 自己的可等待信号用 weave::Event，不进这张表。
+// 这是 broker 的"FFI 入口"半边，与 `backend/backend.hpp`（broker→SV 方向的出口）
+// 相对。svdpi 是本仓库唯一带 FFI 通道的后端（systemc 没有外部订阅者，永不会有
+// 第二个 FFI 调用方），所以它住在 svdpi 目录里、systemc 构建不编译本文件。
+// 代价是 svdpi 目录可见 broker 内部（broker/broker.hpp）——这是显式接受的永久
+// 不对称，systemc 后端仍只经 `backend/backend.hpp` 窄口认识 broker。
+//
+// 单独成文件而不并入 dpi.cpp：这里全是 broker 编排（preflight / 信封 / 目标集快照 /
+// 串行链），dpi.cpp 只做 DPI-C 类型翻译——两个抽象层不混。
 //
 // 名字的两段：
 //   ext_*  = 外部调用方进来的动作（帧从外面来、订阅者在外面）；
-//   pub_*  = 按 pub_id 读句柄的通用查询/等待。
+//   pub_*  = 按 pub_id 读句柄的查询/等待。
 //
 // 记账语义（谁计入什么）由 broker 的 target_finished / pub_complete 决定，这里只做
-// "句柄 ↔ id"的翻译与错误上报。
+// "句柄 ↔ id"的翻译与错误上报。命名空间保持 shuttle::detail：声明见
+// svdpi_internal.hpp，dpi.cpp 以 detail::* 直接调用。
 
 #include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <shuttle/detail/abi.hpp>
+#include <shuttle/publication.hpp>
+#include <shuttle/trigger.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <shuttle/detail/abi.hpp>
-#include <shuttle/publication.hpp>
-#include <shuttle/trigger.hpp>
 #include <weave/event.hpp>
 
-#include "internal/broker_impl.hpp"
-#include "internal/broker_internal.hpp"
+#include "broker/broker.hpp"
+#include "detail/publication.hpp"
+#include "svdpi_internal.hpp"
 
 namespace shuttle::detail {
+
+namespace {
+// 每进程独立的最近错误信息（shuttle_c_last_error 数据源；单活跃进程无需锁）。
+std::string g_last_error;
+}  // namespace
+
+void set_last_error(std::string msg) {
+  g_last_error = std::move(msg);
+}
+const std::string& last_error() {
+  return g_last_error;
+}
 
 // ── 外部接入门面（错误经 set_last_error + 返回码/异常报告）────────────────
 
 Publication ext_pub_now(const std::string& topic, const std::string& tag,
-                       const std::vector<std::byte>& frame, NowPolicy policy) {
+                        const std::vector<std::byte>& frame, NowPolicy policy) {
   Broker& b = Broker::get();
   b.now_preflight(topic, tag, policy);  // 先判后建帧：reject 不消耗 seq / 不刷新 retained
   auto env = b.make_envelope_bytes(topic, tag, frame);
@@ -43,7 +61,7 @@ Publication ext_pub_now(const std::string& topic, const std::string& tag,
 }
 
 Publication ext_pub_serial(const std::string& topic, const std::string& tag,
-                          const std::vector<std::byte>& frame, Trigger trig) {
+                           const std::vector<std::byte>& frame, Trigger trig) {
   Broker& b = Broker::get();
   auto env = b.make_envelope_bytes(topic, tag, frame);
   auto targets = b.match_subs(topic, env->meta.type_tag);
@@ -52,7 +70,7 @@ Publication ext_pub_serial(const std::string& topic, const std::string& tag,
 }
 
 Publication ext_pub_concurrent(const std::string& topic, const std::string& tag,
-                              const std::vector<std::byte>& frame, Trigger trig) {
+                               const std::vector<std::byte>& frame, Trigger trig) {
   Broker& b = Broker::get();
   auto env = b.make_envelope_bytes(topic, tag, frame);
   auto targets = b.match_subs(topic, env->meta.type_tag);
@@ -75,8 +93,8 @@ int ext_sub(std::string pattern, int caps, std::string type_tag, int handle) {
     if (caps != 1 && caps != 2)
       throw std::invalid_argument("shuttle: 订阅能力必须恰好一位（blocking=1 / nonblocking=2）");
     b.register_sub(std::move(pattern), SubKind::external,
-                   caps == 1 ? Capability::blocking : Capability::nonblocking,
-                   std::move(type_tag), nullptr, {}, {}, handle);
+                   caps == 1 ? Capability::blocking : Capability::nonblocking, std::move(type_tag),
+                   nullptr, {}, {}, handle);
     return 0;
   } catch (const std::exception& e) {
     set_last_error(e.what());
@@ -133,21 +151,21 @@ void pub_wait(int pub_id, std::int64_t timeout_fs, int* status) {
 
 long long pub_stat(int pub_id, int kind) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
-  if (!pub) return -1;
-  switch (kind) {
-    case 0:
+  // 线上 kind 是裸 int：先校验范围再转枚举，越界与未知 pub_id 同一口径（-1）
+  if (!pub || kind < 0 || kind > static_cast<int>(PubStatKind::retired)) return -1;
+  switch (static_cast<PubStatKind>(kind)) {
+    case PubStatKind::expected:
       return static_cast<long long>(pub->expected);
-    case 1:
+    case PubStatKind::finished:
       return static_cast<long long>(pub->finished);
-    case 2:
+    case PubStatKind::skipped:
       return static_cast<long long>(pub->skipped);
-    case 3:
+    case PubStatKind::deferred:
       return static_cast<long long>(pub->deferred);
-    case 4:
+    case PubStatKind::retired:
       return static_cast<long long>(pub->retired);
-    default:
-      return -1;
   }
+  return -1;  // 不可达（范围已校验，枚举全覆盖）
 }
 
 int pub_state(int pub_id) {
@@ -207,6 +225,8 @@ void event_registry_set(int ev_id) {
   slot->ev.set();
 }
 
-void event_registry_destroy(int ev_id) { g_events.erase(ev_id); }
+void event_registry_destroy(int ev_id) {
+  g_events.erase(ev_id);
+}
 
 }  // namespace shuttle::detail

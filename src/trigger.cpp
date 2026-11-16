@@ -3,16 +3,15 @@
 // after_any 在调用点（须为 weave task / 仿真进程上下文）为每个子触发器
 // 创建一个 weave task 竞速；after_all 按序等待（等价于"全部满足"）。
 
+#include "detail/trigger.hpp"
+
 #include <memory>
+#include <shuttle/trigger.hpp>
 #include <utility>
 #include <vector>
-
-#include <shuttle/trigger.hpp>
 #include <weave/event.hpp>
 #include <weave/task.hpp>
 #include <weave/time.hpp>
-
-#include "internal/trigger_internal.hpp"
 
 namespace shuttle {
 

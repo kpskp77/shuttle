@@ -1,27 +1,26 @@
 // svdpi 后端：SV 侧的 import 面（`shuttle_c_*`，定义见 docs/dpi_protocol.md）。
 //
 // 这里只做"DPI-C 类型 ↔ C++ 类型"的翻译与错误上报，不持有 broker 状态；
-// broker 侧的外部接入门面是 `src/entry.cpp` 的 `ext_*` / `pub_*`。
+// broker 侧的外部接入门面是同目录 facade.cpp 的 `ext_*` / `pub_*`（声明在
+// svdpi_internal.hpp，以 detail::* 调用）。
 // `detail::backend` 的实现（dispatch / now_fs / retired 通道）在 bridge.cpp。
+
+#include <svdpi.h>
 
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <shuttle/detail/abi.hpp>
+#include <shuttle/exception.hpp>
+#include <shuttle/trigger.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <svdpi.h>
-
-#include <shuttle/detail/abi.hpp>
-#include <shuttle/exception.hpp>
-#include <shuttle/trigger.hpp>
 #include <weave/time.hpp>
 
-#include "internal/backend.hpp"
-#include "internal/broker_internal.hpp"
-#include "internal/trigger_internal.hpp"
+#include "backend/backend.hpp"
+#include "detail/trigger.hpp"
 #include "svdpi_internal.hpp"
 
 // ── weave 导出的 SV 原语（定义在 weave_pkg.sv）────────────────────────────
@@ -131,16 +130,16 @@ void shuttle_c_sub_retired(int /*sv_sid*/) {
 // `publish_now`：返回本帧 pub_id（>0），失败返回 0（原因见 shuttle_c_last_error）。
 // nonblocking 部分在返回前已执行完；被 defer 的订阅者仍在后台串行链上，
 // SV 侧可拿着 pub_id 走 shuttle_c_wait_pub 等它们。
-int shuttle_c_publish_now(const char* topic, const char* type_tag,
-                          const svOpenArrayHandle payload, int now_policy) {
+int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenArrayHandle payload,
+                          int now_policy) {
   // 这些 import 可能间接驱动 weave（创建任务/事件/挂起等待），weave 的 export 定义在
   // weave_pkg 里；在入口处把作用域切到 weave_pkg，否则 VCS 会报
   // Error-[DPI-DXFNF] 'weave_sv_*' 不可见（入口作用域是 shuttle_pkg）。
   const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
-    const shuttle::Publication pub = shuttle::detail::ext_pub_now(
-        topic ? topic : "", type_tag ? type_tag : "", read_payload(payload),
-        now_policy_of(now_policy));
+    const shuttle::Publication pub =
+        shuttle::detail::ext_pub_now(topic ? topic : "", type_tag ? type_tag : "",
+                                     read_payload(payload), now_policy_of(now_policy));
     return shuttle::detail::pub_id(pub);
   } catch (const std::exception& e) {
     set_last_error(e.what());
@@ -153,8 +152,7 @@ int shuttle_c_publish_now(const char* topic, const char* type_tag,
 
 // `publish_serial`：后台单链顺序回调。返回 pub_id（>0），失败返回 0。
 int shuttle_c_publish_serial(const char* topic, const char* type_tag,
-                             const svOpenArrayHandle payload, int trig_kind,
-                             long long trig_arg) {
+                             const svOpenArrayHandle payload, int trig_kind, long long trig_arg) {
   return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, false);
 }
 
@@ -209,10 +207,9 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
     if (timeout_fs > 0) {
       const long long tps = weave_sv_ticks_per_sec();
       const unsigned long long per_sec = static_cast<unsigned long long>(tps > 0 ? tps : 1);
-      ticks = static_cast<long long>((static_cast<unsigned __int128>(
-                                         static_cast<unsigned long long>(timeout_fs)) *
-                                     per_sec) /
-                                    1000000000000000ull);
+      ticks = static_cast<long long>(
+          (static_cast<unsigned __int128>(static_cast<unsigned long long>(timeout_fs)) * per_sec) /
+          1000000000000000ull);
     }
     int wst = 0;
     weave_sv_wait(w, ticks, -1, &wst);  // ← 唯一挂起点：挂起当前 SV 进程
@@ -233,7 +230,9 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
   }
 }
 
-int shuttle_c_pub_done(int pub_id) { return shuttle::detail::pub_done(pub_id) ? 1 : 0; }
+int shuttle_c_pub_done(int pub_id) {
+  return shuttle::detail::pub_done(pub_id) ? 1 : 0;
+}
 
 // 发布计数查询：kind 0=目标数 1=已完成 2=策略跳过 3=deferred 4=退订跳过；未知 pub_id 返回 -1
 int shuttle_c_pub_stat(int pub_id, int kind) {
@@ -274,10 +273,14 @@ void shuttle_c_set_retained(const char* topic, int retained) {
   }
 }
 
-const char* shuttle_c_last_error() { return last_error().c_str(); }
+const char* shuttle_c_last_error() {
+  return last_error().c_str();
+}
 
 // 当前帧字节流：长度与 8 字节小端分块（SV 在 shuttle_sv_dispatch 体内拉取）。
-int shuttle_c_frame_len() { return shuttle::detail::backend::frame_len(); }
+int shuttle_c_frame_len() {
+  return shuttle::detail::backend::frame_len();
+}
 
 long long shuttle_c_frame_qword(int index) {
   return static_cast<long long>(shuttle::detail::backend::frame_qword(index));

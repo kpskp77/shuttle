@@ -25,11 +25,13 @@ target("shuttle", function()
   set_warnings("all", "extra", "error")
   add_headerfiles("include/(shuttle/**.hpp)")
   add_includedirs("include", { public = true })
-  -- 私有：`src/broker.cpp` / `src/entry.cpp` / 后端目录都用 "internal/..." 相对 src 的写法
+  -- 私有：src/ 是内部头包含根；broker/ 与 detail/ 不安装，后端窄口仍在 backend/。
+  -- svdpi 后端目录额外可见 broker 内部，见 AGENTS.md 头文件布局。
   add_includedirs("src", { public = false })
-  -- 核心 + 当前后端。后端只按目录选文件，不靠 -D 宏：换后端 = 换一个目录，
-  -- 两个后端目录互不相见（也就不用 #if 包整个 TU），宏也不再外传给使用者。
+  -- 公开 API/句柄 + broker 核心 + 当前后端。核心与后端分别枚举，避免递归规则把
+  -- 两个后端同时编进来；换后端仍只换目录，不依赖 -D 宏。
   add_files("src/*.cpp")
+  add_files("src/broker/*.cpp")
   add_files("src/backend/" .. (get_config("backend") or "svdpi") .. "/**.cpp")
   add_rpathdirs("$ORIGIN")
   add_packages("weave", { public = true })

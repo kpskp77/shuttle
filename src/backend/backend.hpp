@@ -1,6 +1,6 @@
 #pragma once
 
-// 框架内部接口：broker 核心（`src/broker.cpp`，后端无关）与仿真后端
+// 框架内部接口：broker 核心（`src/broker/`，后端无关）与仿真后端
 // （`src/backend/<backend>/`）之间的**唯一**依赖面。broker 只从这里认识后端。
 //
 // 后端自己的实现细节——帧字节拉取通道、SV 事件注册表、DPI-C 导出面、作用域修正——
@@ -10,6 +10,9 @@
 // 当前实现：
 //   src/backend/svdpi/    bridge.cpp（本接口）+ dpi.cpp（DPI-C 导出面）
 //   src/backend/systemc/  bridge.cpp（退化：无外部订阅者通道）
+//
+// 本头属于后端边界，所以住在 `src/backend/` 里；`src/` 仍是包含根，
+// 引用方写 `#include "backend/backend.hpp"`。
 
 #include <cstdint>
 #include <string>
@@ -24,14 +27,13 @@ bool available();
 // `serial` / `concurrent` 的投递：在 weave task（仿真进程）上下文中调用；
 // 后端负责在外部进程里执行用户回调。`handle` 是该订阅者注册时拿到的后端侧编号，
 // broker 只透传、不解释。
-void dispatch(int handle, const std::string& topic, const std::string& type_tag,
-              std::uint64_t seq, std::int64_t time_fs, const std::vector<std::byte>& payload);
+void dispatch(int handle, const std::string& topic, const std::string& type_tag, std::uint64_t seq,
+              std::int64_t time_fs, const std::vector<std::byte>& payload);
 
 // `publish_now` 的投递：在发布者进程上下文中调用，**必须零阻塞**
 // （import function 的调用链里不能调 export task，见 AGENTS.md 不变量 3）。
 void dispatch_nb(int handle, const std::string& topic, const std::string& type_tag,
-                 std::uint64_t seq, std::int64_t time_fs,
-                 const std::vector<std::byte>& payload);
+                 std::uint64_t seq, std::int64_t time_fs, const std::vector<std::byte>& payload);
 
 // 当前仿真时间（飞秒），用作 `Meta::time_fs`。
 std::int64_t now_fs();

@@ -3,14 +3,13 @@
 // 公共基础类型：回调能力、溢出策略、`publish_now` 策略、订阅选项、回调签名包装。
 
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <utility>
 #include <vector>
 
-#include <shuttle/meta.hpp>
-
 namespace shuttle {
+
+struct Meta;
 
 // ── 回调入口 ─────────────────────────────────────────────────────────────
 // 订阅者声明自己提供哪些**回调入口**：
@@ -61,7 +60,7 @@ enum class OverflowPolicy {
 };
 
 struct SubOptions {
-  std::size_t max_pending = 0;  // 预留：每订阅者待处理消息上限；0 = 无界
+  std::size_t max_pending = 0;                      // 预留：每订阅者待处理消息上限；0 = 无界
   OverflowPolicy overflow = OverflowPolicy::block;  // 预留
 };
 

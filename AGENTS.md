@@ -35,7 +35,7 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
    是唯一无法提供 blocking 入口上下文的调度，所以它是唯一需要策略的地方
    （`NowPolicy{reject,skip,defer}`，默认 `defer`）。别把"入口为 blocking 的订阅者"当成 `publish_now`
    的**错误**，也别让 `serial`/`concurrent` 静默丢帧——"没成功投递"必须体现为计数。
-5. **后台投递的 per-topic 串行链**：`src/broker.cpp` 的 `start_serial` 必须在发布瞬间捕获
+5. **后台投递的 per-topic 串行链**：`src/broker/dispatch.cpp` 的 `start_serial` 必须在发布瞬间捕获
    "本帧要放行的链尾事件"并在完成时 set 它；用当时的 `topics[topic].chain` 会放错帧、
    让后续帧永久阻塞（曾引发整机 hang，表现为仿真时间停在最后一个事件处、无报错）。
 6. **SV 打包方向是 `{>>{...}}`**（声明序、每字段高位在前），与 C++ `Writer` 的大端逐字节一致；
@@ -60,7 +60,7 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
 10. **目标集 = 名字 ∩ 类型，完成计数按目标计，且只有一个入口在推进它**：目标集在快照时
     一次定完（`Broker::match_subs(topic, tag)` + `type_matches`）。类型不相交的订阅者**不是
     目标**——不进 `expected`、不建投递单元、不计 `dropped`。`Publication::finished()` 对三种方式
-    都等于"已到达终态的目标数"，唯一推进点是 `src/broker.cpp` 的 `target_finished()`
+    都等于"已到达终态的目标数"，唯一推进点是 `src/broker/dispatch.cpp` 的 `target_finished()`
     （`++finished` 后若 `finished == expected && !done_flag` 就 `pub_complete`）。任何路径——投递成功、
     退订跳过、回调抛异常、串行单元的单元级失败（未尝试的目标要补齐计数）——都必须走它，
     不能在函数末尾"一次性把 `finished` 置成 `expected`"（那样 `done()` 会先于真实完成成立）。
@@ -99,18 +99,35 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
 ## 头文件布局
 
 - `include/shuttle/*.hpp`：公开 API——**判定标准是被 `shuttle.hpp` 伞头暴露**。
-- `include/shuttle/detail/abi.hpp`：已安装但非公开。公有模板（`Publisher<T>` / `subscribe<T>`）
-  必须在用户 TU 里看到 `pub_*` / `sub_*` 的声明，所以它必须随包安装；改名 = 改 ABI。
-  只被 `publisher.hpp` / `subscription.hpp` 间接包含，用户代码不应直接 include。
-- `src/internal/*.hpp`：**不安装**。只给 `src/` 用（`set_last_error`、`detail::backend` 接口、
-  `broker_impl.hpp` 里的 `Broker` / `PubState` 定义——后者的存在理由是 `broker.cpp` 与
-  `entry.cpp` 必须共享同一份 broker 定义与单例）。
+- `include/shuttle/detail/abi.hpp`：已安装，属**第二公开层（稳定 ABI）**——路径与内容随版本
+  管理，改名 = 改 ABI；但用户代码不应直接 include（公开入口是 `publisher.hpp` /
+  `subscription.hpp`，只它们间接包含这里）。公有模板（`Publisher<T>` / `subscribe<T>`）
+  必须在用户 TU 里看到 `pub_*` / `sub_*` 的声明，所以它必须随包安装。
+- `src/broker/`（**不安装**）：`model.hpp` 只放 `PubState` / `Subscriber` / `Topic` /
+  `Envelope` 等共享数据模型，不依赖后端；`broker.hpp` 声明 `Broker` 与跨入口调度函数，
+  `broker.cpp` 实现路由、校验、绑定、单目标投递和订阅生命周期，`dispatch.cpp` 实现三种
+  发布调度、完成状态机与等待。头文件存在的唯一理由是让 C++ API 与 svdpi `facade.cpp`
+  共享同一份声明；Broker 成员与调度函数定义不再塞进共享头。
+- `src/detail/`（**不安装**）：`publication.hpp` 是 `Publication::Impl` 与具名构造通道，
+  `trigger.hpp` 是 `detail::TriggerAccess`（桥接层构造 Trigger 的具名友元通道）。
+- `src/*.cpp`：按公开对象划分的后端无关 TU——`publication.cpp` 同时实现 `Published` 侧
+  入口（`pub_*` / `topic_*`）与 `Publication` 成员，`subscription.cpp` 同时实现
+  `sub_typed` / `sub_raw` 与 `Subscription` 成员（`Subscription::Impl` 只在那里定义，
+  所以 `sub_*` 不能攞）；`meta.cpp` 只做 `now_fs()` 转发，`introspection.cpp` 实现
+  `shuttle::broker` 只读查询。
+- `src/backend/backend.hpp`：broker ↔ 后端的 6 入口窄口（不安装）。它属于后端边界，
+  所以住在 `src/backend/` 里，include 写作 `"backend/backend.hpp"`（`src/` 仍是包含根）。
 - `src/backend/<backend>/`：**按目录选一个后端编译**（`xmake.lua` 的
-  `add_files("src/backend/" .. 后端 .. "/**.cpp")`）。两个目录互不相见、不许互相 include，
-  也不许再加 `SHUTTLE_BACKEND_*` 之类的宏——换后端 = 换目录。新增后端只需实现
-  `src/internal/backend.hpp` 的 6 个入口。
-- `src/entry.cpp` 里是外部接入门面（`ext_*` / 按 `pub_id` 的 `pub_*` / 跨语言事件注册表
-  `event_registry_*`）：与后端无关，后端目录整个删掉也能编译；`broker.cpp` 只剩纯 C++ 路径。
+  `add_files("src/backend/" .. 后端 .. "/**.cpp")`）。不许互相 include、不许加
+  `SHUTTLE_BACKEND_*` 之类的宏——换后端 = 换目录。systemc 后端只许经
+  `src/backend/backend.hpp` 的 6 入口窄口认识 broker；**svdpi 是显式的例外**：它是唯一
+  带 FFI 通道的后端（且永不会有第二个 FFI 调用方），其目录额外可见 broker 内部
+  （include `broker/broker.hpp` 与 `detail/publication.hpp`），外部门面就住在那里（见下条）。
+- `src/backend/svdpi/facade.cpp` 是外部门面（`ext_*` / 按 `pub_id` 的 `pub_*` /
+  跨语言事件注册表 `event_registry_*` / FFI 错误通道 `set_last_error`）：svdpi 专属，
+  systemc 构建不编译它；与 dpi.cpp 分层（这里只做 broker 编排，不做 DPI 翻译）。
+  `src/publication.cpp`、`src/subscription.cpp` 与 `src/broker/` 因此只剩纯 C++ 路径，
+  不认识任何外部通道。
 - `xmake.lua` 的 `add_headerfiles` 必须覆盖 `include/(shuttle/**.hpp)`——写成 `shuttle/*.hpp`
   会让安装出来的包缺 `detail/abi.hpp`，使用者一 include `publisher.hpp` 就编译失败。
 

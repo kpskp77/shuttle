@@ -1,18 +1,21 @@
 #pragma once
 
-// 已安装的 ABI 头 —— 不是公开 API。
-// 内容边界：本文件只含声明与轻量模板（TypeOps / type_ops<T>），实现全在 src/broker.cpp。
+// 已安装的 ABI 头 —— **第二公开层**（稳定 ABI）：路径与内容都随版本管理，
+// 用户代码不应直接 include（公开入口是 publisher.hpp / subscription.hpp），
+// 但公有模板（Publisher<T> / subscribe<T>）必须在用户 TU 里看到这里的声明。
+// 内容边界：本文件只含声明与轻量模板（TypeOps / type_ops<T>），实现按“返回哪个句柄”分 TU：
+// 发布侧（pub_* / topic_*）随 Publication 在 src/publication.cpp，订阅侧（sub_*）随
+// Subscription 在 src/subscription.cpp。
 // 改动这里的任何一项都等于改动 ABI，需要同时重新编译 libshuttle 与使用者。
 
 #include <cstddef>
 #include <functional>
 #include <memory>
-#include <string>
-#include <vector>
-
 #include <shuttle/codec.hpp>
 #include <shuttle/meta.hpp>
 #include <shuttle/types.hpp>
+#include <string>
+#include <vector>
 
 namespace shuttle {
 
@@ -60,7 +63,7 @@ const TypeOps* type_ops() {
 // 类型擦除后的订阅者回调：p 指向物化的 T（保证非空）
 using ErasedCallback = std::function<void(const void* p, const Meta&)>;
 
-// ── broker 交互接口（src/broker.cpp 中定义）──────────────────────────────
+// ── broker 交互接口（src/publication.cpp 与 src/subscription.cpp 中定义）─────
 
 // 命名约定（本 namespace 全部如此）：用缩写前缀把内部入口与公开 API 分开，
 //   pub_*    发布（pub_now / pub_serial / pub_concurrent，以及 pub_ 开头的完成跟踪）
@@ -74,17 +77,17 @@ void topic_declare(const std::string& topic, const TypeOps* ops);
 // pub_now（= 公开 API 的 publish_now）：在发布者栈内同步回调所有 nonblocking 入口的订阅者。
 // msg 在调用点已完成拷贝（快照语义）。policy 见 NowPolicy。
 // 返回值覆盖本帧的**目标**（nonblocking 部分返回时已结束，deferred 部分在后台串行链里）；
-// `skip` 跳过的目标不计入 `expected`，只体现在 `skipped()` 与 `dropped()` 的 `skipped` 分量；`reject` 直接抛
-// CapabilityError，没有返回值。
-Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg,
-                       const TypeOps* ops, NowPolicy policy);
+// `skip` 跳过的目标不计入 `expected`，只体现在 `skipped()` 与 `dropped()` 的 `skipped`
+// 分量；`reject` 直接抛 CapabilityError，没有返回值。
+Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, const TypeOps* ops,
+                    NowPolicy policy);
 
 // pub_serial（= publish_serial）：后台单链顺序回调；
 // pub_concurrent（= publish_concurrent）：后台每订阅者一任务并发回调。
 // 两者都投递给**全部**匹配订阅者（每个订阅者用自己注册的那一条入口，各调用一次）。
 // trig 为空触发器时立即启动；均立即返回完成句柄。
 Publication pub_serial(const std::string& topic, std::shared_ptr<const void> msg,
-                        const TypeOps* ops, Trigger trig);
+                       const TypeOps* ops, Trigger trig);
 Publication pub_concurrent(const std::string& topic, std::shared_ptr<const void> msg,
                            const TypeOps* ops, Trigger trig);
 

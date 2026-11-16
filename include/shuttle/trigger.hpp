@@ -12,7 +12,6 @@
 #include <functional>
 #include <initializer_list>
 #include <vector>
-
 #include <weave/event.hpp>
 #include <weave/task.hpp>
 #include <weave/time.hpp>
@@ -20,7 +19,7 @@
 namespace shuttle {
 
 namespace detail {
-// 内部构造通道（定义在 src/internal/trigger_internal.hpp，不随包安装）。
+// 内部构造通道（定义在 src/detail/trigger.hpp，不随包安装）。
 // 公开工厂见下方 after() 系列。
 struct TriggerAccess;
 }  // namespace detail

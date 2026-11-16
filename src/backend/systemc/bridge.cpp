@@ -1,5 +1,12 @@
 // systemc 后端：`detail::backend` 的退化实现（无外部订阅者通道，broker 只剩纯 C++ 路径）。
 //
+// 本文件只有 now_fs() 是真实实现：systemc 后端靠它给 Meta.time_fs 供时间。
+// 其余都是契约桩——`detail::backend` 的 6 个入口必须全部有定义（换后端 = 换目录、
+// 不改接口），而 systemc 下不存在外部订阅者，dispatch/dispatch_nb 永远不会被调：
+// 这里的 throw 一是给链接器符号，二是万一配置错误导致真的被调，尽早炸而不是静默。
+// 所以这不是死代码，也不该用 #ifdef 合并进公共文件（两个配置各自只编译一半，
+// 错误会迟到且只剩一半保障）。
+//
 // now_fs() 用 sc_time_stamp 换算仿真时间（飞秒）；精度受 double 表示限制，
 // 对 Meta.time_fs 这类诊断时间戳足够，不建议用于计时逻辑。
 
@@ -11,7 +18,7 @@
 
 #include <systemc.h>
 
-#include "internal/backend.hpp"
+#include "backend/backend.hpp"
 
 namespace shuttle::detail {
 namespace backend {
