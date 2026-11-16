@@ -111,11 +111,11 @@ h.wait_done();                                                    // 挂起当�
 
 | 方法 | 含义 |
 | --- | --- |
-| `subscriber_count()` | 本帧目标数（不含被 `drop` 排除的） |
+| `subscriber_count()` | 本帧目标数（名字 ∩ 类型，不含被 `drop` 排除的） |
 | `finished()` | 已达终态的目标数 |
 | `excluded()` | 被 `drop` 排除的目标数（仅 `now`） |
 | `deferred()` | 转到后台链的目标数（仅 `now` 的 `defer`；返回时未开始，完成后不回零） |
-| `filtered()` | 类型标签不匹配而跳过的目标数（另含到达已退订 SV 订阅者的在途投递） |
+| `retired()` | 本帧快照后被退订、回调未进入的目标数（仅 SV 注册表能在途退订） |
 | `failures()` / `first_error()` | 失败明细（`Failure{subscriber, error}`） |
 | `wait()` / `wait(timeout)` / `wait_done(timeout_fs)` | 等待结束 |
 | `done()` | 是否已全部结束 |
@@ -124,8 +124,8 @@ h.wait_done();                                                    // 挂起当�
 三条不变量对三种方式都成立：
 
 1. `done()` 当且仅当 `finished() == subscriber_count()`；
-2. `finished()` 只累计三种终态：投递、过滤、失败；
-3. 订阅者侧 `received() + dropped() == 该订阅者被匹配到的帧数`。
+2. `finished()` 只累计三种终态：投递、退订跳过、失败；
+3. 订阅者侧 `received() + dropped() == 该订阅者被定为目标的帧数`。
 
 失败聚合粒度不同：`concurrent` 逐订阅者记录全部失败；`serial` 只保留第一条；`now` 的同步段
 只抛出第一条（其余仍记入 `failures()`），被 defer 的部分按 `serial` 规则并入同一句柄。
@@ -134,7 +134,10 @@ h.wait_done();                                                    // 挂起当�
 ## 载荷与类型
 
 - topic 绑定**类型标签**（C++ `SHUTTLE_REFLECT(Type, fields...)` 的类型名 ↔ SV
-  `localparam` `type_tag`），不一致拒绝发布；
+  `localparam` `type_tag`），不一致拒绝发布；标签冲突不会拖到投递期：具体 topic 的冲突在
+  订阅时或**首次绑定时**就抛 `TypeMismatchError`（SV 只带标签登记、订阅可以早于绑定，
+  绑定那一刻做反向校验）；通配符订阅者按帧参与**目标集判定**——类型标签不相同的帧不算
+  目标，既不进回调也不留计数；
 - C++ 内部投递**零拷贝**（`shared_ptr<const T>`）；只有存在字节订阅者（SV 订阅者或
   `subscribe_bytes`）或帧本身来自 SV 时才编解码，一帧多订阅者只编一次；
 - 线上格式：字段按声明序、大端、`string`/`vector` 带 uint32 长度前缀，与 SV
@@ -210,11 +213,11 @@ just test-all   # 两者都跑
 | 文件 | 覆盖内容 |
 | --- | --- |
 | `tests/cpp/codec_tests.cpp` | 线格式黄金字节、各宽度大端与补码、IEEE754、长度前缀、enum 底层类型、嵌套 struct、越界抛 `DecodeError`、类型标签与 `has_codec_v` |
-| `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、按帧类型标签过滤 |
-| `tests/cpp/publish_tests.cpp` | `NowPolicy` 三策略、`wait/wait(timeout)/done/result/failures`、五项计数契约、失败聚合不影响其余目标、零目标立即完成、类型过滤计数、入口选择、`defer` 与 `serial` 共享 FIFO |
+| `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、类型不相交的帧不入目标集（含绑定时的通配符豁免） |
+| `tests/cpp/publish_tests.cpp` | `NowPolicy` 三策略、`wait/wait(timeout)/done/result/failures`、计数契约、失败聚合不影响其余目标、零目标立即完成、类型不相交即零目标、入口选择、`defer` 与 `serial` 共享 FIFO |
 | `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发期间退订仍投递（快照语义） |
 | `tests/cpp/xlang_tests.cpp` | 跨语言往返（仅 svdpi 后端）：就绪握手、双向各三帧、类型标签与 seq 单调 |
-| `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、快照、`shuttle_event`、跨语言往返 |
+| `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、订阅先于绑定的标签冲突、快照、`shuttle_event`、跨语言往返 |
 
 两个后端共用同一 broker，同一仿真内两侧互相可见：`tests/sv/shuttle_tests.sv` 先跑 SV 用例，
 再用 `weave_run` 驱动 C++ 侧用例，两侧都通过才打印 `SHUTTLE TESTS PASSED`

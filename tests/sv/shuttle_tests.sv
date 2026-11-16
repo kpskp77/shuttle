@@ -48,6 +48,16 @@ module shuttle_tests;
     endfunction
   endclass
 
+  // 另一种类型：仅用于"订阅先于绑定"的标签冲突用例（type_tag 与 XMsg 不同即可）
+  class YMsg;
+    int unsigned addr;
+    localparam string type_tag = "YMsg";
+
+    function automatic void pack(output byte q[$]);
+      q = {>>{addr}};
+    endfunction
+  endclass
+
   // ── 两个入口都实现：shuttle_subscribe 登记 blocking 入口、shuttle_subscribe_nb 登记
   //    nonblocking 入口（与 C++ 的 subscribe(fn) / subscribe(nb(fn)) 同构）─────────
   class Rec implements shuttle_sink, shuttle_sink_nb;
@@ -309,7 +319,7 @@ module shuttle_tests;
   endtask
 
   // ── 退订（幂等）：退订后不再收到 ──────────────────────────────────────
-  // case_retired：退订后的在途投递 —— SV 注册表静默丢弃，C++ 侧必须记成 filtered（不得记成 delivered）
+  // case_retired：退订后的在途投递 —— SV 注册表静默丢弃，C++ 侧必须记成 retired（不得记成 delivered）
   task automatic case_retired();
     automatic Rec                 a   = new();
     automatic Rec                 b   = new();
@@ -325,8 +335,43 @@ module shuttle_tests;
     h.wait_done();
     check(b.blk_count == 1, "retired.others_unaffected");
     check(h.finished() == h.subscriber_count(), "retired.counted_as_terminal");
-    check(h.filtered() == 1, "retired.counted_as_filtered");
+    check(h.retired() == 1, "retired.counted_as_retired");
     check(h.first_error() == "", "retired.not_an_error");
+  endtask
+
+  // ── 订阅先于绑定：SV 只带 tag 登记（不像 C++ 的具体 topic 订阅那样立即 topic_declare），
+  //    topic 的首次绑定发生在第一次发布。此时 C++ 侧必须做反向校验，把"标签写错"变成一次
+  //    明确报错，而不是让它此后每帧都悄无声息地不属于目标集——同一个错误不应因注册顺序不同
+  //    而有时报错、有时永不报错。
+  task automatic case_bind_conflict();
+    automatic Rec                 rec   = new();
+    automatic Rec                 other = new();
+    automatic shuttle_sub         subx  = shuttle_subscribe_nb("sv.t.late", rec, "XMsg");
+    automatic shuttle_sub         suby  = shuttle_subscribe_nb("sv.t.late2", other, "YMsg");
+    automatic shuttle_pub #(XMsg) pubx  = new("sv.t.late");
+    automatic shuttle_pub #(YMsg) puby  = new("sv.t.late");
+    automatic shuttle_pub #(XMsg) pubx2 = new("sv.t.late2");
+    automatic XMsg                mx    = new();
+    automatic XMsg                mx2   = new();
+    automatic YMsg                my    = new();
+    automatic shuttle_handle      h;
+    mx.addr  = 5;
+    mx.data  = 6;
+    mx2.addr = 7;
+    my.addr  = 8;
+    // 首次绑定就是错的类型：发布被拒（返回 null），帧未发布
+    h = puby.publish_now(my, SHUTTLE_NOW_DROP);
+    check(h == null, "bind_conflict.rejected");
+    check(shuttle_c_last_error() != "", "bind_conflict.has_error_text");
+    check(rec.nb_count == 0, "bind_conflict.no_callback");
+    // 失败的那次不改动任何状态：正确类型仍能绑定并投递
+    h = pubx.publish_now(mx, SHUTTLE_NOW_DROP);
+    check(h != null, "bind_conflict.retry_ok");
+    check(rec.nb_count == 1 && rec.last.addr == 32'd5, "bind_conflict.retry_delivered");
+    // 反方向：订阅者声明 YMsg、发布者带 XMsg —— 同样在首次绑定时就拒
+    h = pubx2.publish_now(mx2, SHUTTLE_NOW_DROP);
+    check(h == null, "bind_conflict.rejected_reverse");
+    check(other.nb_count == 0, "bind_conflict.reverse_no_callback");
   endtask
 
   task automatic case_unsubscribe();
@@ -441,6 +486,7 @@ module shuttle_tests;
     case_multi_pub();
     case_unsubscribe();
     case_retired();
+    case_bind_conflict();
     case_snapshot();
     case_event();
     case_xlang();

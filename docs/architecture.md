@@ -37,7 +37,7 @@ shuttle 在 weave 之上提供三件事，不重复 weave 的职责：
 | **投递**（delivery） | broker 把一个目标与一帧配对的尝试，结果是终态之一（§9） |
 | **投递单元** | 承载投递的后台执行体：`serial` 为每帧一个 weave task，`concurrent` 为每订阅者一个 task（§5） |
 | **串行链** | 每个 topic 一条 FIFO 链（`Topic::chain`），`serial` 与 `now` 的 `defer` 共用（§6） |
-| **终态** | 目标对本帧的结局：delivered / filtered / failed / deferred / excluded（§9） |
+| **终态** | 目标对本帧的结局：delivered / retired / failed / deferred / excluded（§9） |
 | **记账** | 上述终态在 `PubState`、`Topic`、`Subscriber` 三层的计数 |
 
 术语与两侧枚举同名（`Capability::blocking` / `SHUTTLE_CAP_BLOCKING`）；在 SV 侧
@@ -104,7 +104,7 @@ SV 的 native 进程（`initial` / `always`）在同一套调度内：阻塞在 
 
 三种方式的**目标集合相同**，差异只在调度、顺序与完成时机。公共前置步骤是
 `make_envelope[_bytes]`：绑定类型、`++seq`、取 `time_fs`、必要时刷新 retained 快照。
-三条路径最终都落到 `deliver(sub, env, force_nb)`：走哪条入口见 §7，顺序保证见 §6，
+三条路径最终都落到 `deliver(sub, env)`：走哪条入口见 §7，顺序保证见 §6，
 计数规则见 §9。
 
 ### 5.1 `publish_now`
@@ -115,7 +115,8 @@ publisher 进程
   │          ──▶ make_envelope（类型绑定 + ++seq + time_fs + retained 快照）
   │              ─▶ dispatch_now
   │                    ├─ 建 PubState（expected = nonblocking 目标数 + 待 defer 数）
-  │                    ├─ 逐个 nonblocking 目标：deliver(force_nb=true)
+  │                    ├─ 逐个 nonblocking 目标：deliver(sub, env)
+  │                    │     （这些注册的 cap 已是 nonblocking → export function）
   │                    │     失败 → 记 failures / dropped，继续下一个目标
   │                    ├─ policy==drop  → 计 excluded + dropped
   │                    └─ policy==defer → start_serial(topic, env, {}, blocking_targets)
@@ -124,8 +125,8 @@ publisher 进程
      └ 同步段出现异常时：以上全部完成后，重抛第一个异常
 ```
 
-同步段不出现挂起点：`deliver(force_nb=true)` 只走 nonblocking 入口（C++ 直接函数调用、
-SV 侧 export function）。同步段单个回调失败不中止本帧——记入 `failures()` 与
+同步段不出现挂起点：`deliver(sub, env)` 的目标全部来自 nonblocking 注册（C++ 直接函数调用、
+SV 侧 export function），blocking 目标根本不在这个循环里。同步段单个回调失败不中止本帧——记入 `failures()` 与
 `first_error` 后继续，`defer` 段照常入链，最后才把第一个异常抛给调用者；SV 侧
 `shuttle_c_publish_now` 把异常转成返回码与 `shuttle_c_last_error()`。
 
@@ -173,12 +174,13 @@ Publisher<T>::publish_now/serial/concurrent         shuttle_pub#(T)::publish_now
                                   │ 类型绑定 + ++seq + time_fs + retained 快照
                                   ▼
                       dispatch_now / start_serial / start_concurrent
-                                  │ 快照匹配全部订阅者（通配符 + 类型过滤）
+                                  │ 快照目标集：名字匹配 ∩ 类型标签匹配
                                   ▼
-                               deliver(sub, env, force_nb)
-                                  │ now 的同步段      : force_nb=true
-                                  │ serial/concurrent : 用该注册的入口
-                                  │ now 的 defer 链   : 用该注册的入口
+                               deliver(sub, env)
+                                  │ 入口一律按该注册的 cap（不变量 4）：
+                                  │   cap==nonblocking → dispatch_nb（export function）
+                                  │   cap==blocking    → dispatch（export task）
+                                  │ now 的同步段只含 nonblocking 注册（select 已分拨）
                      ┌────────────┼───────────────────┐
                      ▼            ▼                   ▼
               typed: cb(T&)   bytes: cb_bytes   sv: detail::sv::dispatch[_nb]
@@ -221,12 +223,13 @@ topics[topic].chain = *mine;                                      // 安装新�
 | nonblocking（`Capability::nonblocking`） | `subscribe<T>(topic, nb(fn))` | `shuttle_subscribe_nb(topic, obj)`（`SHUTTLE_CAP_NONBLOCKING`） | `now` 的同步段；`serial` / `concurrent`（该注册只有这一条） |
 
 一次注册只有一个订阅者、一条入口，因此 `Subscriber` 只存一个 `Capability cap`，
-`deliver(sub, env)` 默认使用它：既没有优先级，也没有二选一。SV 桥的 `caps` 参数只接受
-恰好为 1 或 2，其他值直接拒绝——两位同置的订阅者不可构造。
+`deliver(sub, env)` 也只读它：既没有优先级，也没有二选一，更没有"本次投递"级的入口覆盖。
+SV 桥的 `caps` 参数只接受恰好为 1 或 2，其他值直接拒绝——两位同置的订阅者不可构造。
 
-**走哪个 export 由本次投递决定**：`now` 的同步段给 `deliver` 传 `force_nb = true`
-（SV 侧 `dispatch_nb`，export function），其余路径默认按入口走 `dispatch`（export task）。
-原因见 §11.3：import function 的调用链内不允许出现 export task。
+**走哪个 export 由该注册的入口决定**：`cap == blocking` 走 `dispatch`（export task），
+`cap == nonblocking` 走 `dispatch_nb`（export function）。`now` 的同步段之所以不会踩到
+`Error-[DPI-INCDIC]`，靠的是 `dispatch_now` 先按 `cap` 把 blocking 目标摘走（§5.1、§11.3），
+而不是靠某个投递参数临时改写入口。
 
 `NowPolicy` 只作用于入口为 blocking 的目标，与 topic 上是否存在 nonblocking 订阅者无关：
 
@@ -258,7 +261,7 @@ struct Topic {
 
 struct Subscriber {
   SubKind kind;                          // typed / bytes / sv
-  int id; int sv_sid; std::string pattern, filter_tag;   // filter_tag 空 = 不按类型过滤
+  int id; int sv_sid; std::string pattern, filter_tag;   // filter_tag 空 = 任意类型（参与目标集判定）
   Capability cap;                        // 该次注册唯一的那条入口（§7）
   ErasedCallback cb; ByteCallback cb_bytes;
   const detail::TypeOps* ops;            // typed 订阅者的类型（供字节流物化）
@@ -282,7 +285,7 @@ struct Envelope {                        // 一帧的不可变快照
 struct PubState {
   int id;
   std::size_t expected, finished;         // 单位是"订阅者"，不是"投递单元"
-  std::size_t excluded, deferred, filtered;  // 见 §9
+  std::size_t excluded, deferred, retired;  // 见 §9
   bool done_flag; weave::Event done_ev;
   std::vector<Publication::Failure> failures; std::string first_error;
   std::vector<std::function<void()>> on_complete;   // 完成瞬间钩子（SV wait_done 用）
@@ -302,7 +305,7 @@ struct PubState {
 | 终态 | 含义 | 计数落点 |
 | --- | --- | --- |
 | `delivered` | 回调执行完毕（SV 侧 = export 返回） | `Topic::delivered`、`Subscriber::received` |
-| `filtered` | 未进入回调：类型标签不匹配，或 SV 侧在途投递到达已退订的订阅者 | `Publication::filtered()`、`Topic::dropped`、`Subscriber::dropped` |
+| `retired` | 未进入回调，且无人的错：快照之后、回调之前被退订（SV 注册表丢弃了这次在途投递，§9.1.1） | `Publication::retired()`、`Topic::dropped`、`Subscriber::dropped` |
 | `failed` | 尝试但未成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败 | `Topic::dropped`、`Subscriber::dropped`、`failures()` |
 | `deferred` | 返回时尚未开始（仅 `now` 的 `defer` 段），之后必落入前三种之一 | `Publication::deferred()`（标记） |
 | `excluded` | 策略不投（仅 `now` 的 `drop`），不进入目标集合 | `Publication::excluded()`、`Topic::dropped`、`Subscriber::dropped` |
@@ -314,21 +317,40 @@ struct PubState {
 
 ```cpp
 expected;  // 目标数（不含 excluded）
-finished;  // 已达终态的目标数 = delivered + filtered + failed
+finished;  // 已达终态的目标数 = delivered + retired + failed
 excluded;  // 被 drop 排除的目标数（不进 expected）
 deferred;  // 转到后台链、返回时尚未开始的目标数（标记，不回零）
-filtered;  // 因过滤而跳过、但计入 finished 的目标数
+retired;   // 快照后被退订而跳过、但计入 finished 的目标数
 ```
+
+#### 9.1.1 目标集 = 名字 ∩ 类型
+
+**类型不匹配不是一种终态，因为它不是目标。** 目标集的判定在快照时一次做完
+（`Broker::match_subs(topic, tag)`：`Subscriber::filter_tag` 与帧的 `meta.type_tag` 相交）：
+类型不相交的订阅者不进 `expected`、不建投递单元、不动 `dropped`、也不出现在
+`subscriber_count()` 里。`deliver` 因此不看类型标签（§5 的时序图里"快照目标集"一步就是全部）。
+
+这一点与 `dropped` 的口径一致：`dropped` 回答"我本该收到却没收到"，而类型不相交的帧本来
+就不是我的（`subscribe<T>("uart.*")` 订阅的是 `uart.*` 下**类型 T** 的事件）。标签写错这种
+真错误由两条前置校验拦成 `TypeMismatchError`：订阅时 `Broker::check_filter_early`、首次
+绑定时 `Broker::check_bind_compat`（§10.3）。测试：`tests/cpp/publish_tests.cpp` case15、
+`tests/cpp/broker_tests.cpp` case11。
+
+`retired` 是唯一的"非回调终态"，来源也只有一个：`Broker::deliver` 里
+`take_retired_delivery()` 报告该 SV 订阅者在本帧快照之后、回调之前被退订。记 `delivered`
+是幻影成功，记 `failed` 是把合法用户动作当错——目标已到终态、回调未进入、没有失败者。
+它同时计入 topic 级与订阅者级 `dropped`，所以"名额给了、内容没进回调"仍然可观测。
+测试：`tests/sv/shuttle_tests.sv` 的 `case_retired`。
 
 ### 9.2 不变量
 
 1. `done()` 当且仅当 `finished() == subscriber_count()`，三种方式无例外；
-2. `subscriber_count() + excluded() == 本帧匹配到的订阅者数`；
-3. `finished()` 只累计 delivered + filtered + failed；`deferred` 完成后必落入这三者之一，
+2. `subscriber_count() + excluded() == 本帧的目标订阅者数`（名字 ∩ 类型，且未被策略排除）；
+3. `finished()` 只累计 delivered + retired + failed；`deferred` 完成后必落入这三者之一，
    因此 `finished() ≤ subscriber_count()`；
-4. 订阅者级 `received() + dropped() == 该订阅者被匹配到的帧数`（失败、过滤、策略排除
-   都计入 `dropped`，回调异常亦然）；
-5. 同一事件在 topic 级与订阅者级 `dropped` 中的口径一致（类型过滤、策略排除、失败三类）。
+4. 订阅者级 `received() + dropped() == 该订阅者被定为目标的帧数`（失败、退订丢弃、策略
+   排除都计入 `dropped`，回调异常亦然）；
+5. 同一事件在 topic 级与订阅者级 `dropped` 中的口径一致（退订丢弃、策略排除、失败三类）。
 
 ### 9.3 唯一推进入口
 
@@ -352,12 +374,12 @@ void target_finished(const std::shared_ptr<PubState>& pub) {
 
 | 层 | API | 语义 |
 | --- | --- | --- |
-| 帧 | `Publication::subscriber_count()/finished()/excluded()/deferred()/filtered()` | 本帧的可见性计数 |
+| 帧 | `Publication::subscriber_count()/finished()/excluded()/deferred()/retired()` | 本帧的可见性计数 |
 | 订阅者 | `Subscription::received()/dropped()` | 该注册在生命周期内的累计 |
 | topic | `broker::topic_info().published/delivered/dropped/deferred` | 该 topic 的累计（`deferred` 只统计 `now` 的 defer 段） |
 
 SV 侧同名方法经 `shuttle_c_pub_stat(pub_id, kind)` 读取，`kind` 0/1/2/3/4 分别对应
-目标 / 已结束 / 排除 / deferred / 过滤（见 `dpi_protocol.md` 的 import 表）。
+目标 / 已结束 / 排除 / deferred / 退订跳过（见 `dpi_protocol.md` 的 import 表）。
 
 ## 10. 类型系统与载荷
 
@@ -398,11 +420,18 @@ topic 首次被声明时绑定类型标签，之后所有发布与订阅都必�
 4. SV 先发布、topic 尚未绑定、但已有匹配的 typed C++ 订阅者 → `make_envelope_bytes`
    用该订阅者的 `ops` 绑定，否则这一帧只能是 `raw_ops`。
 
+前三种绑定发生时（`make_envelope` / `make_envelope_bytes` 的 `!t.bound` 分支）会跑
+`Broker::check_bind_compat`：若已有“模式恰好是该 topic 且标签不同”的订阅者，直接抛
+`TypeMismatchError`，**通配符订阅者跳过**（它们本就横跨类型，只在目标集快照时相交）。
+这一步是 `check_filter_early` 的镜像，专门覆盖 SV 侧“只带标签、不声明绑定”的订阅者：
+否则同一个标签写错，topic 先绑定则订阅时就报错，订阅先发生则此后每帧都悄无声息地不属于
+目标集——错误能不能被发现取决于注册顺序。
+
 防线：`deliver` 的 typed 分支遇到 `env.ops == &raw_ops` 直接抛 `PublishError`。
 缺少这条防线时，`raw_ops` 帧会被当成 `vector<byte>` 强转成 `T`，读到堆内存垃圾。
 
-通配符订阅无法预绑定，按帧的 `meta.type_tag` 过滤（`Subscriber::filter_tag`），
-不匹配记 filtered（§9.1）。
+通配符订阅无法预绑定，参与每帧的目标集判定（`Subscriber::filter_tag` ∩ 帧的
+`meta.type_tag`，§9.1.1），不匹配的帧不算目标，因此不产生任何计数。
 
 ## 11. svdpi 后端
 
@@ -439,9 +468,10 @@ class WeaveScopeGuard = SvScopeGuard;        // 驱动 weave 的 import 入口�
 ### 11.3 export/import 的时序约束
 
 DPI `function` import 的调用链内不允许出现 export **task**（`Error-[DPI-INCDIC]`）。
-因此 `publish_now` 的同步段必须走 `shuttle_sv_dispatch_nb`（export function），
-即使该订阅者注册的是 blocking 入口；`defer` 转后台后不再处于 import 调用链内，才可走
-`shuttle_sv_dispatch`（export task）。
+因此 `publish_now` 的同步段只能碰 nonblocking 入口的注册：`dispatch_now` 先按 `cap` 分拨，
+同步循环里只有它们（C++ 直接函数调用、SV 侧 `shuttle_sv_dispatch_nb`）。入口为 blocking 的
+目标不进同步段：`defer` 转后台（此时已脱离 import 调用链，可走 `shuttle_sv_dispatch`
+export task），`drop` 直接不投递，`reject` 前置抛错。
 
 ### 11.4 SV 侧注册表与分派
 
@@ -458,7 +488,7 @@ C++ 只持有整数 sv_sid ──▶ shuttle_sv_dispatch(task) / _nb(function)
 - `shuttle_frame_bytes(output byte b[])` 在 export 体内把帧拉成动态数组
   （VCS 不接受函数返回 unpacked 数组）；
 - 退订后的在途投递：`retired_[id]` 静默丢弃并调 `shuttle_c_sub_retired` 回告，
-  C++ 把该次投递记为 filtered（计入 `dropped`，不计 `delivered`）。未登记过的 id 仍报
+  C++ 把该次投递记为 retired（计入 `dropped`，不计 `delivered`）。未登记过的 id 仍报
   `$error`，保留真实缺陷的可见性；
 - SV 侧 `$error` 不会传播回 C++，import 仍返回成功；需要严格错误通道时由回调显式返回错误。
 
@@ -492,10 +522,10 @@ broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV
 
 | 对象 | 语义 |
 | --- | --- |
-| `Publication` | `shared_ptr<Impl>`，可拷贝；`done()/wait()/wait(timeout)/finished()/subscriber_count()/excluded()/deferred()/filtered()/failures()/result()` |
+| `Publication` | `shared_ptr<Impl>`，可拷贝；`done()/wait()/wait(timeout)/finished()/subscriber_count()/excluded()/deferred()/retired()/failures()/result()` |
 | `Subscription` | `shared_ptr<Impl>`，**最后一份副本析构即退订**（`Impl::~Impl` → `Broker::remove_sub`）；`unsubscribe()` 幂等 |
 | `shuttle_sub`（SV） | `id_` + `active_`，`unsubscribe()` 幂等；销毁不退订（SV 无确定性析构） |
-| `shuttle_handle`（SV） | 持 `pub_id`，方法名与 `Publication` 对应：`wait_done(timeout_fs)` / `done()` / `subscriber_count()` / `finished()` / `excluded()` / `deferred()` / `filtered()` / `first_error()` |
+| `shuttle_handle`（SV） | 持 `pub_id`，方法名与 `Publication` 对应：`wait_done(timeout_fs)` / `done()` / `subscriber_count()` / `finished()` / `excluded()` / `deferred()` / `retired()` / `first_error()` |
 | `shuttle_event`（SV） | C++ 注册表持有的 id，`set()` / `close()` |
 
 退订只影响此后的投递；已快照的帧仍会到达 SV 侧，由 `retired_` 丢弃并回告（§11.4）。
@@ -524,7 +554,7 @@ SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 过 DPI：`NONE` / `D
 | 手段 | 用途 |
 | --- | --- |
 | `broker::topics()` / `topic_info(name)` | 每个 topic 的 `type_tag`、订阅者数、retained、`published` / `delivered` / `dropped` / `deferred` |
-| `Publication` 的五项计数 | 本帧目标 / 已结束 / 排除 / 转后台 / 过滤（§9） |
+| `Publication` 的计数 | 本帧目标 / 已结束 / 排除 / 转后台 / 退订跳过（§9） |
 | `Publication::failures()` / `result()` | 失败记录 `Failure{subscriber, error}`；`subscriber` 是描述串（`cpp sub N` / `sv sid N` / `<trigger>` / `<delivery>`），文本取自 `error.what()` |
 | `shuttle_c_last_error()` / `last_error()` | 立即型 import 的失败原因（thread_local，每进程独立） |
 | `AGENTS.md` | 改动前必读的硬约束清单 |

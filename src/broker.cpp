@@ -85,9 +85,11 @@ struct Subscriber {
 };
 
 // ── 单次投递的结果（记账用）───────────────────────────────────────────────
-// `delivered` = 回调执行完毕；`filtered` = 该订阅者的类型标签与帧的 type_tag 不符，
-// 回调没有进入（见 deliver）。失败不走返回值，而是抛异常，由投递单元记成 failed。
-enum class Delivery { delivered, filtered };
+// `delivered` = 回调执行完毕；`retired` = 该订阅者在快照之后、回调之前被退订（SV 注册表
+// 丢弃了这次在途投递），目标已到终态但内容没进回调。类型标签的判定不在这里——它发生在
+// **目标集快照**（`match_subs`：名字 ∩ 类型）时，不进目标集的订阅者根本没有投递单元。
+// 失败不走返回值，而是抛异常，由投递单元记成 failed。
+enum class Delivery { delivered, retired };
 
 // ── Topic ─────────────────────────────────────────────────────────────────
 struct Topic {
@@ -99,7 +101,7 @@ struct Topic {
   std::uint64_t seq = 0;        // topic 内全局单调（跨发布者连续，多对多契约）
   std::uint64_t published = 0;  // 累计发布帧数
   std::uint64_t delivered = 0;  // 累计投递次数（所有订阅者合计）
-  std::uint64_t dropped = 0;    // 累计丢弃帧数（类型过滤/drop 策略/失败合计）
+  std::uint64_t dropped = 0;    // 累计丢弃帧数（退订丢弃/drop 策略/失败合计）
   std::uint64_t deferred = 0;   // 累计被 defer 到后台串行链的投递数
   weave::Event chain;           // 后台投递的 per-topic 串行链尾（`publish_serial` 与 `now` 的 defer 共用）
   Topic() { chain.set(); }
@@ -116,7 +118,7 @@ struct PubState {
   // 见 docs/architecture.md 的"记账契约"一章）
   std::size_t excluded = 0;
   std::size_t deferred = 0;
-  std::size_t filtered = 0;  // 因类型标签不匹配而跳过（计入 finished 与 dropped）
+  std::size_t retired = 0;  // 快照后被退订而跳过（计入 finished 与 dropped，不是失败）
   bool done_flag = false;
   weave::Event done_ev;
   std::vector<Publication::Failure> failures;
@@ -174,18 +176,34 @@ public:
     return match_seg(pp, pi + 1, tp, ti + 1);
   }
 
-  // 快照匹配订阅者集合
-  std::vector<std::shared_ptr<Subscriber>> match_subs(const std::string& topic) {
+  // 类型相交：订阅者的类型标签与帧的 type_tag 一致（空标签 = 任意类型）。
+  // 这是**目标集**的判据之一：名字匹配但类型不相交的订阅者不是本帧的目标，不建投递单元、
+  // 不产生任何计数（`subscriber_count()` 就是“名字 ∩ 类型”的大小）。
+  static bool type_matches(const Subscriber& sub, const std::string& tag) {
+    return sub.filter_tag.empty() || sub.filter_tag == tag;
+  }
+
+  // 快照目标订阅者集合：名字匹配 ∩ 类型匹配
+  std::vector<std::shared_ptr<Subscriber>> match_subs(const std::string& topic,
+                                                      const std::string& tag) {
     std::vector<std::shared_ptr<Subscriber>> out;
     for (const auto& s : subs)
-      if (match(s->pattern, topic)) out.push_back(s);
+      if (type_matches(*s, tag) && match(s->pattern, topic)) out.push_back(s);
     return out;
+  }
+
+  // 只按名字计数（不判类型）：`broker::topic_info` 的内省口径
+  std::size_t name_matched_count(const std::string& topic) const {
+    std::size_t n = 0;
+    for (const auto& s : subs)
+      if (match(s->pattern, topic)) ++n;
+    return n;
   }
 
   Topic& topic_for(const std::string& name) { return topics[name]; }
 
   // 订阅时的类型过滤预校验（仅当订阅模式恰好是具体 topic 且已绑定时可判；
-  // 通配符/未绑定 topic 推迟到投递时按帧检查）
+  // 通配符/未绑定 topic 推迟到目标集快照时按帧标签相交）
   void check_filter_early(const Subscriber& sub) {
     if (sub.filter_tag.empty()) return;
     const auto it = topics.find(sub.pattern);
@@ -195,11 +213,28 @@ public:
                               " 冲突");
   }
 
+  // 首次绑定 topic 类型时的反向预校验（`check_filter_early` 的镜像）：确认没有"模式恰好是
+  // 该 topic + 标签不同"的订阅者已经挂在那里。**通配符订阅者必须跳过**——它们本就横跨
+  // 不同类型，只在目标集快照时按帧标签相交。
+  // 没有这一步，同一个用户错误（订阅者标签写错）报不报错就取决于注册顺序：
+  // topic 先绑定 → 订阅时 `check_filter_early` 抛；订阅先发生 → 该订阅者此后收到的每一帧
+  // 都悄无声息地不属于目标集，永远不报错。
+  void check_bind_compat(const std::string& topic, const std::string& tag) {
+    for (const auto& sub : subs) {
+      if (sub->filter_tag.empty() || sub->filter_tag == tag) continue;
+      if (has_wildcard(sub->pattern) || !match(sub->pattern, topic)) continue;
+      throw TypeMismatchError(std::string("shuttle: topic ") + topic + " 绑定类型 " + tag +
+                              "，但已有订阅者声明 " + sub->filter_tag);
+    }
+  }
+
   // `publish_now` 的 reject 预检：在**任何副作用**（类型绑定、seq、retained 快照）之前判定
   // 这一帧能不能发。被拒绝的帧等于从未发布过（`published`/`seq` 都不推进）。
-  void now_preflight(const std::string& topic, NowPolicy policy) {
+  // 只数**目标集**里的 blocking 订阅者：类型不相交的订阅者本帧根本没打算投给它，
+  // 不能因为它存在就把一帧发不出去。
+  void now_preflight(const std::string& topic, const std::string& tag, NowPolicy policy) {
     if (policy != NowPolicy::reject) return;
-    const auto matched = match_subs(topic);  // 纯查询：不创建 topics 条目
+    const auto matched = match_subs(topic, tag);
     const std::size_t n = select(matched, Capability::blocking).size();
     if (n == 0) return;
     throw CapabilityError(std::string("shuttle: publish_now 遇到 ") + std::to_string(n) +
@@ -209,17 +244,12 @@ public:
   }
 
   // 投递一帧到单个订阅者（在投递进程的上下文执行）。
-  // 入口：默认用该注册唯一的那条（`cap`）；`force_nb` 只有 `now` 的同步段会传——此时必须走
-  // export function，否则 export task 会出现在 import function 的调用链里（Error-[DPI-INCDIC]）。
-  // 类型过滤不匹配 → 计 dropped 并返回 `Delivery::filtered`（回调不进入）。
-  Delivery deliver(const std::shared_ptr<Subscriber>& sub, const Envelope& env,
-                   bool force_nb = false) {
-    if (!sub->filter_tag.empty() && sub->filter_tag != env.meta.type_tag) {
-      ++sub->dropped;
-      ++topics[env.meta.topic].dropped;
-      return Delivery::filtered;
-    }
-    const bool use_nb = force_nb || sub->cap == Capability::nonblocking;
+  // 入口**只**由该注册的 `cap` 决定（不变量 4）：blocking 注册走 export task，nonblocking
+  // 注册走 export function。没有"本次投递"级的入口覆盖——`now` 的同步段之所以不会踩到
+  // `Error-[DPI-INCDIC]`，是因为 `select` 已按 `cap` 把 blocking 目标摘走了（§7）。
+  // 类型标签不在这里判：调用方只会传**目标集**里的订阅者（`match_subs` 已求过名字 ∩ 类型）。
+  Delivery deliver(const std::shared_ptr<Subscriber>& sub, const Envelope& env) {
+    const bool use_nb = sub->cap == Capability::nonblocking;
     switch (sub->kind) {
       case SubKind::typed:
         // 安全网：帧是纯字节流（raw 绑定）时绝不能按 T* 解释它
@@ -232,7 +262,7 @@ public:
         sub->cb_bytes(envelope_bytes(env), env.meta);
         break;
       case SubKind::sv:
-        // export task / export function 的选择按**本次投递**（`force_nb`），不按订阅者入口：
+        // export task / export function 的选择按订阅者入口（`cap`），与调用方无关：
         if (use_nb)
           detail::sv::dispatch_nb(sub->sv_sid, env.meta.topic, env.meta.type_tag, env.meta.seq,
                                   env.meta.time_fs, envelope_bytes(env));
@@ -240,11 +270,11 @@ public:
           detail::sv::dispatch(sub->sv_sid, env.meta.topic, env.meta.type_tag, env.meta.seq,
                                env.meta.time_fs, envelope_bytes(env));
         // SV 注册表报告该 id 已退订：这次在途投递被丢弃。以前这里照样 ++received，
-        // 于是在 C++ 侧是“幻影成功”；现在计为 filtered（未进入回调，但不是错误）。
+        // 于是在 C++ 侧是“幻影成功”；现在计为 retired（未进入回调，但不是错误）。
         if (detail::sv::take_retired_delivery()) {
           ++sub->dropped;
           ++topics[env.meta.topic].dropped;
-          return Delivery::filtered;
+          return Delivery::retired;
         }
         break;
     }
@@ -280,7 +310,7 @@ public:
     pub->done_ev.set();
   }
 
-  // 一个目标订阅者到达终态：delivered / filtered / failed 三种都算（failed 的计数由调用方
+  // 一个目标订阅者到达终态：delivered / retired / failed 三种都算（failed 的计数由调用方
   // 自己先做，这里只管完成计数）。三种方式都走这一处，`done()` 的契约才唯一。
   void target_finished(const std::shared_ptr<PubState>& pub) {
     if (++pub->finished == pub->expected && !pub->done_flag) pub_complete(pub);
@@ -310,6 +340,7 @@ public:
                                                 const detail::TypeOps* ops) {
     Topic& t = topic_for(topic);
     if (!t.bound) {
+      check_bind_compat(topic, ops->tag);
       t.bound = true;
       t.ops = ops;
       t.bound_tag = ops->tag;
@@ -337,12 +368,13 @@ public:
     if (!t.bound) {
       // 该 topic 没有 C++ 发布者（只有 SV 发布者）：若已有匹配的 C++ 类型化订阅者，
       // 就按订阅者的类型绑定，这样本帧可以物化成 C++ 对象；否则退化为纯字节流。
+      check_bind_compat(topic, tag);
       t.bound = true;
       t.ops = &raw_ops;
       t.bound_tag = tag;
       for (const auto& sub : subs) {
         if (sub->kind != SubKind::typed || !sub->ops || !sub->ops->decode) continue;
-        if (sub->filter_tag != tag || !match(sub->pattern, topic)) continue;
+        if (!type_matches(*sub, tag) || !match(sub->pattern, topic)) continue;
         t.ops = sub->ops;
         break;
       }
@@ -410,7 +442,7 @@ public:
             if (deliver(sub, *env) == Delivery::delivered)
               ++t.delivered;
             else
-              ++pub->filtered;
+              ++pub->retired;
           } catch (const weave::CancelledError&) {
             throw;  // 取消透传到外层：本目标与其余目标统一记 failed（仍要放行链尾）
           } catch (const std::exception&) {
@@ -472,7 +504,7 @@ public:
           if (deliver(sub, *env) == Delivery::delivered)
             ++t.delivered;
           else
-            ++pub->filtered;
+            ++pub->retired;
         } catch (const weave::CancelledError&) {
           // 取消与异常同一口径：没收到内容就是 failed，计入 dropped
           ++t.dropped;
@@ -509,10 +541,12 @@ public:
     return out;
   }
 
-  // 新订阅者的 retained 补发（注册后调用）
+  // 新订阅者的 retained 补发（注册后调用）。只补**本订阅者的目标帧**：名字与类型都要
+  // 对上，否则它本来就不是那条 retained 帧的目标（不建 task，也不计 dropped）。
   void retained_catchup(const std::shared_ptr<Subscriber>& sub) {
     for (auto& [name, t] : topics) {
       if (!t.retained_on || !t.retained_env || !match(sub->pattern, name)) continue;
+      if (!type_matches(*sub, t.retained_env->meta.type_tag)) continue;
       if (sub->kind == SubKind::sv && sub->cap == Capability::blocking) {
         // SV 阻塞回调不能在当前（可能是 function）上下文中经 exported task 调用，
         // 改经后台仿真进程补发。
@@ -598,9 +632,11 @@ static std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
                                                NowPolicy policy) {
   const std::string topic = env->meta.topic;
   Topic& t = b.topics[topic];
-  const auto matched = b.match_subs(topic);
+  // 目标集 = 名字 ∩ 类型：类型不相交的订阅者既不进 expected，也不建任何投递单元
+  const auto matched = b.match_subs(topic, env->meta.type_tag);
   // 按"该次注册的那一条入口"把目标劈成两拨：一条注册只可能有一条入口（`cap` 互斥），
-  // 所以这里不是"优先哪条"。
+  // 所以这里不是"优先哪条"。这个劈分同时是 DPI 约束的保证：下面的同步段只碰 `nb_subs`，
+  // 而它们的 `cap` 已保证 `deliver` 走 export function（Error-[DPI-INCDIC]）。
   auto nb_subs = Broker::select(matched, Capability::nonblocking);
   auto blocking_targets = Broker::select(matched, Capability::blocking);
   // `NowPolicy::reject` 的可行性已在 `pub_now` / `pub_now_frame` 里**前置**检查：这里不会再抛，
@@ -619,10 +655,10 @@ static std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
   std::exception_ptr first_exc;
   for (const auto& sub : nb_subs) {
     try {
-      if (b.deliver(sub, *env, /*force_nb=*/true) == Delivery::delivered)
+      if (b.deliver(sub, *env) == Delivery::delivered)
         ++t.delivered;
       else
-        ++pub->filtered;
+        ++pub->retired;
     } catch (const weave::CancelledError&) {
       ++t.dropped;
       ++sub->dropped;
@@ -666,7 +702,7 @@ static std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
   chain->on_complete.push_back([pub, chain, n]() {
     for (const auto& f : chain->failures) pub->failures.push_back(f);
     if (pub->first_error.empty()) pub->first_error = chain->first_error;
-    pub->filtered += chain->filtered;
+    pub->retired += chain->retired;
     pub->finished += n;
     if (!pub->done_flag) Broker::get().pub_complete(pub);
   });
@@ -678,7 +714,7 @@ static std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
 Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg,
                        const TypeOps* ops, NowPolicy policy) {
   Broker& b = Broker::get();
-  b.now_preflight(topic, policy);  // reject 先判：不消耗 seq / 不刷新 retained
+  b.now_preflight(topic, ops->tag, policy);  // reject 先判：不消耗 seq / 不刷新 retained
   auto env = b.make_envelope(topic, std::move(msg), ops);
   return detail_pub_access::make(dispatch_now(b, std::move(env), policy));
 }
@@ -687,8 +723,8 @@ Publication pub_serial(const std::string& topic, std::shared_ptr<const void> msg
                        const TypeOps* ops, Trigger trig) {
   Broker& b = Broker::get();
   auto env = b.make_envelope(topic, std::move(msg), ops);
-  // 全部匹配订阅者：每个订阅者用自己注册的那条入口（blocking 或 nonblocking），各调用一次
-  auto targets = b.match_subs(topic);
+  // 全部目标订阅者（名字 ∩ 类型）：每个用自己注册的那条入口（blocking 或 nonblocking）各调用一次
+  auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(b.start_serial(topic, std::move(env), std::move(trig),
                                              std::move(targets)));
 }
@@ -697,7 +733,7 @@ Publication pub_concurrent(const std::string& topic, std::shared_ptr<const void>
                            const TypeOps* ops, Trigger trig) {
   Broker& b = Broker::get();
   auto env = b.make_envelope(topic, std::move(msg), ops);
-  auto targets = b.match_subs(topic);
+  auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(b.start_concurrent(topic, std::move(env), std::move(trig),
                                              std::move(targets)));
 }
@@ -759,7 +795,7 @@ bool topic_retained(const std::string& topic) {
 Publication pub_now_frame(const std::string& topic, const std::string& tag,
                              const std::vector<std::byte>& frame, NowPolicy policy) {
   Broker& b = Broker::get();
-  b.now_preflight(topic, policy);  // 先判后建帧：reject 不消耗 seq / 不刷新 retained
+  b.now_preflight(topic, tag, policy);  // 先判后建帧：reject 不消耗 seq / 不刷新 retained
   auto env = b.make_envelope_bytes(topic, tag, frame);
   return detail_pub_access::make(dispatch_now(b, std::move(env), policy));
 }
@@ -768,7 +804,7 @@ Publication pub_serial_frame(const std::string& topic, const std::string& tag,
                              const std::vector<std::byte>& frame, Trigger trig) {
   Broker& b = Broker::get();
   auto env = b.make_envelope_bytes(topic, tag, frame);
-  auto targets = b.match_subs(topic);
+  auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(
       b.start_serial(topic, std::move(env), std::move(trig), std::move(targets)));
 }
@@ -777,7 +813,7 @@ Publication pub_concurrent_frame(const std::string& topic, const std::string& ta
                                  const std::vector<std::byte>& frame, Trigger trig) {
   Broker& b = Broker::get();
   auto env = b.make_envelope_bytes(topic, tag, frame);
-  auto targets = b.match_subs(topic);
+  auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(
       b.start_concurrent(topic, std::move(env), std::move(trig), std::move(targets)));
 }
@@ -871,7 +907,7 @@ long long pub_stat(int pub_id, int kind) {
     case 3:
       return static_cast<long long>(pub->deferred);
     case 4:
-      return static_cast<long long>(pub->filtered);
+      return static_cast<long long>(pub->retired);
     default:
       return -1;
   }
@@ -943,8 +979,8 @@ std::size_t Publication::deferred() const {
   return valid() ? impl_->pub->deferred : 0;
 }
 
-std::size_t Publication::filtered() const {
-  return valid() ? impl_->pub->filtered : 0;
+std::size_t Publication::retired() const {
+  return valid() ? impl_->pub->retired : 0;
 }
 
 std::vector<Publication::Failure> Publication::failures() const {
@@ -1064,7 +1100,7 @@ std::optional<TopicInfo> topic_info(const std::string& name) {
   TopicInfo info;
   info.name = name;
   info.type_tag = t.bound ? t.bound_tag : "";
-  info.subscriber_count = b.match_subs(name).size();
+  info.subscriber_count = b.name_matched_count(name);
   info.retained = t.retained_on;
   info.published = t.published;
   info.delivered = t.delivered;

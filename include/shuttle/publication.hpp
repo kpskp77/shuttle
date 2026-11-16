@@ -8,18 +8,23 @@
 //   pub.wait(1_us);         // 带超时
 //   pub.result();           // 等待 + 重抛第一个失败的订阅者异常（对齐 weave TaskGroup 语义）
 //
-// ── 记账语义：每个目标订阅者只有五种终态，三种方式完全一致 ─────────────────────
+// ── 目标集：名字 ∩ 类型 ─────────────────────────────────────────────────────
+// 一个订阅者只有在**名字匹配且类型标签匹配**时才是本帧的目标。类型不相交的订阅者连目标都
+// 不是：不进 subscriber_count()、不建投递单元、不产生任何计数。因此“通配符订阅者只收自己
+// 声明的类型”是目标集的判定结果，而不是逐帧过滤的结果。
+//
+// ── 记账语义：每个目标订阅者只有五种结局，三种方式完全一致 ─────────────────────
 //   delivered  回调执行完毕（SV 侧 = export 返回）
-//   filtered   类型标签不匹配，或被框架跳过而回调未进入（SV 侧：在途投递到达已退订的
-//              订阅者），均计入 filtered() 与 dropped()
+//   retired    快照之后、回调之前被退订（SV 注册表丢弃了这次在途投递）：目标已到终态，
+//              内容没进回调，但没有任何人出错；计入 retired() 与 dropped()
 //   failed     尝试了但没成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败
 //              （同时计入 dropped，并留下一条 Failure）
 //   deferred   返回时尚未开始（仅 publish_now 的 defer 段，后台串行链接走）
 //   excluded   策略干脆不投（仅 publish_now 的 drop），不算目标、也不入 subscriber_count()
 // reject 不产生帧，故没有终态。不变量（三种方式都成立）：
 //   · finished() ≤ subscriber_count()，且 done() ≡ finished() == subscriber_count()
-//   · subscriber_count() + excluded() == 本帧匹配到的订阅者数
-//   · finished() == delivered + filtered + failed 的累计，deferred 完成后必落入前三者之一
+//   · subscriber_count() + excluded() == 本帧的目标订阅者数（名字 ∩ 类型，且未被策略排除）
+//   · finished() == delivered + retired + failed 的累计，deferred 完成后必落入前三者之一
 //
 // 异常语义：单个订阅者回调抛异常不影响其余订阅者；失败聚合粒度因方式而异：`concurrent` 逐订阅者
 // 全收；`serial` 只保留第一条（其余只计入 dropped）；`now` 的同步段把每个失败都记入 failures，
@@ -61,8 +66,7 @@ public:
 
   // 本次发布的目标订阅者数量（发布瞬间的快照，含被 defer 的部分，不含被 drop 排除的部分）
   [[nodiscard]] std::size_t subscriber_count() const;
-  // 已到达终态（delivered / filtered / failed）的订阅者数量；
-  // 其中 filtered() 包含类型标签不匹配，以及被 SV 注册表按退订丢弃的在途投递
+  // 已到达终态（delivered / retired / failed）的订阅者数量
   // 完成态恒有 done() ≡ finished() == subscriber_count()（零目标的三种方式都立即完成）
   [[nodiscard]] std::size_t finished() const;
 
@@ -72,8 +76,9 @@ public:
   [[nodiscard]] std::size_t excluded() const;
   // 被推迟到后台串行链、稍后才投递的订阅者数量（publish_now 的 defer）；是标记，完成后不回零
   [[nodiscard]] std::size_t deferred() const;
-  // 因类型标签不匹配而跳过的订阅者数量（通配符订阅者的常态；已计入 finished 与 dropped）
-  [[nodiscard]] std::size_t filtered() const;
+  // 本帧快照之后被退订、因而未进入回调的订阅者数量（已计入 finished 与 dropped）。
+  // 恒为 0 的例外是 SV 侧在途投递遇退订——这是一个终端计数，不是错误明细，不进 failures()
+  [[nodiscard]] std::size_t retired() const;
 
   [[nodiscard]] std::vector<Failure> failures() const;
 

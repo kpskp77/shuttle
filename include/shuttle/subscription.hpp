@@ -40,9 +40,9 @@ public:
   [[nodiscard]] const std::string& topic() const;       // 订阅的 topic（含通配符原样）
   [[nodiscard]] Capability capability() const;
 
-  // 诊断计数（口径：received + dropped == 它被匹配到的帧数）
+  // 诊断计数（口径：received + dropped == 它被本帧定为目标的次数）
   [[nodiscard]] std::uint64_t received() const;  // 已投递帧数
-  [[nodiscard]] std::uint64_t dropped() const;   // 没收到本帧内容：类型过滤不匹配、
+  [[nodiscard]] std::uint64_t dropped() const;   // 没收到本帧内容：快照后被退订、
                                                  // NowPolicy::drop、回调抛异常 / 投递被取消
 
 private:

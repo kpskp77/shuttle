@@ -29,7 +29,7 @@ struct PubMsg {
 };
 SHUTTLE_REFLECT(PubMsg, v)
 
-// 另一种类型，用于验证通配符订阅者的类型过滤（type_tag 不同即 filtered）
+// 另一种类型，用于验证"类型不进目标集"（type_tag 不同则不是本帧的目标）
 struct PubMsgOther {
   std::uint32_t v = 0;
 };
@@ -352,7 +352,8 @@ WEAVE_TEST(publish_tests) {
     expect_eq(static_cast<long long>(info->deferred), 1, "defer 段仍入链");
   });
 
-  // case15：类型过滤 —— 通配符订阅者只收自己声明的类型，不匹配的帧计入 filtered()/dropped()
+  // case15：类型不属于目标集 —— 通配符订阅者只对"名字 ∩ 类型"的帧是目标；类型不相交的帧
+  // 连目标都不是：subscriber_count() 为 0、立即完成、不建投递单元、不产生任何计数
   run_case(__func__, "case15", [] {
     shuttle::Publisher<PubMsg> pub_a("pub.filter.a");
     shuttle::Publisher<PubMsgOther> pub_b("pub.filter.b");
@@ -363,16 +364,22 @@ WEAVE_TEST(publish_tests) {
 
     auto ha = pub_a.publish_serial(PubMsg{1});
     ha.wait();
-    expect_eq(static_cast<long long>(got), 1, "匹配类型照常投递");
-    expect_eq(static_cast<long long>(ha.filtered()), 0, "匹配时不产生过滤");
+    expect_eq(static_cast<long long>(got), 1, "类型匹配照常投递");
+    expect_eq(static_cast<long long>(ha.subscriber_count()), 1, "匹配时是目标");
 
     auto hb = pub_b.publish_serial(PubMsgOther{2});
     hb.wait();
-    expect_eq(static_cast<long long>(got), 1, "类型不匹配的帧不进入回调");
-    expect_eq(static_cast<long long>(hb.filtered()), 1, "帧级 filtered 计数");
-    expect_eq(static_cast<long long>(hb.finished()),
-              static_cast<long long>(hb.subscriber_count()), "过滤也是终态");
-    expect_eq(static_cast<long long>(s.dropped()), 1, "订阅者级 dropped 计入过滤");
+    expect_eq(static_cast<long long>(got), 1, "类型不相交的帧不进入回调");
+    expect_eq(static_cast<long long>(hb.subscriber_count()), 0, "类型不相交则不是目标");
+    expect_eq(static_cast<long long>(hb.finished()), 0, "零目标");
+    expect(hb.done(), "零目标立即完成");
+    expect_eq(static_cast<long long>(hb.retired()), 0, "不是目标就不会落进 retired");
+    expect_eq(static_cast<long long>(s.dropped()), 0, "订阅者级也不记 dropped（它本就不是目标）");
+
+    // 同一条发布方式、同一个 topic 目录下：`now` 的 reject 也只数目标集里的 blocking 订阅者
+    auto hc = pub_b.publish_now(PubMsgOther{3}, shuttle::NowPolicy::defer);
+    hc.wait();
+    expect_eq(static_cast<long long>(hc.subscriber_count()), 0, "publish_now 同样按目标集计数");
   });
 
   // case16：零目标的 `publish_serial` 立即完成；`reject` 的帧从不发布（不消耗 seq/published）

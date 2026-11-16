@@ -45,7 +45,7 @@ std::uint64_t frame_qword(int index);  // 8 字节小端块
 
 // SV 注册表发现目标已退订（retired）时，会在 dispatch 期间经 DPI import
 // `shuttle_c_sub_retired` 回告一次；Broker::deliver 在 export 返回后取走该标记，把这次
-// 投递记成 filtered（进了 dropped，但不是 delivered，也不报错）。
+// 投递记成 retired（进了 dropped，但不是 delivered，也不报错）。
 void note_retired_delivery();
 bool take_retired_delivery();
 

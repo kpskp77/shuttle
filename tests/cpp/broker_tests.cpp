@@ -239,9 +239,12 @@ WEAVE_TEST(broker_tests) {
     expect(threw, "订阅已绑定 topic 用错类型应抛 TypeMismatchError");
   });
 
-  // case11：类型过滤 —— 订阅者声明的 tag 与帧 tag 不一致时计 dropped，不调用回调
+  // case11：类型不相交 = 不在目标集 —— 通配符订阅者（BkrTx）只对 tag 相同的帧是目标，
+  // bkr.mix.other 的帧既不进回调、也不计 dropped（它本就不是目标）。
+  // 同时守住 `Broker::check_bind_compat` 的**通配符豁免**：bkr.mix.other 首次绑定的 tag 与
+  // 上面的通配符订阅者（BkrTx）不同，但通配符本就横跨类型，绑定不得报错。
   run_case(__func__, "case11", [] {
-    // 通配符订阅在订阅时无法判定具体 topic 的类型，投递时按帧过滤
+    // 通配符订阅在订阅时无法判定具体 topic 的类型，目标集判定推迟到每帧的快照期
     std::size_t uart_frames = 0;
     auto wild = shuttle::subscribe<BkrTx>(
         "bkr.mix.>", shuttle::nb([&](const BkrTx&, const shuttle::Meta&) { ++uart_frames; }));
@@ -252,7 +255,8 @@ WEAVE_TEST(broker_tests) {
     pub_o.publish_now(BkrOther{7}, shuttle::NowPolicy::drop);
 
     expect_eq(static_cast<long long>(uart_frames), 1, "只投递 tag 匹配的帧");
-    expect(wild.dropped() >= 1, "不匹配的帧计入 dropped");
+    expect_eq(static_cast<long long>(wild.received()), 1, "只把匹配的帧记成 receive");
+    expect_eq(static_cast<long long>(wild.dropped()), 0, "类型不相交的帧不是目标，不计 dropped");
   });
 
   report(__func__);

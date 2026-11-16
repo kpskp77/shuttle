@@ -43,7 +43,7 @@ just test-all       # 测试套件：systemc（40 用例）+ VCS（43 用例 + 6
 7. **退订后的在途投递**：`shuttle_registry` 用 `retired_` 静默丢弃（不 `$error`），只有从未登记过的
    id 才 `$error` —— 这是契约（发布瞬间已快照），别改回报错。但**必须回告 C++**：
    `dispatch[_nb]` 在丢弃时调 `shuttle_c_sub_retired`，`Broker::deliver` 在 export 返回后把这次
-   投递记成 `Delivery::filtered`（进 `dropped`，不进 `delivered`、不留 `Failure`）。少了这一步，
+   投递记成 `Delivery::retired`（进 `dropped`，不进 `delivered`、不留 `Failure`）。少了这一步，
    C++ 侧就是"幻影成功"：帧明明没进回调，`delivered`/`received` 却涨了。
 8. **跨 DSO 的异常**：异常类与 `shuttle::Event` 都要有 out-of-line 定义（key function），
    否则 `simv` 直接 `undefined symbol`。
@@ -52,14 +52,17 @@ just test-all       # 测试套件：systemc（40 用例）+ VCS（43 用例 + 6
    读到堆垃圾、值每次运行都不同）。两条防线：`sub_typed` 对无通配符的 topic 立即
    `topic_declare`；`make_envelope_bytes` 在 topic 未绑定时按匹配的 typed 订阅者类型绑定；
    `deliver` 里对 `raw_ops` 帧遇 typed 订阅者直接报 `PublishError`。
-10. **完成计数按订阅者计，且只有一个入口在推进它**：`Publication::finished()` 对三种方式都等于
-    "已到达终态的订阅者数"，唯一推进点是 `src/broker.cpp` 的 `target_finished()`
+10. **目标集 = 名字 ∩ 类型，完成计数按目标计，且只有一个入口在推进它**：目标集在快照时
+    一次定完（`Broker::match_subs(topic, tag)` + `type_matches`）。类型不相交的订阅者**不是
+    目标**——不进 `expected`、不建投递单元、不计 `dropped`。`Publication::finished()` 对三种方式
+    都等于"已到达终态的目标数"，唯一推进点是 `src/broker.cpp` 的 `target_finished()`
     （`++finished` 后若 `finished == expected && !done_flag` 就 `pub_complete`）。任何路径——投递成功、
-    类型过滤、回调抛异常、串行单元的单元级失败（未尝试的目标要补齐计数）——都必须走它，
+    退订跳过、回调抛异常、串行单元的单元级失败（未尝试的目标要补齐计数）——都必须走它，
     不能在函数末尾"一次性把 `finished` 置成 `expected`"（那样 `done()` 会先于真实完成成立）。
     由此得到三条不变量：`done() ≡ finished() == subscriber_count()`（无例外路径）；
-    `finished() == 投递 + 过滤 + 失败`；`filtered() ≤ finished()`（过滤同时计入 `dropped()`）。
-    零目标的发布必须立即完成（`publish_serial` 也要短路，不能建投递单元）。
+    `finished() == 投递 + 退订跳过 + 失败`；`retired() ≤ finished()`（退订跳过同时计入 `dropped()`）。
+    零目标的发布必须立即完成（`publish_serial` 也要短路，不能建投递单元）。被排除出目标集的
+    目标（策略 `drop` 的 `excluded`、类型不相交的）都必须可数，别让"没收到"变成无记录。
 11. **`defer` 复用 `publish_serial` 的同一条链**（不要另起并发投递）：由此得到可测定律"同一 topic 的
     后台投递顺序 = 发布调用顺序"。串行链的跨订阅者队头阻塞是显式接受的代价——想要并发请用
     `publish_concurrent`。
