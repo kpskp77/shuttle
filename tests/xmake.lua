@@ -19,7 +19,10 @@ if backend == "systemc" then
     add_deps("shuttle")
     add_rpathdirs("$ORIGIN")
     add_includedirs("cpp")
-    add_files("cpp/*.cpp")  -- 含 sc_main.cpp（systemc 入口）
+    -- 含 sc_main.cpp（systemc 入口）；排除 xlang_tests：它直接调 SV 桥入口，
+    -- 只在 svdpi 后端的 target 里编译
+    add_files("cpp/*.cpp")
+    remove_files("cpp/xlang_tests.cpp")
     add_packages("weave")
   end)
 else

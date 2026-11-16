@@ -19,11 +19,12 @@ shuttle 在 weave 之上提供三件事，不重复 weave 的职责：
 | --- | --- |
 | broker（`src/broker.cpp`） | topic 表、通配符匹配、类型绑定、帧序号、三种发布编排、完成跟踪、retained |
 | 类型化载荷（`include/shuttle/codec.hpp`） | 编解码与跨语言物化，类型擦除边界在 `detail/abi.hpp` |
-| DPI 桥（`src/svdpi.cpp` / `sv/shuttle_pkg.sv`） | import/export、帧拉取、作用域修正、SV 侧分派注册表 |
+| 外部接入门面（`src/entry.cpp`） | 字节帧发布（`ext_*`）、外部订阅者注册、按 `pub_id` 的查询/等待——与后端无关 |
+| DPI 桥（`src/backend/svdpi/` / `sv/shuttle_pkg.sv`） | import/export、帧拉取、作用域修正、SV 侧分派注册表 |
 
 并发编排（task 创建、事件、等待、超时、取消）全部由 weave 提供。后端二选一：
 `svdpi`（真实仿真器，带 SV 桥）与 `systemc`（纯 C++，无 SV 桥）。后端选择只影响
-`detail::sv` 的实现，broker 与公开 API 完全相同（§12）。
+`detail::backend` 的实现，broker 与公开 API 完全相同（§12）。
 
 非目标：跨进程/跨机器通信、持久化、流量整形、UVM 兼容层。
 
@@ -58,12 +59,12 @@ blocking 入口即 export task，nonblocking 入口即 export function。
         │  Event 注册表 / 内省                    │        │  帧拉取 + {>>{}} 打包约定       │
         └───────┬───────────────────────▲─────────┘        └───────────────────────────────┘
                 │ 后端无关                │ 后端边界
-     ┌──────────▼──────────┐   ┌──────────┴───────────┐
-     │ src/svdpi.cpp       │   │ src/systemc.cpp      │  ← detail::sv（src/internal/sv_bridge.hpp）
-     │ FrameContext + 作用域│   │ 无 SV 桥，dispatch   │
-     │ DPI import/export    │   │ 抛逻辑错误；now_fs   │
-     └──────────┬──────────┘   │ 用 sc_time_stamp     │
-                │              └──────────────────────┘
+     ┌──────────────────────┐   ┌──────────────────────┐  ← 同一组 detail::backend 入口
+     │ backend/svdpi/       │   │ backend/systemc/     │     （src/internal/backend.hpp）
+     │  bridge + DPI 面     │   │ 无 SV 桥：dispatch*  │
+     │  FrameContext + 作用域│   │ 抛逻辑错误；now_fs   │
+     └──────────┬───────────┘   │ 用 sc_time_stamp     │
+                │               └──────────────────────┘
                 ▼
         weave（task/event/port，svdpi 与 systemc 后端）  ← 并发编排、单活跃进程契约
 ```
@@ -72,11 +73,15 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 | --- | --- |
 | `include/shuttle/*.hpp` | 公开 API；`shuttle.hpp` 是伞头，被它暴露的才算公开 |
 | `include/shuttle/detail/abi.hpp` | **已安装但非公开**：公有模板需要 `pub_*` / `sub_*` 的声明，故随包安装；只被 `publisher.hpp` / `subscription.hpp` 间接包含 |
-| `src/broker.cpp` | broker 全部逻辑（唯一有状态的地方） |
-| `src/svdpi.cpp` | svdpi 后端：`detail::sv` 实现 + `shuttle_c_*` import + 对 SV export 的调用 |
-| `src/systemc.cpp` | systemc 后端：`detail::sv` 的退化实现 |
+| `src/broker.cpp` | broker 逻辑（唯一有状态的地方）：C++ 类型化入口 `pub_*` / `sub_typed` / `sub_raw`、`topic_*`、句柄方法、`Event` 注册表、`broker::` 内省 |
+| `src/entry.cpp` | 外部接入门面：`ext_pub_*`（字节帧）/ `ext_sub` / `ext_unsub` / 按 `pub_id` 的 `pub_*` 查询。**与后端无关**（svdpi 只是当前调用方） |
+| `src/internal/broker_impl.hpp` | `Broker` / `Subscriber` / `Topic` / `PubState` / `Envelope` 与 `dispatch_now` 的共享定义：`broker.cpp` 与 `entry.cpp` 各包含一次（不安装） |
+| `src/backend/svdpi/bridge.cpp` | `detail::backend` 的 svdpi 实现：`dispatch` / `dispatch_nb` / `now_fs` / `note_retired_delivery` + 帧拉取（`frame_len` / `frame_qword`） |
+| `src/backend/svdpi/dpi.cpp` | `shuttle_c_*` 的全部 DPI 导出面（import 被仿真器调用、export 反过来调仿真器） |
+| `src/backend/svdpi/svdpi_internal.hpp` | 后端私有：包名宏、`SvScopeGuard`、`FrameContext`（仅 svdpi 目录内） |
+| `src/backend/systemc/bridge.cpp` | systemc 后端：`detail::backend` 的退化实现 |
 | `src/trigger.cpp` | `Trigger` 工厂（`after` / `after_all` / `after_any`） |
-| `src/internal/sv_bridge.hpp` | broker ↔ 后端的内部边界（不安装） |
+| `src/internal/backend.hpp` | broker ↔ 后端的内部边界：6 个入口（`available` / `dispatch` / `dispatch_nb` / `now_fs` / `note_retired_delivery` / `take_retired_delivery`），不安装 |
 | `src/internal/trigger_internal.hpp` | `detail::TriggerAccess`：供桥接层用任意 `std::function` 构造 `Trigger`（不安装） |
 | `sv/shuttle_pkg.sv` | SV 侧用户 API 与分派注册表 |
 | `tests/`、`examples/` | 测试套件与示例 |
@@ -183,7 +188,7 @@ Publisher<T>::publish_now/serial/concurrent         shuttle_pub#(T)::publish_now
                                   │ now 的同步段只含 nonblocking 注册（select 已分拨）
                      ┌────────────┼───────────────────┐
                      ▼            ▼                   ▼
-              typed: cb(T&)   bytes: cb_bytes   sv: detail::sv::dispatch[_nb]
+              typed: cb(T&)   bytes: cb_bytes   external: detail::backend::dispatch[_nb]
                                                └─ FrameContext + 作用域修正
                                                   → export task/function
                                                   → shuttle_registry → 用户回调
@@ -260,8 +265,10 @@ struct Topic {
 };
 
 struct Subscriber {
-  SubKind kind;                          // typed / bytes / sv
-  int id; int sv_sid; std::string pattern, filter_tag;   // filter_tag 空 = 任意类型（参与目标集判定）
+  SubKind kind;                          // typed / bytes / external
+  int id;
+  int handle;                            // kind == external：后端侧不透明句柄（svdpi = SV 注册表编号）
+  std::string pattern, filter_tag;       // filter_tag 空 = 任意类型（参与目标集判定）
   Capability cap;                        // 该次注册唯一的那条入口（§7）
   ErasedCallback cb; ByteCallback cb_bytes;
   const detail::TypeOps* ops;            // typed 订阅者的类型（供字节流物化）
@@ -461,7 +468,20 @@ class WeaveScopeGuard = SvScopeGuard;        // 驱动 weave 的 import 入口�
   而 weave 的 export 位于 `weave_pkg`，因此 `shuttle_c_publish_*` / `wait_pub` /
   `subscribe` / `unsubscribe` / `event_*` 都切换到 `weave_pkg`；
 - 不涉及 weave 的入口无需 guard：`shuttle_c_set_retained` 与只读查询
-  （`pub_done` / `pub_stat` / `pub_error` / `frame_len` / `frame_qword`）。
+  （`pub_done` / `pub_stat` / `pub_error` / `detail::backend::frame_len` /
+  `detail::backend::frame_qword` —— 后两件只在 svdpi 后端存在，声明在
+  `src/backend/svdpi/svdpi_internal.hpp`，不进 `backend.hpp`：只有 export 体内够得着它们）。
+
+`broker_internal.hpp` 声明、`src/entry.cpp` 实现的门面按**谁在调**分成两段，而不是按后端分：
+
+- `ext_*`（`ext_pub_now` / `ext_pub_serial` / `ext_pub_concurrent` / `ext_sub` / `ext_unsub`）：
+  外部调用方进来的动作——字节帧发布、外部订阅者注册。它描述的是「帧从外面来、订阅者在外面」，
+  后端是 svdpi 还是将来的 socket / Python 绑定都一样；
+- `pub_*`，首参是 `pub_id`（`pub_id` / `pub_done` / `pub_stat` / `pub_error` / `pub_wait` /
+  `pub_state` / `pub_on_complete`）：按发布 id 读句柄的通用查询/等待，与后端、与语言都无关。
+
+两组都不含后端字样。后端名字只出现在两处：`Subscriber::handle` 的注释，以及
+`detail::backend` 的实现文件。
 
 包名可用 `-DSHUTTLE_SV_PACKAGE=` / `-DSHUTTLE_WEAVE_SV_PACKAGE=` 覆盖。
 
@@ -478,7 +498,7 @@ export task），`drop` 直接不投递，`reject` 前置抛错。
 DPI export 名称必须静态，无法"每订阅者一个 export 函数"，因此 SV 侧有一层间接：
 
 ```
-C++ 只持有整数 sv_sid ──▶ shuttle_sv_dispatch(task) / _nb(function)
+C++ 只持有整数 handle（= SV 注册表编号 sv_sid）──▶ shuttle_sv_dispatch(task) / _nb(function)
                               └─▶ shuttle_registry::dispatch / dispatch_nb
                                     ├─ sinks_[id].invoke(payload, meta)        (blocking 入口)
                                     └─ sinks_nb_[id].invoke_nb(payload, meta)  (nonblocking 入口)
@@ -512,11 +532,11 @@ SV: h.wait_done() ─▶ import task shuttle_c_wait_pub(pub_id, timeout_fs, stat
 
 ## 12. systemc 后端
 
-`src/systemc.cpp` 实现同一组 `detail::sv` 入口，但 `available() == false`：
-`dispatch*` 与 `event_*` 抛 `std::logic_error`（配置错误尽早暴露），`now_fs()` 用
-`sc_time_stamp()` 换算，`frame_*` 返回 0，`take_retired_delivery()` 恒为 false。
-broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV 相关 API 在 systemc 构建中
-不参与编译。
+`src/backend/systemc/bridge.cpp` 实现同一组 `detail::backend` 入口，但 `available() == false`：
+`dispatch` / `dispatch_nb` 抛 `std::logic_error`（配置错误尽早暴露），`now_fs()` 用
+`sc_time_stamp()` 换算，`take_retired_delivery()` 恒为 false。
+broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV 相关代码（`svdpi/` 目录、`ext_*`
+的调用方、跨语言用例）在 systemc 构建中**根本不参与编译**。
 
 ## 13. 句柄与生命周期
 
@@ -577,6 +597,7 @@ xmake f --backend=svdpi   # 默认：libshuttle.so + SV 桥（add_requires("svdp
 xmake f --backend=systemc # 纯 C++：add_requires("systemc")，无 SV 桥
 ```
 
-后端宏 `SHUTTLE_BACKEND_SVDPI` / `SHUTTLE_BACKEND_SYSTEMC` 由 target 的 `add_defines`
-注入（weave 的 `WEAVE_BACKEND_*` 不外传）。宏只影响 `detail::sv` 的实现选择，公开 API 与
-broker 逻辑完全相同。
+后端**按目录选文件**，不靠宏：`add_files("src/*.cpp")` + `add_files("src/backend/<backend>/**.cpp")`。
+换后端 = 换一个目录，两个后端目录互不相见（因此也无需 `#if` 包住整个 TU）；`SHUTTLE_BACKEND_*`
+宏已删除，不再有任何东西外传给使用者。公开 API 与 broker 逻辑在两种后端下完全相同，
+差异只有 `detail::backend` 的实现与「有没有 SV 桥」。

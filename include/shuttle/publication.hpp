@@ -41,6 +41,10 @@
 
 namespace shuttle {
 
+namespace detail {
+class Broker;
+}  // namespace detail
+
 class Publication {
 public:
   // 单个订阅者的失败记录
@@ -88,9 +92,9 @@ private:
 
   std::shared_ptr<Impl> impl_;
 
-  // broker 分发路径构造句柄
+  // broker 分发路径构造句柄（Broker 是 src/ 下的实现细节，这里只前向声明）
   friend struct detail_pub_access;
-  friend class Broker;
+  friend class detail::Broker;
 };
 
 }  // namespace shuttle

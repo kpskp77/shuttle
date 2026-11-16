@@ -149,7 +149,7 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
 1. **作用域（svScope）**：同一 SV 进程内调用过返回 `string` 的 import
    （`shuttle_c_last_error`）之后，再调用包级 export 会报
    `Error-[DPI-DXFNF] DPI export function not found`。因此 C++ 在每次调用 export 前显式
-   切换作用域：`src/svdpi.cpp` 的 `SvScopeGuard` 进入 `shuttle_pkg`
+   切换作用域：`src/backend/svdpi/svdpi_internal.hpp` 的 `SvScopeGuard` 进入 `shuttle_pkg`
    （可用 `-DSHUTTLE_SV_PACKAGE=` 覆盖），驱动 weave 原语的 import 入口切到 `weave_pkg`
    （可用 `-DSHUTTLE_WEAVE_SV_PACKAGE=` 覆盖）。
 2. **export/import 的时序约束**：DPI `function` import 的调用链内不允许调用 export

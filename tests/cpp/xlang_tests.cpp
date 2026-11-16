@@ -22,7 +22,8 @@
 
 #include "case_runner.hpp"
 
-#if defined(SHUTTLE_BACKEND_SVDPI)
+// 只在 svdpi 后端的测试 target 里编译：这个文件直接调 SV 桥入口，systemc 后端没有它们。
+// 构建按目录选后端文件后不再有 SHUTTLE_BACKEND_* 宏，所以这里是**无条件**的。
 
 using namespace weave::literals;
 using shuttle_test::expect;
@@ -120,11 +121,3 @@ WEAVE_TEST(xlang_tests) {
   report(__func__);
 }
 
-#else
-
-WEAVE_TEST(xlang_tests) {
-  std::printf("[SKIP] xlang_tests: systemc 后端没有 SV 桥（仅 svdpi 后端可测跨语言）\n");
-  std::fflush(stdout);
-}
-
-#endif  // SHUTTLE_BACKEND_SVDPI

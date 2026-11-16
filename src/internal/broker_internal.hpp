@@ -1,6 +1,6 @@
 #pragma once
 
-// 框架内部接口：svdpi 桥（svdpi.cpp）调用的 broker 内部入口。
+// 框架内部接口：后端（src/backend/*）与 FFI 层调用的 broker 内部入口。
 // 只被 src/ 包含，不属于安装 API。
 
 #include <cstdint>
@@ -21,24 +21,27 @@ namespace detail {
 void set_last_error(std::string msg);
 const std::string& last_error();
 
-// ── SV 侧入口（svdpi 桥使用；错误经 set_last_error + 返回码/异常报告）──
+// ── 外部接入门面（错误经 set_last_error + 返回码/异常报告）────────────
+//
+// `ext_*` = 外部调用方进来的动作（字节帧发布、外部订阅者注册）。
+// `pub_*`（首参是 pub_id）= 按发布 id 读句柄的通用查询/等待，与具体后端无关。
 
-// SV 侧发布（载荷是"已编码帧" = 字节流 + type_tag；三种调度与 typed 路径一一对应）。
+// 外部发布（载荷是"已编码帧" = 字节流 + type_tag；三种调度与 typed 路径一一对应）。
 // 失败一律抛异常（shuttle_c_* 包装层捕获并转成 set_last_error + 返回码）。
-Publication pub_now_frame(const std::string& topic, const std::string& tag,
-                             const std::vector<std::byte>& frame, NowPolicy policy);
-Publication pub_serial_frame(const std::string& topic, const std::string& tag,
-                             const std::vector<std::byte>& frame, Trigger trig);
-Publication pub_concurrent_frame(const std::string& topic, const std::string& tag,
-                                 const std::vector<std::byte>& frame, Trigger trig);
+Publication ext_pub_now(const std::string& topic, const std::string& tag,
+                       const std::vector<std::byte>& frame, NowPolicy policy);
+Publication ext_pub_serial(const std::string& topic, const std::string& tag,
+                          const std::vector<std::byte>& frame, Trigger trig);
+Publication ext_pub_concurrent(const std::string& topic, const std::string& tag,
+                              const std::vector<std::byte>& frame, Trigger trig);
 
 // 取句柄对应的 pub_id（无效句柄返回 0）——DPI 层用它把 Publication 换成 int。
-int pub_id_of(const Publication& p);
+int pub_id(const Publication& p);
 
-// SV 订阅注册：sv_sid 由 SV 注册表分配，C++ 原样记录并在 dispatch 时带回。
+// 外部订阅注册：handle 由后端分配（svdpi = SV 注册表编号），broker 原样记录、dispatch 时带回。
 // 返回 0 成功，非 0 失败（类型绑定冲突等）。
-int sub_sv(const std::string& topic_pattern, int caps, const std::string& type_tag, int sv_sid);
-void sub_sv_drop(int sv_sid);
+int ext_sub(const std::string& topic_pattern, int caps, const std::string& type_tag, int handle);
+void ext_unsub(int handle);
 
 // Publication 完成跟踪（pub_id 由发布时分配）
 bool pub_done(int pub_id);

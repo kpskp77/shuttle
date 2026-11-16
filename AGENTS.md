@@ -10,7 +10,7 @@ just build          # 按当前后端构建
 just sc             # systemc 后端本地跑（预期末行 "WEAVE TEST PASSED"）
 just vcs            # svdpi 后端 + 真实 VCS 仿真（预期 "SHUTTLE CPP DEMO PASSED"）
 just test           # 示例：两个后端都过一遍
-just test-all       # 测试套件：systemc（40 用例）+ VCS（43 用例 + 69 个 SV 断言）
+just test-all       # 测试套件：systemc（43 用例）+ VCS（46 用例 + 76 个 SV 断言）
 ```
 
 `tests/svdpi/run.sh` 在没有 vcs 的机器上会打印 `[svdpi-test] skipped` 并以 0 退出，
@@ -20,9 +20,9 @@ just test-all       # 测试套件：systemc（40 用例）+ VCS（43 用例 + 6
 
 1. **单活跃进程**（weave 的 port 契约）：任一时刻只有一个进程执行 C++ 侧记账代码；
    挂起 ≡ 交出调度权。shuttle 的"投递时把帧字节流放在 thread_local 上下文里让 SV 拉取"
-   （`src/svdpi.cpp` 的 `FrameContext` + `shuttle_c_frame_len/qword`）就依赖这一点。
+   （`src/backend/svdpi/` 的 `FrameContext` + `shuttle_c_frame_len/qword`）就依赖这一点。
 2. **作用域修正**：调用包级 export 前必须切 `svScope`（`svScope` 会被 import 调用污染，
-   VCS 报 `Error-[DPI-DXFNF]`）。见 `src/svdpi.cpp` 的 `SvScopeGuard`；驱动 weave 的
+   VCS 报 `Error-[DPI-DXFNF]`）。见 `src/backend/svdpi/svdpi_internal.hpp` 的 `SvScopeGuard`；驱动 weave 的
    import 入口切到 `weave_pkg`，其余切到 `shuttle_pkg`。
 3. **import function 的调用链里不能调 export task**（`Error-[DPI-INCDIC]`）：`publish_now` 的
    投递必须走 `shuttle_sv_dispatch_nb`（function），不接受任何例外。
@@ -87,7 +87,15 @@ just test-all       # 测试套件：systemc（40 用例）+ VCS（43 用例 + 6
 - `include/shuttle/detail/abi.hpp`：已安装但非公开。公有模板（`Publisher<T>` / `subscribe<T>`）
   必须在用户 TU 里看到 `pub_*` / `sub_*` 的声明，所以它必须随包安装；改名 = 改 ABI。
   只被 `publisher.hpp` / `subscription.hpp` 间接包含，用户代码不应直接 include。
-- `src/internal/*.hpp`：**不安装**。只给 `src/` 用（SV 桥入口、`set_last_error` 等）。
+- `src/internal/*.hpp`：**不安装**。只给 `src/` 用（`set_last_error`、`detail::backend` 接口、
+  `broker_impl.hpp` 里的 `Broker` / `PubState` 定义——后者的存在理由是 `broker.cpp` 与
+  `entry.cpp` 必须共享同一份 broker 定义与单例）。
+- `src/backend/<backend>/`：**按目录选一个后端编译**（`xmake.lua` 的
+  `add_files("src/backend/" .. 后端 .. "/**.cpp")`）。两个目录互不相见、不许互相 include，
+  也不许再加 `SHUTTLE_BACKEND_*` 之类的宏——换后端 = 换目录。新增后端只需实现
+  `src/internal/backend.hpp` 的 6 个入口。
+- `src/entry.cpp` 里是外部接入门面（`ext_*` / 按 `pub_id` 的 `pub_*`）：与后端无关，
+  后端目录整个删掉也能编译。
 - `xmake.lua` 的 `add_headerfiles` 必须覆盖 `include/(shuttle/**.hpp)`——写成 `shuttle/*.hpp`
   会让安装出来的包缺 `detail/abi.hpp`，使用者一 include `publisher.hpp` 就编译失败。
 

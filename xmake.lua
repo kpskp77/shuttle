@@ -25,14 +25,14 @@ target("shuttle", function()
   set_warnings("all", "extra", "error")
   add_headerfiles("include/(shuttle/**.hpp)")
   add_includedirs("include", { public = true })
-  add_files("src/**.cpp")
+  -- 私有：`src/broker.cpp` / `src/entry.cpp` / 后端目录都用 "internal/..." 相对 src 的写法
+  add_includedirs("src", { public = false })
+  -- 核心 + 当前后端。后端只按目录选文件，不靠 -D 宏：换后端 = 换一个目录，
+  -- 两个后端目录互不相见（也就不用 #if 包整个 TU），宏也不再外传给使用者。
+  add_files("src/*.cpp")
+  add_files("src/backend/" .. (get_config("backend") or "svdpi") .. "/**.cpp")
   add_rpathdirs("$ORIGIN")
   add_packages("weave", { public = true })
-  if get_config("backend") == "systemc" then
-    add_defines("SHUTTLE_BACKEND_SYSTEMC", { public = true })
-  else
-    add_defines("SHUTTLE_BACKEND_SVDPI", { public = true })
-  end
 end)
 
 -- VCS 运行（phony）：编译 weave_pkg + shuttle_pkg + SV demo，

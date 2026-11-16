@@ -205,8 +205,8 @@ xmake f --backend=svdpi   && xmake run shuttle_examples_svdpi_vcs   # 需 xmake 
 `tests/` 与 `examples/` 平行：示例示范用法，测试只断言行为（失败即 `[FAIL]`，整体判失败）。
 
 ```bash
-just test-sc    # systemc 后端：tests/cpp 40 个用例（跨语言用例按设计跳过）
-just test-vcs   # VCS 后端：tests/cpp 43 个用例 + tests/sv 69 个断言
+just test-sc    # systemc 后端：tests/cpp 43 个用例（跨语言用例不参与编译）
+just test-vcs   # VCS 后端：tests/cpp 46 个用例 + tests/sv 76 个断言
 just test-all   # 两者都跑
 ```
 
@@ -227,7 +227,8 @@ just test-all   # 两者都跑
 
 ```
 include/shuttle/   公开头文件（用户只用这一层）
-src/               broker 实现（后端无关）+ svdpi.cpp / systemc.cpp 两个后端桥
+src/               broker 实现（后端无关）+ entry.cpp（外部接入门面）
+                   + backend/svdpi/ | backend/systemc/（按目录选一个后端）
 sv/shuttle_pkg.sv  SV 侧包（依赖 ../weave/sv/weave_pkg.sv）
 docs/              architecture.md（实现） / dpi_protocol.md（边界协议）
 examples/          用户侧示范（C++ / SV）与运行说明
