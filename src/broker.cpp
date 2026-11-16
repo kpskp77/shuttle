@@ -59,21 +59,19 @@ const std::string& last_error() { return g_last_error; }
 
 void topic_declare(const std::string& topic, const TypeOps* ops) {
   Broker& b = Broker::get();
-  Topic& t = b.topics[topic];
-  if (!t.bound) {
-    t.bound = true;
-    t.ops = ops;
-    t.bound_tag = ops->tag;
+  Topic& t = b.topic_for(topic);
+  if (!t.binding) {
+    t.binding = Binding{ops->tag, ops};
     return;
   }
   // 既有 raw 绑定（SV 先发布）且标签一致 → 升级为 typed 绑定
-  if (t.bound_tag == std::string(ops->tag) && t.ops == &raw_ops) {
-    t.ops = ops;
+  if (t.binding->tag == ops->tag && t.binding->ops == &raw_ops) {
+    t.binding->ops = ops;
     return;
   }
-  if (t.bound_tag != std::string(ops->tag))
+  if (t.binding->tag != ops->tag)
     throw TypeMismatchError(std::string("shuttle: topic ") + topic + " 已绑定类型 " +
-                            t.bound_tag + "，与 " + ops->tag + " 冲突");
+                            t.binding->tag + "，与 " + ops->tag + " 冲突");
   // 同标签重复声明：视为同一类型，放行（跨 DSO 的 type_ops<T> 实例地址不同但语义一致）
 }
 
@@ -145,7 +143,7 @@ Subscription sub_raw(std::string pattern, ByteCallback cb, Capability cap, SubOp
 }
 
 void topic_set_retained(const std::string& topic, bool on) {
-  Topic& t = Broker::get().topics[topic];
+  Topic& t = Broker::get().topic_for(topic);
   t.retained_on = on;
   // 关闭时立即丢掉快照：否则快照会一直占着最新一帧，
   // 且 retained_catchup 需要靠 retained_on 判断，两者保持一致更不易错。
@@ -318,14 +316,14 @@ std::vector<std::string> topics() {
   return out;
 }
 
-std::optional<TopicInfo> topic_info(const std::string& name) {
+std::optional<TopicInfo> topic_info(std::string_view name) {
   Broker& b = Broker::get();
   auto it = b.topics.find(name);
   if (it == b.topics.end()) return std::nullopt;
   const Topic& t = it->second;
   TopicInfo info;
-  info.name = name;
-  info.type_tag = t.bound ? t.bound_tag : "";
+  info.name = std::string(name);
+  info.type_tag = t.binding ? t.binding->tag : "";
   info.subscriber_count = b.name_matched_count(name);
   info.retained = t.retained_on;
   info.published = t.published;

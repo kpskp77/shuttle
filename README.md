@@ -205,8 +205,8 @@ xmake f --backend=svdpi   && xmake run shuttle_examples_svdpi_vcs   # 需 xmake 
 `tests/` 与 `examples/` 平行：示例示范用法，测试只断言行为（失败即 `[FAIL]`，整体判失败）。
 
 ```bash
-just test-sc    # systemc 后端：tests/cpp 44 个用例（跨语言用例不参与编译）
-just test-vcs   # VCS 后端：tests/cpp 47 个用例 + tests/sv 76 个断言
+just test-sc    # systemc 后端：tests/cpp 45 个用例（跨语言用例不参与编译）
+just test-vcs   # VCS 后端：tests/cpp 48 个用例 + tests/sv 76 个断言
 just test-all   # 两者都跑
 ```
 

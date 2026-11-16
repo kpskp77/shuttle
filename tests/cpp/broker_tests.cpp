@@ -293,5 +293,24 @@ WEAVE_TEST(broker_tests) {
     expect(b.valid(), "b 未退订");
   });
 
+  // case13：">" 与 "*" 都不匹配"前缀本身"（至少要再多一级）。
+  // 这条边界是匹配器从"split 成 vector 再比"改成"逐段 view 比较"时最容易写歪的地方。
+  run_case(__func__, "case13", [] {
+    shuttle::Publisher<BkrTx> p_prefix("bkr.deep");
+    shuttle::Publisher<BkrTx> p_child("bkr.deep.x");
+    shuttle::Subscription keep_a;
+    shuttle::Subscription keep_b;
+    auto gt = tap(keep_a, "bkr.deep.>");
+    auto star = tap(keep_b, "bkr.deep.*");
+
+    p_prefix.publish_now(BkrTx{1, 1}, shuttle::NowPolicy::drop);
+    expect_eq(static_cast<long long>(gt->frames), 0, "\">\" 不匹配前缀本身");
+    expect_eq(static_cast<long long>(star->frames), 0, "\"*\" 不匹配前缀本身");
+
+    p_child.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::drop);
+    expect_eq(static_cast<long long>(gt->frames), 1, "\">\" 收到子级");
+    expect_eq(static_cast<long long>(star->frames), 1, "\"*\" 收到单级子 topic");
+  });
+
   report(__func__);
 }

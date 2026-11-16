@@ -24,8 +24,7 @@
 #define SHUTTLE_WEAVE_SV_PACKAGE "weave_pkg"
 #endif
 
-namespace shuttle {
-namespace detail {
+namespace shuttle::detail {
 namespace backend {
 
 // 按包名取作用域（带缓存；仿真线程单活跃，无需加锁）。
@@ -84,5 +83,4 @@ int frame_len();
 std::uint64_t frame_qword(int index);
 
 }  // namespace backend
-}  // namespace detail
-}  // namespace shuttle
+}  // namespace shuttle::detail

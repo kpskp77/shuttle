@@ -6,12 +6,15 @@
 // （`src/entry.cpp`，字节帧 + 外部订阅者 + 按 id 的查询）必须共享同一份 `Broker`
 // 定义与单例。这份头**没有任何后端依赖**——后端只经 `internal/backend.hpp` 出现。
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -26,8 +29,7 @@
 
 #include "internal/backend.hpp"
 
-namespace shuttle {
-namespace detail {
+namespace shuttle::detail {
 
 // ── 消息信封：一次发布的不可变快照 ─────────────────────────────────────────
 struct Envelope {
@@ -96,10 +98,16 @@ struct Subscriber {
 enum class Delivery { delivered, retired };
 
 // ── Topic ─────────────────────────────────────────────────────────────────
+// 类型绑定：一旦建立就不再变（标签是身份，ops 决定“能不能物化成 C++ 对象”）
+struct Binding {
+  std::string tag;             // 类型标签（raw 绑定 = SV type_tag）
+  const detail::TypeOps* ops;  // raw 绑定时指向 raw_ops
+};
+
 struct Topic {
-  bool bound = false;
-  std::string bound_tag;                // 类型标签（raw 绑定 = SV type_tag）
-  const detail::TypeOps* ops = nullptr;  // raw 绑定时指向 raw_ops
+  // 未绑定 = 只能发纯字节流。三件事是一个东西，所以是一个 optional：
+  // std::optional 让“bound 但标签为空”这类不一致从“靠纪律”变成“不可表达”。
+  std::optional<Binding> binding;
   bool retained_on = false;
   std::shared_ptr<const Envelope> retained_env;
   std::uint64_t seq = 0;        // topic 内全局单调（跨发布者连续，多对多契约）
@@ -134,7 +142,7 @@ struct PubState {
 // ── broker 单例 ───────────────────────────────────────────────────────────
 class Broker {
 public:
-  std::map<std::string, Topic> topics;
+  std::map<std::string, Topic, std::less<>> topics;  // 透明比较器：string_view 直接查
   std::vector<std::shared_ptr<Subscriber>> subs;
   std::map<int, std::shared_ptr<PubState>> pubs;
   int next_sub_id = 1;
@@ -146,50 +154,44 @@ public:
   }
 
   // 是否含通配符（"*" 或 ">"）
-  static bool has_wildcard(const std::string& pattern) {
-    return pattern.find('*') != std::string::npos || pattern.find('>') != std::string::npos;
+  [[nodiscard]] static bool has_wildcard(std::string_view pattern) {
+    return pattern.find_first_of("*>") != std::string_view::npos;
+  }
+
+  // s[pos..] 所在段落的段尾（'.' 或串尾）。段边界只有这一处定义。
+  static std::size_t seg_end(std::string_view s, std::size_t pos) {
+    const std::size_t dot = s.find('.', pos);
+    return dot == std::string_view::npos ? s.size() : dot;
   }
 
   // 通配符匹配："*" 匹配单级，">"（须为末段）匹配其后至少一级（不匹配前缀本身）。
-  static bool match(const std::string& pattern, const std::string& topic) {
-    const std::vector<std::string> pp = split(pattern);
-    const std::vector<std::string> tp = split(topic);
-    return match_seg(pp, 0, tp, 0);
-  }
-
-  static std::vector<std::string> split(const std::string& s) {
-    std::vector<std::string> out;
-    std::size_t start = 0;
-    while (true) {
-      const std::size_t dot = s.find('.', start);
-      if (dot == std::string::npos) {
-        out.push_back(s.substr(start));
-        return out;
-      }
-      out.push_back(s.substr(start, dot - start));
-      start = dot + 1;
+  // 逐段比较、不做任何分配：旧实现在每次调用里 split 出两个 vector<string>
+  // （每帧每订阅者 2 次 vector + N 次 substr 分配）。
+  [[nodiscard]] static bool match(std::string_view pattern, std::string_view topic) {
+    for (std::size_t pi = 0, ti = 0;;) {
+      const std::size_t pe = seg_end(pattern, pi);
+      const std::size_t te = seg_end(topic, ti);
+      const std::string_view ps = pattern.substr(pi, pe - pi);
+      // 走到这里就说明 ti 处还有一个（可能为空的）段落 → 至少一级
+      if (ps == ">") return true;
+      if (ps != "*" && ps != topic.substr(ti, te - ti)) return false;
+      if (pe == pattern.size()) return te == topic.size();
+      if (te == topic.size()) return false;
+      pi = pe + 1;
+      ti = te + 1;
     }
-  }
-
-  static bool match_seg(const std::vector<std::string>& pp, std::size_t pi,
-                        const std::vector<std::string>& tp, std::size_t ti) {
-    if (pi == pp.size()) return ti == tp.size();
-    if (pp[pi] == ">") return ti < tp.size();  // 末段通配：其后至少一级
-    if (ti == tp.size()) return false;
-    if (pp[pi] != "*" && pp[pi] != tp[ti]) return false;
-    return match_seg(pp, pi + 1, tp, ti + 1);
   }
 
   // 类型相交：订阅者的类型标签与帧的 type_tag 一致（空标签 = 任意类型）。
   // 这是**目标集**的判据之一：名字匹配但类型不相交的订阅者不是本帧的目标，不建投递单元、
   // 不产生任何计数（`subscriber_count()` 就是“名字 ∩ 类型”的大小）。
-  static bool type_matches(const Subscriber& sub, const std::string& tag) {
+  [[nodiscard]] static bool type_matches(const Subscriber& sub, std::string_view tag) {
     return sub.filter_tag.empty() || sub.filter_tag == tag;
   }
 
   // 快照目标订阅者集合：名字匹配 ∩ 类型匹配
-  std::vector<std::shared_ptr<Subscriber>> match_subs(const std::string& topic,
-                                                      const std::string& tag) {
+  std::vector<std::shared_ptr<Subscriber>> match_subs(std::string_view topic,
+                                                      std::string_view tag) {
     std::vector<std::shared_ptr<Subscriber>> out;
     for (const auto& s : subs)
       if (type_matches(*s, tag) && match(s->pattern, topic)) out.push_back(s);
@@ -197,24 +199,29 @@ public:
   }
 
   // 只按名字计数（不判类型）：`broker::topic_info` 的内省口径
-  std::size_t name_matched_count(const std::string& topic) const {
+  std::size_t name_matched_count(std::string_view topic) const {
     std::size_t n = 0;
     for (const auto& s : subs)
       if (match(s->pattern, topic)) ++n;
     return n;
   }
 
-  Topic& topic_for(const std::string& name) { return topics[name]; }
+  // 透明查找：调用方可以只给 string_view，不必先造一个 string
+  Topic& topic_for(std::string_view name) {
+    const auto it = topics.find(name);
+    return it != topics.end() ? it->second : topics.try_emplace(std::string(name)).first->second;
+  }
 
   // 订阅时的类型过滤预校验（仅当订阅模式恰好是具体 topic 且已绑定时可判；
   // 通配符/未绑定 topic 推迟到目标集快照时按帧标签相交）
   void check_filter_early(const Subscriber& sub) {
     if (sub.filter_tag.empty()) return;
     const auto it = topics.find(sub.pattern);
-    if (it != topics.end() && it->second.bound && it->second.bound_tag != sub.filter_tag)
+    if (it == topics.end() || !it->second.binding) return;
+    const std::string& bound_tag = it->second.binding->tag;
+    if (bound_tag != sub.filter_tag)
       throw TypeMismatchError(std::string("shuttle: 订阅 ") + sub.pattern + " 声明类型 " +
-                              sub.filter_tag + "，与 topic 绑定 " + it->second.bound_tag +
-                              " 冲突");
+                              sub.filter_tag + "，与 topic 绑定 " + bound_tag + " 冲突");
   }
 
   // 首次绑定 topic 类型时的反向预校验（`check_filter_early` 的镜像）：确认没有"模式恰好是
@@ -223,12 +230,12 @@ public:
   // 没有这一步，同一个用户错误（订阅者标签写错）报不报错就取决于注册顺序：
   // topic 先绑定 → 订阅时 `check_filter_early` 抛；订阅先发生 → 该订阅者此后收到的每一帧
   // 都悄无声息地不属于目标集，永远不报错。
-  void check_bind_compat(const std::string& topic, const std::string& tag) {
+  void check_bind_compat(std::string_view topic, std::string_view tag) {
     for (const auto& sub : subs) {
       if (sub->filter_tag.empty() || sub->filter_tag == tag) continue;
       if (has_wildcard(sub->pattern) || !match(sub->pattern, topic)) continue;
-      throw TypeMismatchError(std::string("shuttle: topic ") + topic + " 绑定类型 " + tag +
-                              "，但已有订阅者声明 " + sub->filter_tag);
+      throw TypeMismatchError(std::string("shuttle: topic ") + std::string(topic) + " 绑定类型 " +
+                              std::string(tag) + "，但已有订阅者声明 " + sub->filter_tag);
     }
   }
 
@@ -236,13 +243,13 @@ public:
   // 这一帧能不能发。被拒绝的帧等于从未发布过（`published`/`seq` 都不推进）。
   // 只数**目标集**里的 blocking 订阅者：类型不相交的订阅者本帧根本没打算投给它，
   // 不能因为它存在就把一帧发不出去。
-  void now_preflight(const std::string& topic, const std::string& tag, NowPolicy policy) {
+  void now_preflight(std::string_view topic, std::string_view tag, NowPolicy policy) {
     if (policy != NowPolicy::reject) return;
     const auto matched = match_subs(topic, tag);
     const std::size_t n = select(matched, Capability::blocking).size();
     if (n == 0) return;
     throw CapabilityError(std::string("shuttle: publish_now 遇到 ") + std::to_string(n) +
-                          " 个入口为 blocking 的订阅者（topic " + topic +
+                          " 个入口为 blocking 的订阅者（topic " + std::string(topic) +
                           "）；它们无法在 publish_now 里投递，可用 NowPolicy::defer/drop，"
                           "或改用 publish_serial/publish_concurrent");
   }
@@ -259,7 +266,7 @@ public:
     // 在 dispatch 之后由 take_retired_delivery() 报回来。两条来源互补，覆盖全部窗口。
     if (sub->removed) {
       ++sub->dropped;
-      ++topics[env.meta.topic].dropped;
+      ++topic_for(env.meta.topic).dropped;
       return Delivery::retired;
     }
     switch (sub->kind) {
@@ -285,7 +292,7 @@ public:
         // 于是在 C++ 侧是“幻影成功”；现在计为 retired（未进入回调，但不是错误）。
         if (detail::backend::take_retired_delivery()) {
           ++sub->dropped;
-          ++topics[env.meta.topic].dropped;
+          ++topic_for(env.meta.topic).dropped;
           return Delivery::retired;
         }
         break;
@@ -346,25 +353,40 @@ public:
     return "<无异常信息>";
   }
 
+  // 失败对象的统一构造：文案（“投递被取消”/“未知异常”）只在这里出现一次。
+  static std::exception_ptr cancelled_exc() {
+    return std::make_exception_ptr(std::runtime_error("投递被取消"));
+  }
+  static std::exception_ptr unknown_exc() {
+    return std::make_exception_ptr(std::runtime_error("未知异常"));
+  }
+  static Publication::Failure failure_of(std::string label, std::exception_ptr e) {
+    return Publication::Failure{std::move(label), std::move(e)};
+  }
+
+  // 没收到内容就计入该订阅者与 topic 的 dropped（失败与退订丢弃同一口径）
+  static void count_dropped(Topic& t, const std::shared_ptr<Subscriber>& sub) {
+    ++t.dropped;
+    ++sub->dropped;
+  }
+
   // 建立类型绑定 + 打序号 + retained 快照（发布公共段）。
-  std::shared_ptr<const Envelope> make_envelope(const std::string& topic,
+  std::shared_ptr<const Envelope> make_envelope(std::string_view topic,
                                                 std::shared_ptr<const void> payload,
                                                 const detail::TypeOps* ops) {
     Topic& t = topic_for(topic);
-    if (!t.bound) {
+    if (!t.binding) {
       check_bind_compat(topic, ops->tag);
-      t.bound = true;
-      t.ops = ops;
-      t.bound_tag = ops->tag;
-    } else if (t.bound_tag != std::string(ops->tag)) {
-      throw TypeMismatchError(std::string("shuttle: topic ") + topic + " 已绑定类型 " +
-                              t.bound_tag + "，本次发布类型 " + ops->tag);
+      t.binding = Binding{ops->tag, ops};
+    } else if (t.binding->tag != ops->tag) {
+      throw TypeMismatchError(std::string("shuttle: topic ") + std::string(topic) +
+                              " 已绑定类型 " + t.binding->tag + "，本次发布类型 " + ops->tag);
     }
     auto env = std::make_shared<Envelope>();
     env->payload = std::move(payload);
     env->ops = ops;
-    env->meta.topic = topic;
-    env->meta.type_tag = t.bound_tag;
+    env->meta.topic = std::string(topic);
+    env->meta.type_tag = t.binding->tag;
     env->meta.seq = ++t.seq;
     env->meta.time_fs = detail::backend::now_fs();
     ++t.published;
@@ -373,44 +395,43 @@ public:
   }
 
   // 从字节流发布（SV 侧）：raw 绑定持有字节拷贝；typed 绑定物化为 C++ 对象。
-  std::shared_ptr<const Envelope> make_envelope_bytes(const std::string& topic,
-                                                      const std::string& tag,
+  std::shared_ptr<const Envelope> make_envelope_bytes(std::string_view topic,
+                                                      std::string_view tag,
                                                       const std::vector<std::byte>& bytes) {
     Topic& t = topic_for(topic);
-    if (!t.bound) {
+    if (!t.binding) {
       // 该 topic 没有 C++ 发布者（只有 SV 发布者）：若已有匹配的 C++ 类型化订阅者，
       // 就按订阅者的类型绑定，这样本帧可以物化成 C++ 对象；否则退化为纯字节流。
       check_bind_compat(topic, tag);
-      t.bound = true;
-      t.ops = &raw_ops;
-      t.bound_tag = tag;
+      t.binding = Binding{std::string(tag), &raw_ops};
       for (const auto& sub : subs) {
         if (sub->kind != SubKind::typed || !sub->ops || !sub->ops->decode) continue;
         if (!type_matches(*sub, tag) || !match(sub->pattern, topic)) continue;
-        t.ops = sub->ops;
+        t.binding->ops = sub->ops;
         break;
       }
-    } else if (t.bound_tag != tag) {
-      throw TypeMismatchError(std::string("shuttle: topic ") + topic + " 已绑定类型 " +
-                              t.bound_tag + "，本次发布类型 " + tag);
+    } else if (t.binding->tag != tag) {
+      throw TypeMismatchError(std::string("shuttle: topic ") + std::string(topic) +
+                              " 已绑定类型 " + t.binding->tag + "，本次发布类型 " +
+                              std::string(tag));
     }
-    if (t.ops == &raw_ops) {
+    if (t.binding->ops == &raw_ops) {
       auto payload = std::make_shared<const std::vector<std::byte>>(bytes);
       auto env = std::make_shared<Envelope>();
       env->payload = std::move(payload);
       env->ops = &raw_ops;
-      env->meta.topic = topic;
-      env->meta.type_tag = t.bound_tag;
+      env->meta.topic = std::string(topic);
+      env->meta.type_tag = t.binding->tag;
       env->meta.seq = ++t.seq;
       env->meta.time_fs = detail::backend::now_fs();
       ++t.published;
       if (t.retained_on) t.retained_env = env;
       return env;
     }
-    if (!t.ops->decode)
-      throw TypeMismatchError(std::string("shuttle: topic ") + topic +
+    if (!t.binding->ops->decode)
+      throw TypeMismatchError(std::string("shuttle: topic ") + std::string(topic) +
                               " 绑定的类型不支持从字节流物化");
-    return make_envelope(topic, t.ops->decode(bytes), t.ops);
+    return make_envelope(topic, t.binding->ops->decode(bytes), t.binding->ops);
   }
 
   static void wait_trigger(const Trigger& trig) {
@@ -418,7 +439,7 @@ public:
   }
 
   // ── `publish_serial`：单投递单元，per-topic 串行链保发布序 FIFO ─────────────────────
-  std::shared_ptr<PubState> start_serial(const std::string& topic,
+  std::shared_ptr<PubState> start_serial(std::string_view topic,
                                       std::shared_ptr<const Envelope> env, Trigger trig,
                                       std::vector<std::shared_ptr<Subscriber>> targets) {
     auto pub = std::make_shared<PubState>();
@@ -436,14 +457,14 @@ public:
     // 链式 FIFO：prev = 上一帧的"链尾"事件（初始已 set），mine = 本帧的链尾。本帧完成
     // 时必须 set **mine**（发布瞬间装进 topics[topic].chain 的那一个）；若那时再读
     // topics[topic].chain，拿到的是后来者安装的链尾，会放错帧、让后续帧永久阻塞。
-    auto prev = std::make_shared<weave::Event>(topics[topic].chain);
+    auto prev = std::make_shared<weave::Event>(topic_for(topic).chain);
     auto mine = std::make_shared<weave::Event>();
-    topics[topic].chain = *mine;  // 安装新链尾（同步段完成，保发布序）
-    weave::create_task("shuttle-seq-" + topic,
+    topic_for(topic).chain = *mine;  // 安装新链尾（同步段完成，保发布序）
+    weave::create_task(std::string("shuttle-seq-") + std::string(topic),
                        [this, pub, env, trig = std::move(trig), targets = std::move(targets),
                         prev, mine]() mutable {
       std::optional<Publication::Failure> failure;
-      Topic& t = topics[env->meta.topic];
+      Topic& t = topic_for(env->meta.topic);
       std::size_t idx = 0;  // 已到达终态的目标数；单元级失败时用它补齐
       try {
         wait_trigger(trig);
@@ -458,27 +479,20 @@ public:
           } catch (const weave::CancelledError&) {
             throw;  // 取消透传到外层：本目标与其余目标统一记 failed（仍要放行链尾）
           } catch (const std::exception&) {
-            ++t.dropped;
-            ++sub->dropped;
-            if (!failure)
-              failure = Publication::Failure{describe(sub), std::current_exception()};
+            count_dropped(t, sub);
+            if (!failure) failure = failure_of(describe(sub), std::current_exception());
           } catch (...) {
-            ++t.dropped;
-            ++sub->dropped;
-            if (!failure)
-              failure = Publication::Failure{describe(sub),
-                                             std::make_exception_ptr(std::runtime_error("未知异常"))};
+            count_dropped(t, sub);
+            if (!failure) failure = failure_of(describe(sub), unknown_exc());
           }
           target_finished(pub);
         }
       } catch (const weave::CancelledError&) {
-        failure = Publication::Failure{"<delivery>",
-                                       std::make_exception_ptr(std::runtime_error("投递被取消"))};
+        failure = failure_of("<delivery>", cancelled_exc());
       } catch (const std::exception&) {
-        failure = Publication::Failure{"<trigger>", std::current_exception()};
+        failure = failure_of("<trigger>", std::current_exception());
       } catch (...) {
-        failure = Publication::Failure{
-            "<trigger>", std::make_exception_ptr(std::runtime_error("未知异常"))};
+        failure = failure_of("<trigger>", unknown_exc());
       }
       // 单元级失败（触发条件抛异常 / 被取消 / 其余目标未尝试）：本单元未到达终态的目标
       // 全部记 failed —— 没收到就必须落在计数里，不能只留一条 Failure。
@@ -495,7 +509,7 @@ public:
   }
 
   // ── `publish_concurrent`：每订阅者一投递单元，互不等待 ─────────────────────────────────
-  std::shared_ptr<PubState> start_concurrent(const std::string& topic,
+  std::shared_ptr<PubState> start_concurrent(std::string_view topic,
                                       std::shared_ptr<const Envelope> env, Trigger trig,
                                       std::vector<std::shared_ptr<Subscriber>> targets) {
     auto pub = std::make_shared<PubState>();
@@ -508,9 +522,10 @@ public:
       return pub;
     }
     for (const auto& sub : targets) {
-      weave::create_task("shuttle-par-" + topic, [this, pub, env, trig, sub]() mutable {
+      weave::create_task(std::string("shuttle-par-") + std::string(topic),
+                         [this, pub, env, trig, sub]() mutable {
         std::optional<Publication::Failure> failure;
-        Topic& t = topics[env->meta.topic];
+        Topic& t = topic_for(env->meta.topic);
         try {
           wait_trigger(trig);
           if (deliver(sub, *env) == Delivery::delivered)
@@ -519,19 +534,14 @@ public:
             ++pub->retired;
         } catch (const weave::CancelledError&) {
           // 取消与异常同一口径：没收到内容就是 failed，计入 dropped
-          ++t.dropped;
-          ++sub->dropped;
-          failure = Publication::Failure{describe(sub),
-                                         std::make_exception_ptr(std::runtime_error("投递被取消"))};
+          count_dropped(t, sub);
+          failure = failure_of(describe(sub), cancelled_exc());
         } catch (const std::exception&) {
-          ++t.dropped;
-          ++sub->dropped;
-          failure = Publication::Failure{describe(sub), std::current_exception()};
+          count_dropped(t, sub);
+          failure = failure_of(describe(sub), std::current_exception());
         } catch (...) {
-          ++t.dropped;
-          ++sub->dropped;
-          failure = Publication::Failure{describe(sub),
-                                         std::make_exception_ptr(std::runtime_error("未知异常"))};
+          count_dropped(t, sub);
+          failure = failure_of(describe(sub), unknown_exc());
         }
         unit_finished(pub, failure);
       });
@@ -546,7 +556,7 @@ public:
   }
 
   // 按入口取匹配目标（一条注册只有一个 cap，所以天然是两拨）
-  static std::vector<std::shared_ptr<Subscriber>> select(
+  [[nodiscard]] static std::vector<std::shared_ptr<Subscriber>> select(
       const std::vector<std::shared_ptr<Subscriber>>& matched, Capability want) {
     std::vector<std::shared_ptr<Subscriber>> out;
     for (const auto& s : matched)
@@ -566,7 +576,7 @@ public:
         auto env_copy = t.retained_env;
         weave::create_task("shuttle-retained", [this, sub, env_copy]() {
           if (deliver(sub, *env_copy) == Delivery::delivered)
-            ++topics[env_copy->meta.topic].delivered;
+            ++topic_for(env_copy->meta.topic).delivered;
         });
       } else {
         if (deliver(sub, *t.retained_env) == Delivery::delivered) ++t.delivered;
@@ -587,8 +597,9 @@ public:
 // drop 掉的不计入 expected，只进 excluded()；reject 直接抛，没有返回值。
 inline std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope> env,
                                                NowPolicy policy) {
-  const std::string topic = env->meta.topic;
-  Topic& t = b.topics[topic];
+  // env 由本函数与后台链持有，视图全程稳定：少一次每帧的 string 拷贝
+  const std::string_view topic = env->meta.topic;
+  Topic& t = b.topic_for(topic);
   // 目标集 = 名字 ∩ 类型：类型不相交的订阅者既不进 expected，也不建任何投递单元
   const auto matched = b.match_subs(topic, env->meta.type_tag);
   // 按"该次注册的那一条入口"把目标劈成两拨：一条注册只可能有一条入口（`cap` 互斥），
@@ -617,27 +628,16 @@ inline std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
       else
         ++pub->retired;
     } catch (const weave::CancelledError&) {
-      ++t.dropped;
-      ++sub->dropped;
-      pub->failures.push_back(Publication::Failure{
-          Broker::describe(sub),
-          std::make_exception_ptr(std::runtime_error("投递被取消"))});
-      if (pub->first_error.empty()) pub->first_error = "投递被取消";
+      Broker::count_dropped(t, sub);
+      b.record_failure(pub, Broker::failure_of(Broker::describe(sub), Broker::cancelled_exc()));
       if (!first_exc) first_exc = pub->failures.back().error;
-    } catch (const std::exception& e) {
-      ++t.dropped;
-      ++sub->dropped;
-      pub->failures.push_back(
-          Publication::Failure{Broker::describe(sub), std::current_exception()});
-      if (pub->first_error.empty()) pub->first_error = e.what();
-      if (!first_exc) first_exc = std::current_exception();
+    } catch (const std::exception&) {
+      Broker::count_dropped(t, sub);
+      b.record_failure(pub, Broker::failure_of(Broker::describe(sub), std::current_exception()));
+      if (!first_exc) first_exc = pub->failures.back().error;
     } catch (...) {
-      ++t.dropped;
-      ++sub->dropped;
-      pub->failures.push_back(Publication::Failure{
-          Broker::describe(sub),
-          std::make_exception_ptr(std::runtime_error("未知异常"))});
-      if (pub->first_error.empty()) pub->first_error = "未知异常";
+      Broker::count_dropped(t, sub);
+      b.record_failure(pub, Broker::failure_of(Broker::describe(sub), Broker::unknown_exc()));
       if (!first_exc) first_exc = pub->failures.back().error;
     }
     b.target_finished(pub);
@@ -645,8 +645,7 @@ inline std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
   if (policy == NowPolicy::drop) {
     t.dropped += blocking_targets.size();
     for (const auto& sub : blocking_targets) ++sub->dropped;
-  }
-  if (!defer) {
+  }  if (!defer) {
     // 非 defer：`finished` 已在逐目标记账里到齐（含零目标的情况）
     if (!pub->done_flag) b.pub_complete(pub);
     if (first_exc) std::rethrow_exception(first_exc);
@@ -668,7 +667,9 @@ inline std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const E
   return pub;
 }
 
-}  // namespace detail
+}  // namespace shuttle::detail
+
+namespace shuttle {
 
 using detail::PubState;
 

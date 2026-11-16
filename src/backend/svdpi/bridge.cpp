@@ -22,8 +22,7 @@ void shuttle_sv_dispatch_nb(int sv_sid, const char* topic, const char* type_tag,
 long long shuttle_sv_time_fs();
 }
 
-namespace shuttle {
-namespace detail {
+namespace shuttle::detail {
 namespace backend {
 
 namespace {
@@ -82,5 +81,4 @@ std::uint64_t frame_qword(int index) {
 }
 
 }  // namespace backend
-}  // namespace detail
-}  // namespace shuttle
+}  // namespace shuttle::detail

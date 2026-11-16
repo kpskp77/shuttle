@@ -28,8 +28,7 @@
 #include "internal/broker_impl.hpp"
 #include "internal/broker_internal.hpp"
 
-namespace shuttle {
-namespace detail {
+namespace shuttle::detail {
 
 // ── 外部接入门面（错误经 set_last_error + 返回码/异常报告）────────────────
 
@@ -65,7 +64,7 @@ int pub_id(const Publication& p) {
   return pub ? pub->id : 0;
 }
 
-int ext_sub(const std::string& pattern, int caps, const std::string& type_tag, int handle) {
+int ext_sub(std::string pattern, int caps, std::string type_tag, int handle) {
   try {
     Broker& b = Broker::get();
     // 一次注册 = 一条入口：caps 必须恰好是 1（`shuttle_subscribe`）或 2
@@ -75,11 +74,11 @@ int ext_sub(const std::string& pattern, int caps, const std::string& type_tag, i
       throw std::invalid_argument("shuttle: 订阅能力必须恰好一位（blocking=1 / nonblocking=2）");
     auto sub = std::make_shared<Subscriber>();
     sub->id = b.next_sub_id++;
-    sub->pattern = pattern;
+    sub->pattern = std::move(pattern);
     sub->kind = SubKind::external;
     sub->cap = caps == 1 ? Capability::blocking : Capability::nonblocking;
     sub->handle = handle;
-    sub->filter_tag = type_tag;
+    sub->filter_tag = std::move(type_tag);
     b.check_filter_early(*sub);
     b.subs.push_back(sub);
     b.retained_catchup(sub);
@@ -99,26 +98,35 @@ void ext_unsub(int handle) {
                b.subs.end());
 }
 
+namespace {
+
+// 按 id 取发布状态（未知 id = nullptr）：下面五个门面函数共用的唯一入口，
+// 免得每处都写一遍 find + 判 end。
+std::shared_ptr<PubState> pub_of(int pub_id) {
+  Broker& b = Broker::get();
+  const auto it = b.pubs.find(pub_id);
+  return it != b.pubs.end() ? it->second : nullptr;
+}
+
+}  // namespace
+
 bool pub_done(int pub_id) {
-  auto it = Broker::get().pubs.find(pub_id);
-  return it != Broker::get().pubs.end() && it->second->done_flag;
+  const auto pub = pub_of(pub_id);
+  return pub && pub->done_flag;
 }
 
 std::string pub_error(int pub_id) {
-  const auto it = Broker::get().pubs.find(pub_id);
-  if (it == Broker::get().pubs.end()) return "shuttle: 未知 pub_id";
-  return it->second->first_error;
+  const auto pub = pub_of(pub_id);
+  return pub ? pub->first_error : std::string("shuttle: 未知 pub_id");
 }
 
 void pub_wait(int pub_id, std::int64_t timeout_fs, int* status) {
-  Broker& b = Broker::get();
-  const auto it = b.pubs.find(pub_id);
-  if (it == b.pubs.end()) {
+  const std::shared_ptr<PubState> pub = pub_of(pub_id);
+  if (!pub) {
     set_last_error("shuttle: 未知 pub_id " + std::to_string(pub_id));
     *status = 2;
     return;
   }
-  const std::shared_ptr<PubState> pub = it->second;
   if (timeout_fs <= 0) {
     pub->done_ev.wait();
   } else {
@@ -135,9 +143,8 @@ void pub_wait(int pub_id, std::int64_t timeout_fs, int* status) {
 }
 
 long long pub_stat(int pub_id, int kind) {
-  const auto it = Broker::get().pubs.find(pub_id);
-  if (it == Broker::get().pubs.end()) return -1;
-  const std::shared_ptr<PubState>& pub = it->second;
+  const std::shared_ptr<PubState> pub = pub_of(pub_id);
+  if (!pub) return -1;
   switch (kind) {
     case 0:
       return static_cast<long long>(pub->expected);
@@ -155,22 +162,20 @@ long long pub_stat(int pub_id, int kind) {
 }
 
 int pub_state(int pub_id) {
-  const auto it = Broker::get().pubs.find(pub_id);
-  if (it == Broker::get().pubs.end()) return -1;
-  const std::shared_ptr<PubState>& pub = it->second;
+  const std::shared_ptr<PubState> pub = pub_of(pub_id);
+  if (!pub) return -1;
   if (!pub->done_flag) return 0;
   return pub->failures.empty() ? 1 : 2;
 }
 
 void pub_on_complete(int pub_id, std::function<void()> fn) {
-  const auto it = Broker::get().pubs.find(pub_id);
-  if (it == Broker::get().pubs.end()) return;
-  if (it->second->done_flag) {
+  const std::shared_ptr<PubState> pub = pub_of(pub_id);
+  if (!pub) return;
+  if (pub->done_flag) {
     fn();
     return;
   }
-  it->second->on_complete.push_back(std::move(fn));
+  pub->on_complete.push_back(std::move(fn));
 }
 
-}  // namespace detail
-}  // namespace shuttle
+}  // namespace shuttle::detail

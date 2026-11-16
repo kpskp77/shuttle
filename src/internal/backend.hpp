@@ -15,8 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace shuttle {
-namespace detail {
+namespace shuttle::detail {
 namespace backend {
 
 // 当前构建是否带外部（SV）订阅者通道：svdpi = true，systemc = false。
@@ -44,5 +43,4 @@ void note_retired_delivery();
 bool take_retired_delivery();
 
 }  // namespace backend
-}  // namespace detail
-}  // namespace shuttle
+}  // namespace shuttle::detail

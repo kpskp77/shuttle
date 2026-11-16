@@ -10,7 +10,7 @@ just build          # 按当前后端构建
 just sc             # systemc 后端本地跑（预期末行 "WEAVE TEST PASSED"）
 just vcs            # svdpi 后端 + 真实 VCS 仿真（预期 "SHUTTLE CPP DEMO PASSED"）
 just test           # 示例：两个后端都过一遍
-just test-all       # 测试套件：systemc（44 用例）+ VCS（47 用例 + 76 个 SV 断言）
+just test-all       # 测试套件：systemc（45 用例）+ VCS（48 用例 + 76 个 SV 断言）
 ```
 
 `tests/svdpi/run.sh` 在没有 vcs 的机器上会打印 `[svdpi-test] skipped` 并以 0 退出，

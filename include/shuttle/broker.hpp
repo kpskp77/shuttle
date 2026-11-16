@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace shuttle::broker {
@@ -25,6 +26,6 @@ struct TopicInfo {
 std::vector<std::string> topics();
 
 // 单个 topic 的信息；不存在返回 std::nullopt
-std::optional<TopicInfo> topic_info(const std::string& name);
+std::optional<TopicInfo> topic_info(std::string_view name);
 
 }  // namespace shuttle::broker

@@ -13,8 +13,7 @@
 
 #include "internal/backend.hpp"
 
-namespace shuttle {
-namespace detail {
+namespace shuttle::detail {
 namespace backend {
 
 bool available() { return false; }
@@ -39,5 +38,4 @@ void note_retired_delivery() {}
 bool take_retired_delivery() { return false; }
 
 }  // namespace backend
-}  // namespace detail
-}  // namespace shuttle
+}  // namespace shuttle::detail

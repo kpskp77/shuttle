@@ -13,8 +13,7 @@
 #include <shuttle/trigger.hpp>
 #include <shuttle/types.hpp>
 
-namespace shuttle {
-namespace detail {
+namespace shuttle::detail {
 
 // 每进程独立的最近错误信息（svdpi 桥的 shuttle_c_last_error 数据源）。
 // 任何返回错误码的内部入口都经这里记录详细原因。
@@ -40,7 +39,7 @@ int pub_id(const Publication& p);
 
 // 外部订阅注册：handle 由后端分配（svdpi = SV 注册表编号），broker 原样记录、dispatch 时带回。
 // 返回 0 成功，非 0 失败（类型绑定冲突等）。
-int ext_sub(const std::string& topic_pattern, int caps, const std::string& type_tag, int handle);
+int ext_sub(std::string topic_pattern, int caps, std::string type_tag, int handle);
 void ext_unsub(int handle);
 
 // Publication 完成跟踪（pub_id 由发布时分配）
@@ -69,5 +68,4 @@ int event_registry_create();
 void event_registry_set(int ev_id);
 void event_registry_destroy(int ev_id);
 
-}  // namespace detail
-}  // namespace shuttle
+}  // namespace shuttle::detail

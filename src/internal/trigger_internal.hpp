@@ -11,12 +11,10 @@
 
 #include <shuttle/trigger.hpp>
 
-namespace shuttle {
-namespace detail {
+namespace shuttle::detail {
 
 struct TriggerAccess {
   static Trigger from_fn(std::function<void()> fn) { return Trigger(std::move(fn)); }
 };
 
-}  // namespace detail
-}  // namespace shuttle
+}  // namespace shuttle::detail

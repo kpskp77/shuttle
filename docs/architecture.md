@@ -255,9 +255,9 @@ broker 的状态集中在三处：topic 表、订阅者表与发布表。帧是�
 
 ```cpp
 struct Topic {
-  std::string bound_tag;                 // 类型标签（C++ SHUTTLE_REFLECT 名 / SV type_tag）
-  const detail::TypeOps* ops;            // 类型擦除操作表；raw_ops = 纯字节流
-  bool bound;
+  std::optional<Binding> binding;        // 未绑定 = 只能发纯字节流（三件事是一个东西，所以是一个 optional）
+  // struct Binding { std::string tag;    // C++ SHUTTLE_REFLECT 名 / SV type_tag
+  //                  const detail::TypeOps* ops; };  // raw_ops = 纯字节流
   std::uint64_t seq;                     // topic 级序号（跨多个 Publisher 单调递增）
   std::uint64_t published, delivered, dropped, deferred;  // deferred = 被 defer 进链的次数
   bool retained_on; std::shared_ptr<const Envelope> retained_env;
