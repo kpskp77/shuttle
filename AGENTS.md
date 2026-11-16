@@ -10,7 +10,7 @@ just build          # 按当前后端构建
 just sc             # systemc 后端本地跑（预期末行 "WEAVE TEST PASSED"）
 just vcs            # svdpi 后端 + 真实 VCS 仿真（预期 "SHUTTLE CPP DEMO PASSED"）
 just test           # 示例：两个后端都过一遍
-just test-all       # 测试套件：systemc（45 用例）+ VCS（48 用例 + 76 个 SV 断言）
+just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 79 个 SV 断言）
 ```
 
 `tests/svdpi/run.sh` 在没有 vcs 的机器上会打印 `[svdpi-test] skipped` 并以 0 退出，
@@ -69,7 +69,16 @@ just test-all       # 测试套件：systemc（45 用例）+ VCS（48 用例 + 7
     零目标的发布必须立即完成（`publish_serial` 也要短路，不能建投递单元）。所有"没收到"都必须
     可数：策略 `skip` 的落 `skipped()`、快照后被退订的落 `retired()`、类型不相交的不进目标集
     （这不是"没收到"，是"本就不是它的帧"）。别让任何一类变成无记录。
-11. **`defer` 复用 `publish_serial` 的同一条链**（不要另起并发投递）：由此得到可测定律"同一 topic 的
+11. **通配符只属于订阅模式**：发布 / `topic_declare` / `topic_set_retained` 的名字不许含 `*`/`>`
+    （`Broker::check_topic_name`），订阅模式里 `>` 必须独占末段、`*` 必须独占一段、不许空段
+    （`Broker::check_pattern`），违反抛 `TopicPatternError`。两道校验都必须在**建任何状态之前**
+    ——允许通配符 topic 会在 `topics` 表里立起一个名字带 `*` 的幻影 topic（自己的 seq / 绑定 /
+    retained 槽），并按字符串比对真的扇出给 `a.*`、`a.>`、`>` 三类订阅者，看着像广播；而
+    `check_bind_compat` 会跳过通配符订阅者，连标签写错都不会暴露。订阅侧不校验的话，`a.>.b`
+    因 `match` 遇到 `>` 就放行而静默等于 `a.>`，`a.rx*` 只能匹配字面量。`now_preflight` 里的
+    校验要排在策略判定之前（同一个非法名字不该因 `NowPolicy` 不同而换报错）。只读查询
+    （`topic_retained`）不校验，非法名当"没绑过"。
+12. **`defer` 复用 `publish_serial` 的同一条链**（不要另起并发投递）：由此得到可测定律"同一 topic 的
     后台投递顺序 = 发布调用顺序"。串行链的跨订阅者队头阻塞是显式接受的代价——想要并发请用
     `publish_concurrent`。
 

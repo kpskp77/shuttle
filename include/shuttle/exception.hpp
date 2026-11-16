@@ -40,6 +40,14 @@ public:
   ~TypeMismatchError() override;
 };
 
+// topic / 订阅模式的语法错误：发布、类型声明或 retained 用了含通配符的名字，
+// 或订阅模式里 ">" 不在末段、出现空段、通配符混进了普通段
+class TopicPatternError : public ShuttleError {
+public:
+  using ShuttleError::ShuttleError;
+  ~TopicPatternError() override;
+};
+
 // 解码失败：字节流长度不足、尾部多余字节、长度前缀越界等
 class DecodeError : public ShuttleError {
 public:

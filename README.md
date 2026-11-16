@@ -206,19 +206,19 @@ xmake f --backend=svdpi   && xmake run shuttle_examples_svdpi_vcs   # 需 xmake 
 `tests/` 与 `examples/` 平行：示例示范用法，测试只断言行为（失败即 `[FAIL]`，整体判失败）。
 
 ```bash
-just test-sc    # systemc 后端：tests/cpp 45 个用例（跨语言用例不参与编译）
-just test-vcs   # VCS 后端：tests/cpp 48 个用例 + tests/sv 76 个断言
+just test-sc    # systemc 后端：tests/cpp 46 个用例（跨语言用例不参与编译）
+just test-vcs   # VCS 后端：tests/cpp 49 个用例 + tests/sv 79 个断言
 just test-all   # 两者都跑
 ```
 
 | 文件 | 覆盖内容 |
 | --- | --- |
 | `tests/cpp/codec_tests.cpp` | 线格式黄金字节、各宽度大端与补码、IEEE754、长度前缀、enum 底层类型、嵌套 struct、越界抛 `DecodeError`、类型标签与 `has_codec_v` |
-| `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、类型不相交的帧不入目标集（含绑定时的通配符豁免） |
+| `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、类型不相交的帧不入目标集（含绑定时的通配符豁免）、topic 名与订阅模式的语法校验（`TopicPatternError`，被拒时不留 topic 条目） |
 | `tests/cpp/publish_tests.cpp` | `NowPolicy` 三策略、`wait/wait(timeout)/done/result/failures`、计数契约、失败聚合不影响其余目标、零目标立即完成、类型不相交即零目标、入口选择、`defer` 与 `serial` 共享 FIFO |
 | `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发等待期间退订（在途帧记 retired） |
 | `tests/cpp/xlang_tests.cpp` | 跨语言往返（仅 svdpi 后端）：就绪握手、双向各三帧、类型标签与 seq 单调 |
-| `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、订阅先于绑定的标签冲突、快照、`shuttle_event`、跨语言往返 |
+| `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、订阅先于绑定的标签冲突、通配符 topic 发布被拒（`publish_now` 返回 null + last_error）、快照、`shuttle_event`、跨语言往返 |
 
 两个后端共用同一 broker，同一仿真内两侧互相可见：`tests/sv/shuttle_tests.sv` 先跑 SV 用例，
 再用 `weave_run` 驱动 C++ 侧用例，两侧都通过才打印 `SHUTTLE TESTS PASSED`

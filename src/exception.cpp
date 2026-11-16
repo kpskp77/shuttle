@@ -10,6 +10,7 @@ ShuttleError::~ShuttleError() = default;
 PublishError::~PublishError() = default;
 CapabilityError::~CapabilityError() = default;
 TypeMismatchError::~TypeMismatchError() = default;
+TopicPatternError::~TopicPatternError() = default;
 DecodeError::~DecodeError() = default;
 
 } // namespace shuttle

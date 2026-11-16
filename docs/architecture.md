@@ -40,6 +40,7 @@ shuttle 在 weave 之上提供三件事，不重复 weave 的职责：
 | **串行链** | 每个 topic 一条 FIFO 链（`Topic::chain`），`serial` 与 `now` 的 `defer` 共用（§6） |
 | **终态** | 目标对本帧的结局：delivered / retired / failed / deferred / skipped（§9） |
 | **记账** | 上述终态在 `PubState`、`Topic`、`Subscriber` 三层的计数 |
+| **topic 名 / 模式** | 发布与声明用的是**名**（不含通配符）；订阅写的是**模式**（可含 `*` / `>`）。两者语法不同，各有一道校验（§8.3） |
 
 术语与两侧枚举同名（`Capability::blocking` / `SHUTTLE_CAP_BLOCKING`）；在 SV 侧
 blocking 入口即 export task，nonblocking 入口即 export function。
@@ -301,6 +302,30 @@ struct PubState {
 ```
 
 `pubs` 表只增不减（仅随进程结束回收），长时间高频发布需要外部周期性清理策略。
+
+### 8.3 topic 名与订阅模式的语法
+
+通配符**只属于订阅模式**。发布、类型声明（`topic_declare`）、retained（`topic_set_retained`）
+拿到的都是具体名字，两侧用同一套规则校验，违反即抛 `TopicPatternError`：
+
+| 场合 | 写法 | 拒绝 |
+| --- | --- | --- |
+| topic 名（发布 / 声明 / retained） | `uart`、`uart.rx`、`uart.rx.0` | 含 `*` 或 `>`、空串、空段（`uart..rx`） |
+| 订阅模式 | 普通段、`*`（独占一段）、`>`（独占一段且必须末段） | `a.>.b`、`a.rx*`、空段、空串 |
+
+发布侧为什么必须拒绝：路由是字符串比对，允许 `publish_serial("uart.*")` 就等于在 `topics` 表里
+立起一个名字带 `*` 的幻影 topic——它有自己的 `seq`、类型绑定与 retained 槽，并且**真的会**
+投给 `uart.*`、`uart.>`、`>` 三类订阅者。看起来像"往整棵树广播"，实际只是名字碰巧撞上了模式；
+而 `uart0.*` 的订阅者反倒收不到。更糟的是 `check_bind_compat` 会跳过通配符订阅者，于是这类
+误用连"标签写错"都不会暴露。
+
+订阅侧为什么也要校验：`match` 一旦遇到模式端的 `>` 就放行剩余模式，所以 `a.>.b` 会静默退化成
+`a.>`；`a.rx*` 则只能匹配字面量 `a.rx*`。两者都是"注册成功、永远收不到"的沉默错误。
+
+校验点在**建任何状态之前**：发布走 `make_envelope` / `make_envelope_bytes`（`now` 还多一道
+`now_preflight`，且先于策略判定——同一个非法名字不该因为 `NowPolicy` 不同而换一种报错），
+topic 级写入走 `topic_declare` / `topic_set_retained`，注册走 `sub_typed` / `sub_raw` / `ext_sub`。
+只读查询（如 `topic_retained`）不校验，非法名一律当"没绑过"返回。
 
 ## 9. 记账契约
 

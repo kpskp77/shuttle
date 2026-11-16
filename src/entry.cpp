@@ -72,6 +72,7 @@ int ext_sub(std::string pattern, int caps, std::string type_tag, int handle) {
     // 订阅者走不同入口，违背不变量 4，直接拒绝。
     if (caps != 1 && caps != 2)
       throw std::invalid_argument("shuttle: 订阅能力必须恰好一位（blocking=1 / nonblocking=2）");
+    Broker::check_pattern(pattern);
     auto sub = std::make_shared<Subscriber>();
     sub->id = b.next_sub_id++;
     sub->pattern = std::move(pattern);

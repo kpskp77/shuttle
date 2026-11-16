@@ -374,6 +374,25 @@ module shuttle_tests;
     check(other.nb_count == 0, "bind_conflict.reverse_no_callback");
   endtask
 
+  // ── topic 名不得含通配符（* / > 只属于订阅模式）────────────────────────────────
+  // 只测发布侧：`publish_now` 失败是静默的（原因走 shuttle_c_last_error），不会像
+  // serial/concurrent 那样 $error；订阅模式的语法校验由 C++ 的 broker_tests case14 覆盖。
+  task automatic case_bad_topic();
+    automatic shuttle_pub #(XMsg) bad = new("sv.t.bad.*");
+    automatic shuttle_pub #(XMsg) sib = new("sv.t.bad.ok");
+    automatic XMsg                m   = new();
+    automatic shuttle_handle      h;
+    m.addr = 1;
+    m.data = 2;
+    // 通配符 topic：拒发、无句柄、留下原因（不能立起幻影 topic，也不能"像广播一样"扇出）
+    h = bad.publish_now(m, SHUTTLE_NOW_SKIP);
+    check(h == null, "badtopic.no_handle");
+    check(shuttle_c_last_error() != "", "badtopic.has_error_text");
+    // 同一层级的合法名字不受影响
+    h = sib.publish_now(m, SHUTTLE_NOW_SKIP);
+    check(h != null, "badtopic.sibling_ok");
+  endtask
+
   task automatic case_unsubscribe();
     automatic Rec                 rec = new();
     automatic shuttle_sub         sub = shuttle_subscribe_nb("sv.t.unsub", rec, "XMsg");
@@ -487,6 +506,7 @@ module shuttle_tests;
     case_unsubscribe();
     case_retired();
     case_bind_conflict();
+    case_bad_topic();
     case_snapshot();
     case_event();
     case_xlang();

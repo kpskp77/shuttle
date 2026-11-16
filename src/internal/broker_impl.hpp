@@ -192,6 +192,54 @@ public:
     }
   }
 
+  // ── 名字与模式的语法 ────────────────────────────────────────────────────
+  // 通配符只属于**订阅模式**。发布、类型声明、retained 作用于具体 topic 名：一旦允许通配符
+  // 出现在那里，`topics` 表里就会立起一个"名字里带 *"的幻影 topic——它有自己的 `seq`、
+  // 类型绑定、retained 槽；而路由是字符串比对，于是 `pub("a.*")` 会投给 `a.*` / `a.>` / `>`
+  // 三种订阅者，看起来像"广播"，其实只是名字撞上了模式（`a0.*` 的订阅者反而收不到）。
+  static void check_segments(std::string_view name, const char* what) {
+    for (std::size_t pi = 0;;) {
+      const std::size_t pe = seg_end(name, pi);
+      if (pe == pi)
+        throw TopicPatternError(std::string("shuttle: ") + what + " \"" + std::string(name) +
+                                "\" 含空段（多余的 '.'）");
+      if (pe == name.size()) return;
+      pi = pe + 1;
+    }
+  }
+
+  // 发布侧：`topic` 必须是具体名字
+  static void check_topic_name(std::string_view topic) {
+    if (topic.empty()) throw TopicPatternError("shuttle: topic 名不能为空");
+    if (has_wildcard(topic))
+      throw TopicPatternError(std::string("shuttle: topic \"") + std::string(topic) +
+                              "\" 含通配符；* 与 > 只属于订阅模式，发布 / 类型声明 / retained "
+                              "必须用具体 topic 名");
+    check_segments(topic, "topic 名");
+  }
+
+  // 订阅侧：每段要么是 "*"，要么是 ">"（必须是末段），要么是普通段（不含 * >）。
+  // 不校验的话 `a.>.b` 会静默等价于 `a.>`（`match` 遇到 ">" 直接放行剩余模式），
+  // `a*b` 则只能匹配字面量 "a*b"——两种错误都不会有任何提示。
+  static void check_pattern(std::string_view pattern) {
+    if (pattern.empty()) throw TopicPatternError("shuttle: 订阅模式不能为空");
+    check_segments(pattern, "订阅模式");
+    const std::string where = std::string("shuttle: 订阅模式 \"") + std::string(pattern) + "\"";
+    for (std::size_t pi = 0;;) {
+      const std::size_t pe = seg_end(pattern, pi);
+      const std::string_view ps = pattern.substr(pi, pe - pi);
+      if (ps == ">") {
+        if (pe != pattern.size()) throw TopicPatternError(where + " 中 > 必须是末段");
+        return;
+      }
+      if (ps != "*" && has_wildcard(ps))
+        throw TopicPatternError(where + " 的段 \"" + std::string(ps) +
+                                "\" 把通配符混进了普通段（* 与 > 必须独占一段）");
+      if (pe == pattern.size()) return;
+      pi = pe + 1;
+    }
+  }
+
   // 类型相交：订阅者的类型标签与帧的 type_tag 一致（空标签 = 任意类型）。
   // 这是**目标集**的判据之一：名字匹配但类型不相交的订阅者不是本帧的目标，不建投递单元、
   // 不产生任何计数（`subscriber_count()` 就是“名字 ∩ 类型”的大小）。
@@ -254,6 +302,8 @@ public:
   // 只数**目标集**里的 blocking 订阅者：类型不相交的订阅者本帧根本没打算投给它，
   // 不能因为它存在就把一帧发不出去。
   void now_preflight(std::string_view topic, std::string_view tag, NowPolicy policy) {
+    // 语法错误与策略无关：`reject` 的预检若先跑，同一份错误输入会因 policy 不同而换异常类型
+    check_topic_name(topic);
     if (policy != NowPolicy::reject) return;
     const auto matched = match_subs(topic, tag);
     const std::size_t n = select(matched, Capability::blocking).size();
@@ -384,6 +434,7 @@ public:
   std::shared_ptr<const Envelope> make_envelope(std::string_view topic,
                                                 std::shared_ptr<const void> payload,
                                                 const detail::TypeOps* ops) {
+    check_topic_name(topic);
     Topic& t = topic_for(topic);
     if (!t.binding) {
       check_bind_compat(topic, ops->tag);
@@ -408,6 +459,7 @@ public:
   std::shared_ptr<const Envelope> make_envelope_bytes(std::string_view topic,
                                                       std::string_view tag,
                                                       const std::vector<std::byte>& bytes) {
+    check_topic_name(topic);
     Topic& t = topic_for(topic);
     if (!t.binding) {
       // 该 topic 没有 C++ 发布者（只有 SV 发布者）：若已有匹配的 C++ 类型化订阅者，

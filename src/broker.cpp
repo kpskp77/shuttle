@@ -58,6 +58,7 @@ const std::string& last_error() { return g_last_error; }
 // ── detail/abi.hpp 的实现 ─────────────────────────────────────────
 
 void topic_declare(const std::string& topic, const TypeOps* ops) {
+  Broker::check_topic_name(topic);
   Broker& b = Broker::get();
   Topic& t = b.topic_for(topic);
   if (!t.binding) {
@@ -105,6 +106,7 @@ Publication pub_concurrent(const std::string& topic, std::shared_ptr<const void>
 Subscription sub_typed(std::string pattern, const TypeOps* ops, ErasedCallback cb, Capability cap,
                        SubOptions opts) {
   (void)opts;
+  Broker::check_pattern(pattern);
   Broker& b = Broker::get();
   // 精确 topic 的订阅即声明该 topic 的类型绑定（这样"SV 先发布、C++ 后订阅"
   // 或"C++ 只订阅不发布"的 topic 也能在发布时正确物化）。通配符订阅无法
@@ -128,6 +130,7 @@ Subscription sub_typed(std::string pattern, const TypeOps* ops, ErasedCallback c
 
 Subscription sub_raw(std::string pattern, ByteCallback cb, Capability cap, SubOptions opts) {
   (void)opts;
+  Broker::check_pattern(pattern);
   Broker& b = Broker::get();
   auto sub = std::make_shared<Subscriber>();
   sub->id = b.next_sub_id++;
@@ -143,6 +146,7 @@ Subscription sub_raw(std::string pattern, ByteCallback cb, Capability cap, SubOp
 }
 
 void topic_set_retained(const std::string& topic, bool on) {
+  Broker::check_topic_name(topic);
   Topic& t = Broker::get().topic_for(topic);
   t.retained_on = on;
   // 关闭时立即丢掉快照：否则快照会一直占着最新一帧，

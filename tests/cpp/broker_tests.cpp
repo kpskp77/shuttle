@@ -319,5 +319,63 @@ WEAVE_TEST(broker_tests) {
     expect_eq(static_cast<long long>(star->frames), 1, "\"*\" 收到单级子 topic");
   });
 
+  // case14：通配符只属于订阅模式。发布 / 类型声明 / retained 用含通配符的名字是用户错误，
+  // 必须在建任何状态之前就报错——否则 topics 表里会留下一个"名字里带 *"的幻影 topic，
+  // 它有自己的 seq / 类型绑定 / retained 槽，而路由是字符串比对，于是 pub("a.*") 会
+  // 静默扇出给 a.* / a.> / > 三种订阅者（看着像"广播"，其实是名字撞上了模式）。
+  run_case(__func__, "case14", [] {
+    const auto topics_before = shuttle::broker::topics().size();
+
+    // ① 类型声明含通配符 → TopicPatternError，且不留 topic 条目
+    bool declared = false;
+    try {
+      shuttle::detail::topic_declare("bkr.bad.*", shuttle::detail::type_ops<BkrTx>());
+      declared = true;
+    } catch (const shuttle::TopicPatternError&) {
+    }
+    expect(!declared, "topic_declare 拒绝通配符名");
+    expect_eq(static_cast<long long>(shuttle::broker::topics().size()),
+              static_cast<long long>(topics_before), "被拒的声明没有留下幻影 topic");
+
+    // ② Publisher 构造期（内部走 topic_declare）同样拒绝
+    bool constructed = false;
+    try {
+      shuttle::Publisher<BkrTx> bad("bkr.bad2.*");
+      constructed = true;
+    } catch (const shuttle::TopicPatternError&) {
+    }
+    expect(!constructed, "Publisher 拒绝通配符 topic");
+
+    // ③ retained 声明含通配符 → 拒绝
+    bool retained = false;
+    try {
+      shuttle::detail::topic_set_retained("bkr.ret.*", true);
+      retained = true;
+    } catch (const shuttle::TopicPatternError&) {
+    }
+    expect(!retained, "topic_set_retained 拒绝通配符名");
+
+    // ④ 订阅模式的语法：">" 必须在末段、不能有空段、通配符不能混进普通段、不能为空
+    auto rejected = [](const std::string& pattern) {
+      try {
+        auto keep = shuttle::subscribe<BkrTx>(
+            pattern, shuttle::nb([](const BkrTx&, const shuttle::Meta&) {}));
+        (void)keep;
+        return false;
+      } catch (const shuttle::TopicPatternError&) {
+        return true;
+      }
+    };
+    expect(rejected("bkr.>.x"), "订阅模式里 \">\" 必须在末段");
+    expect(rejected("bkr..x"), "订阅模式不能有空段");
+    expect(rejected("bkr.x*"), "通配符必须独占一段");
+    expect(rejected(""), "订阅模式不能为空");
+
+    // ⑤ 合法模式不受影响
+    auto ok = shuttle::subscribe<BkrTx>("bkr.fine.>",
+                                        shuttle::nb([](const BkrTx&, const shuttle::Meta&) {}));
+    expect(ok.valid(), "合法通配符模式照常注册");
+  });
+
   report(__func__);
 }
