@@ -18,6 +18,8 @@
 //   · Hierarchical topic names + wildcard subscription + retained (latched);
 //   · Mailbox (mailbox.hpp): a subscription with a queue — "wait for the next
 //     frame" with an optional timeout, the building block for request/response;
+//   · Requester/Call/serve (requester.hpp): request/response sugar on top of the
+//     mailbox — correlation id in the payload, reply demultiplexing, timeout;
 //   · Zero-copy delivery within C++; encoding/decoding happens only for
 //     cross-language delivery, byte subscribers (subscribe_bytes), or frames
 //     originating from SV.
@@ -33,6 +35,7 @@
 #include <shuttle/meta.hpp>
 #include <shuttle/publication.hpp>
 #include <shuttle/publisher.hpp>
+#include <shuttle/requester.hpp>
 #include <shuttle/subscription.hpp>
 #include <shuttle/trigger.hpp>
 #include <shuttle/types.hpp>

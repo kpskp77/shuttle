@@ -145,7 +145,12 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    因此 `shuttle_pkg` 需要 `import weave_pkg::*`，编译顺序必须 `weave_pkg.sv` 在前。邮箱的容量
    溢出策略只有 `SHUTTLE_OVERFLOW_DROP_OLDEST` / `_DROP_NEWEST`（`block` / `reject` 在 SV 无
    对应物：投递回调不能阻塞，SV 也没有异常可抛）。
-10. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
+10. **请求-响应的跨语言约定**：C++ 侧的 `Requester`/`serve`（`include/shuttle/requester.hpp`）
+   把关联 id 放在载荷字段里（默认 `.rid`），SV 侧按同样字段布局**回显**即可参与，无需任何新
+   DPI 入口。参考实现：`tests/sv/shuttle_tests.sv` 的 `SvRqSink`（`shuttle_subscribe` 注册
+   blocking 响应者，回调里 `shuttle_pub#(T)::publish_serial` 发回执）。request/reply topic 必须
+   不同：响应者是在请求回调里发布回执的，同 topic 会形成串行链自环。
+11. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
    快照的投递仍可能到达 SV 侧（C++ 侧靠 `Subscriber::removed` 拦住同一类投递，两侧口径
    一致：记 `retired`）。SV 注册表把这些已退订 id 记为 retired，静默丢弃并经
    `shuttle_c_sub_retired` 回告；未登记过的 id 才报 `$error`，以保留真实缺陷的可见性。

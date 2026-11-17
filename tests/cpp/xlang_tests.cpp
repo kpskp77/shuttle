@@ -36,6 +36,20 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
+// Request/response payloads for the Requester ↔ SV-responder case (the SV mirror is SvRqReq/SvRqResp
+// in tests/sv/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT names).
+struct XRqReq {
+  std::uint32_t rid = 0;
+  std::uint32_t op = 0;
+};
+SHUTTLE_REFLECT(XRqReq, rid, op)
+
+struct XRqResp {
+  std::uint32_t rid = 0;
+  std::uint32_t data = 0;
+};
+SHUTTLE_REFLECT(XRqResp, rid, data)
+
 // Message type (SHUTTLE_REFLECT must be used at global scope).
 // Byte-for-byte counterpart of `class XMsg` in tests/sv/shuttle_tests.sv:
 //   {>>{addr, data}} — two unsigned 32-bit values, big-endian; both tags are "XMsg".
@@ -141,6 +155,24 @@ WEAVE_TEST(xlang_tests) {
               "the ready frame keeps its wire length in the mailbox");
     expect(item->meta.type_tag == "XMsg", "type_tag survives the cross-language hop");
     expect(item->meta.topic == kReadyTopic, "metadata identifies the SV-published topic");
+  });
+
+  // case5: cross-language request/response — a C++ Requester calls the SV responder registered by
+  // case_rq_xlang in tests/sv/shuttle_tests.sv (it registers first and broadcasts readiness as a
+  // retained frame). The reply echoes the rid, so correlation works across the language boundary.
+  run_case(__func__, "case5", [] {
+    auto ready = shuttle::mailbox_bytes("rq.xlang.ready");
+    expect(ready.recv(50_ms).has_value(), "the SV responder announced readiness");
+
+    shuttle::Requester<XRqReq, XRqResp> client("rq.xlang.req", "rq.xlang.resp");
+    auto call = client.send(XRqReq{0, 20});
+    expect_eq(static_cast<long long>(call.publication().subscriber_count()), 1,
+              "the SV responder is the only target");
+    auto replies = call.wait_all(10_ms);
+    expect_eq(static_cast<long long>(replies.size()), 1, "the SV responder answered");
+    expect_eq(static_cast<long long>(replies.at(0).data), 41, "answer computed on the SV side");
+    expect_eq(static_cast<long long>(replies.at(0).rid), static_cast<long long>(call.rid()),
+              "the rid survived the cross-language hop");
   });
 
   report(__func__);

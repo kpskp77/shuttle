@@ -58,6 +58,44 @@ module shuttle_tests;
     endfunction
   endclass
 
+  // ── Cross-language request/response payloads (mirror XRqReq/XRqResp in tests/cpp/xlang_tests.cpp) ──
+  // Two uint32 fields each; type_tag must equal the C++ SHUTTLE_REFLECT name so that type-matched
+  // delivery works across languages.
+  class SvRqReq;
+    int unsigned rid;
+    int unsigned op;
+    localparam string type_tag = "XRqReq";
+
+    static function automatic SvRqReq unpack(byte b[]);
+      SvRqReq r = new();
+      {>>{r.rid, r.op}} = b;
+      return r;
+    endfunction
+  endclass
+
+  class SvRqResp;
+    int unsigned rid;
+    int unsigned data;
+    localparam string type_tag = "XRqResp";
+
+    function automatic void pack(output byte q[$]);
+      q = {>>{rid, data}};
+    endfunction
+  endclass
+
+  // Responder: echoes the request's rid (the correlation id the C++ Requester allocated) and answers
+  // op*2+1, publishing the reply from inside the request callback.
+  class SvRqSink implements shuttle_sink;
+    virtual task invoke(input byte payload[], input shuttle_meta meta);
+      SvRqReq            req  = SvRqReq::unpack(payload);
+      SvRqResp           resp = new();
+      shuttle_pub #(SvRqResp) pub = new("rq.xlang.resp");
+      resp.rid  = req.rid;
+      resp.data = req.op * 2 + 1;
+      pub.publish_serial(resp);
+    endtask
+  endclass
+
   // ── Implements both entries: shuttle_subscribe registers the blocking entry, shuttle_subscribe_nb the
   //    nonblocking entry (isomorphic to C++ subscribe(fn) / subscribe(nb(fn))) ─────────
   class Rec implements shuttle_sink, shuttle_sink_nb;
@@ -429,6 +467,20 @@ module shuttle_tests;
     check(late.blk_count == 0, "snapshot.late_sub_not_target");
   endtask
 
+  // ── Cross-language request/response: C++ Requester side in requester_tests.cpp case11 ─────────
+  // The ready broadcast is retained, so the C++ side may subscribe before or after it is published.
+  task automatic case_rq_xlang();
+    automatic SvRqSink            sink  = new();
+    automatic shuttle_sub         sub   = shuttle_subscribe("rq.xlang.req", sink, "XRqReq");
+    automatic shuttle_pub #(XMsg) ready = new("rq.xlang.ready");
+    automatic XMsg                note  = new();
+    note.addr = 32'h1;
+    note.data = 32'h0;
+    ready.set_retained(1);
+    void'(ready.publish_serial(note));
+    check(sub.id() != 0, "rq_xlang.responder_registered");
+  endtask
+
   // ── Cross-language round trip: C++ side in tests/cpp/xlang_tests.cpp ────────────────────
   task automatic case_xlang();
     automatic Rec                 rec       = new();
@@ -547,6 +599,10 @@ module shuttle_tests;
 
   // ── SV-side case driver: local cases first, then the cross-language round trip ──────────────────────
   initial begin : sv_cases
+    // The request/response responder is a service: register it (and broadcast readiness) before
+    // anything else, otherwise the C++ Requester test would wait for it while this block waits for
+    // the C++ xlang tests — a circular wait resolved only by a timeout.
+    case_rq_xlang();
     case_now_sync();
     case_now_blocking();
     case_publish_serial();

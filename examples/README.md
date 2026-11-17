@@ -6,8 +6,10 @@
 |---|---|
 | `cpp/basic_demo.cpp` | 消息定义（`SHUTTLE_REFLECT`）、两个入口的订阅（普通 / `nb()`）、三种发布方式（`publish_now` / `publish_serial` / `publish_concurrent`）、`NowPolicy` 的 `skip` / `reject`、`Publication` 可见性计数、retained、通配符与原始字节订阅、broker 内省 |
 | `cpp/trigger_demo.cpp` | 延迟触发：`after(Event/duration/Task)`、`after_all` 组合 |
+| `cpp/mailbox_demo.cpp` | 邮箱（订阅 + 队列）：`publish_now` 同步入队、在自己进程线里 `recv`/排空、有界队列的 `drop_oldest` / `drop_newest` / `reject`（`received()` 与 `overflowed()` 两个口径）、`OverflowPolicy::block` 在构造期被拒、副本共享一个队列、`close()` 后队列仍可读、无 rid 的最小 request/response |
+| `cpp/request_response_demo.cpp` | 请求-响应：响应者组件（`serve`）与请求者组件（`Requester`）互不共享对象；多响应者、同 topic 上两个在途请求的 rid 分发、只看不回的旁观订阅者与 `wait_for`、无人响应时的超时、响应者抛异常计入失败 |
 | `cpp/sc_main.cpp` | systemc 后端的本地运行入口 |
-| `sv/shuttle_demo.sv` | SV 侧示范：消息类约定（`pack()`/`type_tag`）、`shuttle_sink`/`shuttle_sink_nb` 订阅者、`shuttle_pub#(T)` 三种发布方式与 `SHUTTLE_NOW_*` 策略、`shuttle_handle::wait_done` 与计数字、`shuttle_trigger` |
+| `sv/shuttle_demo.sv` | SV 侧示范：消息类约定（`pack()`/`type_tag`）、`shuttle_sink`/`shuttle_sink_nb` 订阅者、`shuttle_pub#(T)` 三种发布方式与 `SHUTTLE_NOW_*` 策略、`shuttle_handle::wait_done` 与计数字、`shuttle_trigger`、`shuttle_mailbox`（纯 SV，同 C++ 邮箱契约） |
 
 ## 构建与运行
 
@@ -41,6 +43,41 @@ C++ 侧注册的示例（`WEAVE_TEST`），两侧在同一 broker 上互通。
 [raw] topic=uart0.tx payload=8 字节
 [broker] topic=uart0.tx type=UartTx subs=5 published=8 delivered=15
 SHUTTLE CPP DEMO PASSED
+```
+
+请求-响应示例的输出（两个 `RegisterBlock` 组件 + 一个 `TestDriver` 组件，三者不共享任何对象）：
+
+```
+[driver] addr=0x04 rid=1 -> 2 reply(ies), 2 target(s)     ← 一次请求，两个响应者各回一条
+[driver]   status=0 value=0x01004 (rid=1)                  ← 命中窗口的块
+[driver]   status=1 value=0x00000 (rid=1)                  ← 窗口外的块；两处 rid 相同
+[driver] demux ok: A=0x01006 B=0x01002                     ← 两个在途请求的回执没有串味
+[driver] observer: 2 reply(ies), 3 target(s), observed=1   ← 旁观订阅者也进目标数，故用 wait_for
+[driver] no responder: 0 reply(ies), subscribers=0         ← 无人响应：超时返回空，不挂起
+[driver] responder cpp sub 11 failed: device is not responding  ← 响应者抛异常 → 请求帧的 failures()
+```
+
+邮箱示例的输出（C++ 侧 `cpp/mailbox_demo.cpp`，与 SV 侧 `[mbox]` 行同义）：
+
+```
+[mailbox] publish_now filled it synchronously: size=3 received=3   ← 非阻塞入口：发布者栈内入队
+[mailbox] drained 3 frame(s) (sum=6), then recv(1ms) returned empty ← 排空在自己进程线里做
+[mailbox] recv() got data=7 seq=4                                  ← 阻塞式 recv()，帧已入队则不挂起
+[capped] drop_oldest: capacity=2 received=5 overflowed=3 survivors=4,5
+[capped] drop_newest: capacity=2 received=2 overflowed=3 survivors=1,2
+                                   ↑ 两个策略下 received() 口径不同：它是"被队列接受"的帧数
+[reject] subscriber cpp sub 13 -> shuttle: mailbox overflowed (capacity 1)  ← 复用正常 Failure 通道
+[block] rejected at construction: shuttle: a bounded mailbox needs OverflowPolicy::drop_oldest, ...  ← 有界邮箱不许阻塞投递者
+[alias] a copy reads the same queue (data=9, 0 left in the original)
+[close] drains to 11, then recv() throws: shuttle: receiving from a closed mailbox (queue drained)
+[rpc] request data=21 -> reply ch=3 data=42                          ← 无 rid 的单响应者最小用法
+```
+
+SV 侧（`sv/shuttle_demo.sv`，同一个邮箱契约，但没有异常通道，用输出标志报"关闭且已排空"）：
+
+```
+[mbox] addr=0x00000020 data=0x00000001 topic=mbox.demo received=1
+[mbox] capacity=2 received=2 overflowed=2
 ```
 
 C++ 示例注册为 `WEAVE_TEST`，与 weave 示例同一运行机制：svdpi 下由

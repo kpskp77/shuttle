@@ -39,13 +39,33 @@
 // from Subscription::dropped(): the latter counts frames that did not reach this
 // subscriber, while overflow counts frames that reached it and were then dropped
 // from the queue (Mailbox::overflowed()); under `reject` the frame is instead
-// recorded as a normal delivery Failure.
+// recorded as a normal delivery Failure. Note that Mailbox::received() counts
+// frames accepted into the queue, so under drop_oldest it includes frames that
+// were later evicted — received() - size() is not the overflow count, and the two
+// counters must be read independently.
 //
 // ── Lifetime ────────────────────────────────────────────────────────────
 // Copies of a Mailbox share one queue (Subscription semantics). close() is
 // idempotent: it unsubscribes and wakes waiters; already queued items stay
 // readable, and only after the queue is drained do the blocking forms throw
 // MailboxClosed. Destroying the last handle unsubscribes as well.
+//
+// ── Relationship to Requester (requester.hpp) ────────────────────────────
+// They are siblings, not layers: this file is the *timing* primitive ("a frame
+// arrived, take it when you want it"), Requester is the *session* primitive ("the
+// answers to this request are back"). Requester deliberately does not use
+// Mailbox, for four reasons that would all cost correctness:
+//   · a mailbox is one FIFO: replies have to be routed by correlation id, and
+//     out-of-order arrivals from several responders must not be re-sequenced;
+//   · a mailbox wakes one queue, Requester wakes per call (one Event per Call),
+//     so two outstanding requests are waited for independently;
+//   · a reply that belongs to a cancelled or dropped call must still be
+//     *counted* (Requester::stale_replies()), which needs the rid->call table;
+//   · the reply subscription must be shared by all calls of one Requester, not
+//     one queue per call and not one subscription per call.
+// Mailbox is the right tool when the responder set is fixed and one queue of
+// replies is enough (the example at the top of this file); reach for Requester
+// when several requests are outstanding at once or the id must be correlated.
 
 #include <cstddef>
 #include <cstdint>

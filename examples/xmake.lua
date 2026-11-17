@@ -22,5 +22,6 @@ target("shuttle_examples_svdpi", function()
   set_warnings("all", "extra", "error")
   add_deps("shuttle")
   add_rpathdirs("$ORIGIN")
-  add_files("cpp/basic_demo.cpp", "cpp/trigger_demo.cpp")
+  add_files("cpp/basic_demo.cpp", "cpp/trigger_demo.cpp", "cpp/mailbox_demo.cpp",
+            "cpp/request_response_demo.cpp")
 end)

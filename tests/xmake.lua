@@ -35,7 +35,8 @@ else
     add_includedirs("cpp")
     -- no sc_main.cpp: the svdpi backend's entry lives on the simulator side
     add_files("cpp/codec_tests.cpp", "cpp/broker_tests.cpp", "cpp/publish_tests.cpp",
-              "cpp/trigger_tests.cpp", "cpp/mailbox_tests.cpp", "cpp/xlang_tests.cpp")
+              "cpp/trigger_tests.cpp", "cpp/mailbox_tests.cpp", "cpp/requester_tests.cpp",
+              "cpp/xlang_tests.cpp")
     add_packages("weave")
   end)
 

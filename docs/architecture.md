@@ -84,7 +84,7 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 
 | 目录 | 内容 |
 | --- | --- |
-| `include/shuttle/*.hpp` | 公开 API；`shuttle.hpp` 是伞头，被它暴露的才算公开。`mailbox.hpp` 是其中唯一的**纯头文件**组件（§16）：无 `.cpp`、无导出符号 |
+| `include/shuttle/*.hpp` | 公开 API；`shuttle.hpp` 是伞头，被它暴露的才算公开。`mailbox.hpp`（§16）与 `requester.hpp`（§17）是其中的**纯头文件**组件：无 `.cpp`、无导出符号 |
 | `include/shuttle/detail/abi.hpp` | **第二公开层（稳定 ABI）**：路径与内容随版本管理；公有模板需要 `pub_*` / `sub_*` 的声明，故随包安装；只被 `publisher.hpp` / `subscription.hpp` 间接包含，用户代码不应直接 include |
 | `src/publication.cpp` | 发布侧 ABI：`pub_now` / `pub_serial` / `pub_concurrent`、`topic_declare` / `topic_set_retained` / `topic_retained`，以及 `Publication` 的等待、计数与失败查询 |
 | `src/subscription.cpp` | 订阅侧 ABI：`sub_typed` / `sub_raw` 与 `Subscription` 的私有 Impl、生命周期和诊断方法（Impl 仅在此 TU 定义，故 `sub_*` 不能外移） |
@@ -727,7 +727,45 @@ box.close();                                   // 幂等：退订 + 唤醒等待
 `weave_pkg.sv` 在前）。SV 没有异常，故 `reject` 策略不提供，只有 `drop_oldest` /
 `drop_newest`。
 
-## 17. 构建
+## 17. 请求-响应糖（Requester / Call / serve）
+
+`include/shuttle/requester.hpp` 在 §16 的邮箱之上再包一层：一个请求 topic + 一个回执 topic +
+载荷里的关联字段。同样是**纯头文件**，不新增 broker 状态与导出符号。
+
+```cpp
+// 响应者（可以有多个，C++ 或 SV）
+shuttle::serve<Req, Resp>("dev.req", "dev.resp",
+                          [](const Req& r, const shuttle::Meta&) { return Resp{0, business(r)}; });
+
+// 请求者
+shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
+auto call = client.send(Req{0, 21});
+for (const auto& reply : call.wait_all(1_ms)) use(reply);
+```
+
+**关联 id 为什么放在载荷里**：`Meta.seq` 由 broker 分配且对发布方不可见
+（`Publication` 只有计数与失败，拿不到本帧 `seq`），所以请求方无法得知自己请求的 seq。
+于是 rid 由 `Requester` 分配、写进请求载荷，`serve` 在回执里原样回填——两端同一个值，
+不需要 broker 支持，跨语言也不变（SV 响应者按同样的字段布局回显即可，见
+`tests/sv/shuttle_tests.sv` 的 `SvRqSink`）。默认约定两个载荷都有 `rid` 字段
+（`shuttle::RidField`），第三个模板参数可换成自定义 traits。
+
+**回执计数是显式的**：框架不知道"该有几个回执"。`wait_for(n, timeout)` 等最多 n 条；
+`wait_all(timeout)` 采用默认约定"请求帧的每个目标订阅者恰好回一条"（n =
+`publication().subscriber_count()`）。有只看不回的旁观订阅者时用 `wait_for`/`recv`。
+
+**slot 生命周期**：`Requester` 的回执表存 **weak_ptr**，`Call` 持有唯一强引用——丢掉句柄
+（或 `cancel()`）即释放 slot，此后到达的回执计入 `stale_replies()` 并被丢弃。这也让"回执
+topic 开了 retained"不会毒化后续请求（仍不推荐）。
+
+**request/reply topic 必须不同**：响应者是在请求回调里发布回执的，同 topic 会让回执排在
+"发布它的那个回调"之后——`Requester`/`serve` 构造时直接抛 `std::invalid_argument`。
+
+**入口选择**：`serve` 默认注册 blocking 入口（响应者通常要消耗仿真时间），可传
+`Capability::nonblocking` 换非阻塞入口，此时可与 `send_now()`（`publish_now`）配合得到
+零 RTT 的同步请求-响应。
+
+## 18. 构建
 
 ```bash
 just build                # 按当前后端构建

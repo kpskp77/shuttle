@@ -115,8 +115,9 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
 ## 头文件布局
 
 - `include/shuttle/*.hpp`：公开 API——**判定标准是被 `shuttle.hpp` 伞头暴露**。
-  `mailbox.hpp` 是唯一的**纯头文件**组件（无 `.cpp`、无导出符号）：它就是
-  `sub_typed`/`sub_raw` 注册的 nonblocking 订阅者 + 一个自己的队列，**不要在 broker 里为它加状态**。
+  `mailbox.hpp` 与 `requester.hpp` 是**纯头文件**组件（无 `.cpp`、无导出符号）：前者是
+  `sub_typed`/`sub_raw` 注册的 nonblocking 订阅者 + 一个自己的队列，后者在其上做回执去复用；
+  **不要在 broker 里为它们加状态**。
 - `include/shuttle/detail/abi.hpp`：已安装，属**第二公开层（稳定 ABI）**——路径与内容随版本
   管理，改名 = 改 ABI；但用户代码不应直接 include（公开入口是 `publisher.hpp` /
   `subscription.hpp`，只它们间接包含这里）。公有模板（`Publisher<T>` / `subscribe<T>`）
