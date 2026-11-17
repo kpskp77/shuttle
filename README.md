@@ -105,6 +105,33 @@ h.wait_done();                                                    // 挂起当�
 | 跳过 | `NowPolicy::skip` | `SHUTTLE_NOW_SKIP` | 跳过这些目标，计入 `skipped()` 与该订阅者的 `dropped()`（`skipped` 分量） |
 | 转后台（默认） | `NowPolicy::defer` | `SHUTTLE_NOW_DEFER` | 整帧交给该 topic 的后台串行链（与 `serial` 同一条链），返回可等待句柄 |
 
+## 邮箱：等下一帧
+
+`Mailbox<T>`（C++）/ `shuttle_mailbox`（SV）把"等下一帧"做成可等待对象，是**请求-响应**
+的基元：它就是一个 nonblocking 订阅者 + 一个队列，因此照样进目标集、照样出现在
+`subscriber_count()`、照样收 retained 回放。
+
+```cpp
+// C++（纯头文件，零 DPI、零 broker 改动）
+shuttle::Mailbox<Resp> replies("dev.resp");
+auto req = shuttle::Publisher<Req>("dev.req").publish_serial(Req{...});
+req.wait();                                  // 响应者回调都已返回
+if (auto got = replies.recv(1_ms)) use(got->value, got->meta);   // 超时给 nullopt，帧不丢
+```
+
+```systemverilog
+// SV（纯 SV 实现，用 weave_pkg 的事件原语，不新增 DPI）
+shuttle_mailbox replies = new("dev.resp");
+byte payload[]; shuttle_meta meta; bit ok;
+replies.recv(ok, payload, meta, 1us);
+```
+
+- 入口固定为 **nonblocking**（回调只做入队），所以 `publish_now` 也能**同步**填邮箱；
+- `recv()` / `recv(timeout)` / `try_recv()` / `size()` / `received()` / `overflowed()` / `close()`；
+- 容量：默认无界，`SubOptions.max_pending` 有界时必须给 `drop_oldest` / `drop_newest` / `reject`
+  （`block` 构造时报错——回调里阻塞会死锁发布者）；
+- 语义分工：邮箱回答"帧到了"，`Publication` 回答"所有回调都结束了"，请求-响应通常两个都用。
+
 ## 完成句柄与计数
 
 三种方式返回同一个句柄类型：C++ `Publication`，SV `shuttle_handle`。句柄同时是**可见性
@@ -217,6 +244,7 @@ just test-all   # 两者都跑
 | `tests/cpp/codec_tests.cpp` | 线格式黄金字节、各宽度大端与补码、IEEE754、长度前缀、enum 底层类型、嵌套 struct、越界抛 `DecodeError`、类型标签与 `has_codec_v` |
 | `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、类型不相交的帧不入目标集（含绑定时的通配符豁免）、topic 名与订阅模式的语法校验（`TopicPatternError`，被拒时不留 topic 条目） |
 | `tests/cpp/publish_tests.cpp` | `NowPolicy` 三策略、`wait/wait(timeout)/done/result/failures`、计数契约、失败聚合不影响其余目标、零目标立即完成、类型不相交即零目标、入口选择、`defer` 与 `serial` 共享 FIFO |
+| `tests/cpp/mailbox_tests.cpp` | 邮箱：`now` 同步填充、`serial`/`concurrent` 后台填充、超时不丢帧、三种溢出策略、`close` 唤醒、retained 回放、通配符、字节口味、请求-响应往返 |
 | `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发等待期间退订（在途帧记 retired）、延迟帧不阻塞后续同 topic 帧、触发器由后续帧回调放行 |
 | `tests/cpp/xlang_tests.cpp` | 跨语言往返（仅 svdpi 后端）：就绪握手、双向各三帧、类型标签与 seq 单调 |
 | `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、订阅先于绑定的标签冲突、通配符 topic 发布被拒（`publish_now` 返回 null + last_error）、快照、`shuttle_event`、跨语言往返 |

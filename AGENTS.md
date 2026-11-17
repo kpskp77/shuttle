@@ -89,6 +89,13 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
     已知无解模式：回调里对同一 topic 发布串行帧并 `wait()`（内层帧排在本帧之后，本帧又要等它）——
     任何 FIFO 设计都死锁，属于禁止用法；`wait()` 在 `weave` 暴露"当前任务身份"之前无法可靠检出。
 
+13. **邮箱的投递回调不许阻塞**：`Mailbox` 用 nonblocking 入口注册，其回调只做一次拷贝入队，
+    因为 `publish_now` 的同步段（发布者栈内）也会调它。由此有两条硬规则：有界邮箱构造时
+    拒绝 `OverflowPolicy::block`（阻塞投递者 = 死锁发布者）；溢出计数 `overflowed()` 与
+    `Subscription::dropped()` 是两个概念（后者是"帧没投到该订阅者"，前者是"已投到、被队列
+    丢掉"），`reject` 则复用正常的 `Failure` 通道，别发明新记账。SV 侧同样实现（纯 SV，
+    `shuttle_subscribe_nb` + `weave_pkg` 事件原语），**不要为它加 DPI 入口**。
+
 ## 运行环境的坑（已踩）
 
 - 用 `xmake run` 跑 VCS：它会为 simv 准备库搜索路径。**不要**自己 export
@@ -96,6 +103,8 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
 - `/home/penn/.synopsys/bin/vcs` 是 docker shim；容器只 identity-mount `~/workspace` 等目录，
   `/tmp` 对仿真器不可见——探针文件放仓库内。
 - 容器内 simv 的 stderr 会被吞，排查时用 `$display` 或把日志写到 `build/` 下的文件。
+- VCS 2018.09 的 SV 解析器把 `small` 当保留字（Verilog-AMS 关键字），不能作变量名；
+  报错位置常指向相邻 token（`automatic shuttle_mailbox small = new(...)` 报 token is 'small'）。
 - VS Code IntelliSense（`.vscode/c_cpp_properties.json`）：`compilerPath` 必须是 **`/usr/bin/g++`**
   （写 `gcc` 时只拿到 C 的系统头目录，报"找不到 `<string>`"）；`compileCommands` 要写成
   `${workspaceFolder}/.vscode/compile_commands.json`（相对路径有歧义）。注意容器内 xmake 生成的
@@ -106,6 +115,8 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
 ## 头文件布局
 
 - `include/shuttle/*.hpp`：公开 API——**判定标准是被 `shuttle.hpp` 伞头暴露**。
+  `mailbox.hpp` 是唯一的**纯头文件**组件（无 `.cpp`、无导出符号）：它就是
+  `sub_typed`/`sub_raw` 注册的 nonblocking 订阅者 + 一个自己的队列，**不要在 broker 里为它加状态**。
 - `include/shuttle/detail/abi.hpp`：已安装，属**第二公开层（稳定 ABI）**——路径与内容随版本
   管理，改名 = 改 ABI；但用户代码不应直接 include（公开入口是 `publisher.hpp` /
   `subscription.hpp`，只它们间接包含这里）。公有模板（`Publisher<T>` / `subscribe<T>`）

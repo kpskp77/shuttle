@@ -129,5 +129,19 @@ WEAVE_TEST(xlang_tests) {
            "the seq published from the SV side is monotonically increasing within the topic");
   });
 
+  // case4: an SV-published frame reaches a C++ mailbox. It registers through the same nonblocking
+  // delivery path as a callback subscription, so cross-language frames land in the queue unchanged;
+  // the retained ready broadcast makes the assertion independent of the publish/receive order.
+  run_case(__func__, "case4", [st] {
+    (void)st;
+    auto box = shuttle::mailbox_bytes(kReadyTopic);  // retained: replayed on subscribe
+    auto item = box.recv(1_ms);
+    expect(item.has_value(), "the retained SV broadcast is replayed into a new C++ mailbox");
+    expect_eq(static_cast<long long>(item->value.size()), 8,
+              "the ready frame keeps its wire length in the mailbox");
+    expect(item->meta.type_tag == "XMsg", "type_tag survives the cross-language hop");
+    expect(item->meta.topic == kReadyTopic, "metadata identifies the SV-published topic");
+  });
+
   report(__func__);
 }

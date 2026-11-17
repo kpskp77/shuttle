@@ -16,6 +16,8 @@
 //     `serial`/`concurrent` deliver to both entries, `publish_now` only to
 //     nonblocking;
 //   · Hierarchical topic names + wildcard subscription + retained (latched);
+//   · Mailbox (mailbox.hpp): a subscription with a queue — "wait for the next
+//     frame" with an optional timeout, the building block for request/response;
 //   · Zero-copy delivery within C++; encoding/decoding happens only for
 //     cross-language delivery, byte subscribers (subscribe_bytes), or frames
 //     originating from SV.
@@ -27,6 +29,7 @@
 #include <shuttle/broker.hpp>
 #include <shuttle/codec.hpp>
 #include <shuttle/exception.hpp>
+#include <shuttle/mailbox.hpp>
 #include <shuttle/meta.hpp>
 #include <shuttle/publication.hpp>
 #include <shuttle/publisher.hpp>

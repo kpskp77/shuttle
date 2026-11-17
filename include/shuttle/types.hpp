@@ -68,18 +68,27 @@ NonBlocking<std::decay_t<F>> nb(F&& f) {
   return {std::forward<F>(f)};
 }
 
-// ── Subscription options (currently reserved, not enforced) ─────────────
+// ── Subscription options ────────────────────────────────────────────────
 // The broker keeps no per-subscriber queue: delivery executes synchronously
-// inside a scheduling unit, so the two fields below are currently ignored
-// (see "Known limitations" in docs/architecture.md).
+// inside a scheduling unit, so for a plain `subscribe` the two fields below are
+// still ignored (see "Known limitations" in docs/architecture.md). A Mailbox
+// (include/shuttle/mailbox.hpp) is the one consumer that honours them: it owns
+// the per-subscriber queue, so `max_pending` / `overflow` describe its backlog.
 enum class OverflowPolicy {
-  block,        // reserved: block the deliverer when the backlog exceeds the limit
-  drop_oldest,  // reserved: drop the oldest message and count it when the backlog exceeds the limit
+  // Not expressible for a mailbox: a delivery callback must never block (it may
+  // run inside publish_now on the publisher's stack), so a bounded mailbox is
+  // rejected at construction instead of stalling the deliverer.
+  block,
+  drop_oldest,  // drop the oldest queued item and count it
+  drop_newest,  // drop the incoming item and count it
+  reject,       // throw MailboxOverflowError: the delivery is recorded as a
+                // subscriber Failure (visible in Publication::failures() and in
+                // the failed component of dropped())
 };
 
 struct SubOptions {
-  std::size_t max_pending = 0;  // reserved: per-subscriber pending-message limit; 0 = unbounded
-  OverflowPolicy overflow = OverflowPolicy::block;  // reserved
+  std::size_t max_pending = 0;  // per-subscriber pending-message limit; 0 = unbounded
+  OverflowPolicy overflow = OverflowPolicy::block;  // used only when max_pending > 0
 };
 
 // ── Callback signatures ─────────────────────────────────────────────────

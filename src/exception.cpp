@@ -14,5 +14,7 @@ CapabilityError::~CapabilityError() = default;
 TypeMismatchError::~TypeMismatchError() = default;
 TopicPatternError::~TopicPatternError() = default;
 DecodeError::~DecodeError() = default;
+MailboxClosed::~MailboxClosed() = default;
+MailboxOverflowError::~MailboxOverflowError() = default;
 
 }  // namespace shuttle

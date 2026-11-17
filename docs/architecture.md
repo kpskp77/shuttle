@@ -32,7 +32,8 @@ SV 内部、C++ ↔ SV）只是同一套语义的三个使用者，跨语言不�
 - **定义投递调度，不拥有并发原语**：task / 事件 / 等待由 weave 提供；shuttle 在其上定义
   调度语义——同步（`now`）、per-topic FIFO（`serial`）、并发（`concurrent`）与条件延迟
   （`Trigger`）。
-- **不做**：跨机器通信、持久化与重放、背压（`SubOptions` 仅预留）、UVM 适配层。
+- **不做**：跨机器通信、持久化与重放、UVM 适配层。背压只对 Mailbox（§16）生效：
+  普通订阅没有队列，`SubOptions` 仍被 broker 忽略。
 
 shuttle 自身的职责两层：**broker**（topic 命名空间、通配符路由、topic ↔ 类型绑定、帧序号、
 retained、三种发布方式的目标集快照与调度、逐目标记账与完成跟踪）；**类型化载荷**（类型擦除、
@@ -83,7 +84,7 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 
 | 目录 | 内容 |
 | --- | --- |
-| `include/shuttle/*.hpp` | 公开 API；`shuttle.hpp` 是伞头，被它暴露的才算公开 |
+| `include/shuttle/*.hpp` | 公开 API；`shuttle.hpp` 是伞头，被它暴露的才算公开。`mailbox.hpp` 是其中唯一的**纯头文件**组件（§16）：无 `.cpp`、无导出符号 |
 | `include/shuttle/detail/abi.hpp` | **第二公开层（稳定 ABI）**：路径与内容随版本管理；公有模板需要 `pub_*` / `sub_*` 的声明，故随包安装；只被 `publisher.hpp` / `subscription.hpp` 间接包含，用户代码不应直接 include |
 | `src/publication.cpp` | 发布侧 ABI：`pub_now` / `pub_serial` / `pub_concurrent`、`topic_declare` / `topic_set_retained` / `topic_retained`，以及 `Publication` 的等待、计数与失败查询 |
 | `src/subscription.cpp` | 订阅侧 ABI：`sub_typed` / `sub_raw` 与 `Subscription` 的私有 Impl、生命周期和诊断方法（Impl 仅在此 TU 定义，故 `sub_*` 不能外移） |
@@ -681,12 +682,52 @@ SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 过 DPI：`NONE` / `D
 - `pubs` 表只增不减，长时间运行的回归需要周期性清理策略（或按 `pub_state` 惰性回收）；
 - SV 侧 `$error` 不回流 C++（协议决定），需要严格错误通道时应扩展 `dispatch` 的返回值；
 - 跨语言载荷只支持值语义与声明序字段子集，没有变体、指针、引用与句柄引用；
-- 背压只在 `SubOptions` 中预留（`max_pending` / `OverflowPolicy`），当前实现不引入队列，
-  `serial` / `concurrent` 的排队由 weave 的 task 调度承担；
+- 背压只对 Mailbox 生效（§16）：普通订阅在 `SubOptions` 里的 `max_pending` / `OverflowPolicy`
+  仍被忽略——broker 不为订阅者建队列，`serial` / `concurrent` 的排队由 weave 的 task 调度承担；
 - `TopicInfo::deferred`（topic 累计）与 `Publication::deferred()`（帧级）同名不同粒度，
   读取时注意区分。
 
-## 16. 构建
+## 16. 邮箱（Mailbox）：订阅者 + 队列
+
+`include/shuttle/mailbox.hpp` 的 `Mailbox<T>` 把"等下一帧"变成一个可等待的对象，
+是请求-响应的基元。它**不是新的投递机制**，而是两层现成能力拼起来的东西：
+
+| 组成 | 复用 | 说明 |
+| --- | --- | --- |
+| 订阅者身份 | `detail::sub_typed` / `sub_raw`，入口固定为 **nonblocking** | 与 `subscribe<T>(topic, nb(fn))` 完全同一条注册路径：进目标集、计入 `Publication::subscriber_count()`、参与通配符匹配与 retained 回放 |
+| 队列与唤醒 | 一个 `std::deque<MailboxItem<T>>` + `weave::Event` | broker 侧零改动：队列属于邮箱，不属于 broker |
+| 超时 | `weave::wait_for` 竞速一个一次性的等待 task | 与 `wait_pub_timed` 同一手法；取消等待者**不消费**任何元素，因此超时不丢帧 |
+
+因此 C++ 侧是**纯头文件**：不新增 broker 状态、不新增导出符号（`detail::sub_typed` 与
+`type_ops<T>` 都在已安装的 `detail/abi.hpp` 里）。
+
+```cpp
+shuttle::Mailbox<Resp> box("dev.resp");        // 无界
+auto item = box.recv(1_ms);                    // optional：超时给 nullopt，帧不丢
+auto now  = box.try_recv();                    // 非阻塞
+box.close();                                   // 幂等：退订 + 唤醒等待者
+```
+
+**为什么入口必须是 nonblocking**：邮箱的内部回调只做一次拷贝入队，它在
+`publish_now` 的同步段（发布者栈内）也会被调用。由此得到一个有用的推论：
+**`publish_now` 能同步填邮箱**，纯非阻塞对端的请求-响应可以零 RTT。
+
+**容量与溢出**（`SubOptions.max_pending` / `OverflowPolicy`，见 §15）：`max_pending == 0`
+无界；有界时必须显式选 `drop_oldest` / `drop_newest` / `reject`，`block` 在构造时被拒绝
+（阻塞投递者会死锁发布者）。溢出计数 `overflowed()` 与 `Subscription::dropped()` 是两件事：
+后者是"帧没投到该订阅者"，前者是"已投到、但被队列丢弃"；`reject` 则表现为一次正常的投递
+`Failure`（进 `Publication::failures()` 与 `failed` 计数），不发明新的记账通道。
+
+**语义边界**：邮箱回答"帧到了"，`Publication` 回答"所有订阅者回调都结束了"。邮箱顺序 =
+回调被调用的顺序（`serial` 入队顺序、`concurrent` 完成顺序、`now` 注册顺序），跨方式不承诺。
+
+**SV 侧是纯 SV 实现**（`shuttle_pkg::shuttle_mailbox`）：它同样通过 `shuttle_subscribe_nb`
+注册，队列是 SV 队列，唤醒用 `weave_pkg` 的 `weave_sv_wait` / `weave_sv_trigger`——
+**不新增任何 DPI 入口**。因此 `shuttle_pkg` 需要 `import weave_pkg::*`（编译顺序本来就保证
+`weave_pkg.sv` 在前）。SV 没有异常，故 `reject` 策略不提供，只有 `drop_oldest` /
+`drop_newest`。
+
+## 17. 构建
 
 ```bash
 just build                # 按当前后端构建

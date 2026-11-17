@@ -128,6 +128,7 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    其余按 `SHUTTLE_NOW_*` 处置（默认 `defer` 转后台串行链）。
 4. **SV 发起的阻塞等待**：`shuttle_c_wait_pub` 内部经 `weave_sv_wait` 挂起调用它的 SV 进程
    （不要求该进程是 weave task），因此 native SV 进程（`initial` 块、UVM phase）可直接调用。
+   `shuttle_mailbox::recv` 用的是同一个挂起点，但它完全在 SV 内调用 `weave_sv_wait`，不经 DPI。
 5. **id 约定**：`sv_sid` 由 SV 注册表分配，C++ 只透传；`pub_id` 由 C++ broker 分配，
    SV 只透传。两侧互不解析对方的 id 空间。
 6. **错误报告**：import 返回值只携带成功或失败，详细原因经 `shuttle_c_last_error()` 取回
@@ -139,7 +140,12 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    FIFO（按**入队**顺序：`SHUTTLE_TRIG_NONE` 的帧在发布调用内入队，因此顺序即发布顺序；
    带触发器的帧在触发时刻才入队，未满足的触发不会占住链头）；`publish_concurrent` 不承诺任何顺序。
    `SHUTTLE_NOW_DEFER` 的帧进入的是与 `publish_serial` **同一条**链。
-9. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
+9. **SV 侧邮箱不新增 DPI**：`shuttle_pkg::shuttle_mailbox` 通过 `shuttle_subscribe_nb` 注册，
+   队列是 SV 队列，唤醒走 `weave_pkg` 的 `weave_sv_wait` / `weave_sv_trigger`（纯 SV，非 DPI）。
+   因此 `shuttle_pkg` 需要 `import weave_pkg::*`，编译顺序必须 `weave_pkg.sv` 在前。邮箱的容量
+   溢出策略只有 `SHUTTLE_OVERFLOW_DROP_OLDEST` / `_DROP_NEWEST`（`block` / `reject` 在 SV 无
+   对应物：投递回调不能阻塞，SV 也没有异常可抛）。
+10. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
    快照的投递仍可能到达 SV 侧（C++ 侧靠 `Subscriber::removed` 拦住同一类投递，两侧口径
    一致：记 `retired`）。SV 注册表把这些已退订 id 记为 retired，静默丢弃并经
    `shuttle_c_sub_retired` 回告；未登记过的 id 才报 `$error`，以保留真实缺陷的可见性。
