@@ -114,7 +114,7 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
       std::string("shuttle-seq-") + std::string(topic),
       [this, pub, env, trig = std::move(trig), targets = std::move(targets), prev, mine]() mutable {
         std::optional<Publication::Failure> failure;
-        Topic& t = topic_for(env->meta.topic);
+        Topic& t = topic_for(env->meta.topic_name);
         std::size_t idx =
             0;  // targets already in a terminal state; used to backfill on unit-level failure
         try {
@@ -124,8 +124,8 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
             // installing ours is a single step: no suspension point lies
             // between them (single-active-process invariant), so no other
             // frame can interleave and steal the tail.
-            prev = std::make_shared<weave::Event>(topic_for(env->meta.topic).chain);
-            topic_for(env->meta.topic).chain = *mine;
+            prev = std::make_shared<weave::Event>(topic_for(env->meta.topic_name).chain);
+            topic_for(env->meta.topic_name).chain = *mine;
           }
           prev->wait();
           for (; idx < targets.size(); ++idx) {
@@ -186,7 +186,7 @@ std::shared_ptr<PubState> Broker::start_concurrent(
     weave::create_task(std::string("shuttle-par-") + std::string(topic),
                        [this, pub, env, trig, sub]() mutable {
                          std::optional<Publication::Failure> failure;
-                         Topic& t = topic_for(env->meta.topic);
+                         Topic& t = topic_for(env->meta.topic_name);
                          try {
                            wait_trigger(trig);
                            if (deliver(sub, *env) == Delivery::delivered)
@@ -214,7 +214,7 @@ std::shared_ptr<PubState> Broker::start_concurrent(
 
 std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope> env,
                                        NowPolicy policy) {
-  const std::string_view topic = env->meta.topic;
+  const std::string_view topic = env->meta.topic_name;
   Topic& t = b.topic_for(topic);
   const auto matched = b.match_subs(topic, env->meta.type_tag);
   // Each registration has exactly one cap; the synchronous section of `now`

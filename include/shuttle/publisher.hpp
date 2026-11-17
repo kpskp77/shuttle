@@ -39,7 +39,7 @@
 //     must process frames one at a time should insert a weave::Queue
 //     themselves or use `publish_serial`.
 //
-// Event source: Meta.seq is globally monotonically increasing per topic,
+// Event source: Meta.topic_seq increases monotonically per topic,
 // assigned by the broker (continuous across Publisher instances), so
 // subscribers can distinguish frames from multiple publishers; publisher
 // identity is not enforced (carry it inside the message if needed).

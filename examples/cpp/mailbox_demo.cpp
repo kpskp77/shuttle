@@ -64,7 +64,7 @@ WEAVE_TEST(mailbox_demo) {
   pub.publish_serial(Sample{0, 7}).wait();
   auto next = box.recv();  // already queued by the time wait() returned
   std::printf("[mailbox] recv() got data=%u seq=%llu\n", next.value.data,
-              static_cast<unsigned long long>(next.meta.seq));
+              static_cast<unsigned long long>(next.meta.topic_seq));
   if (next.value.data != 7) throw std::logic_error("mailbox_demo: recv() returned the wrong frame");
 
   // ── Bounded mailbox: the queue stops growing, the losses are counted ───

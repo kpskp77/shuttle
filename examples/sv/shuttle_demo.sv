@@ -47,7 +47,7 @@ module shuttle_demo;
     // Blocking callback: runs in a broker background simulation process; consuming simulation time is allowed
     virtual task invoke(input byte payload[], input shuttle_meta meta);
       UartTx tx = UartTx::unpack(payload);
-      $display("[monitor] seq=%0d addr=0x%08h data=0x%08h", meta.seq, tx.addr, tx.data);
+      $display("[monitor] seq=%0d addr=0x%08h data=0x%08h", meta.topic_seq, tx.addr, tx.data);
       #(10ns);
     endtask
 
@@ -140,7 +140,7 @@ module shuttle_demo;
       if (!mbox.try_recv(payload, meta))
         $error("mailbox: try_recv found nothing");
       got = UartTx::unpack(payload);
-      $display("[mbox] addr=0x%08h data=0x%08h topic=%0s received=%0d", got.addr, got.data, meta.topic,
+      $display("[mbox] addr=0x%08h data=0x%08h topic=%0s received=%0d", got.addr, got.data, meta.topic_name,
                mbox.received());
 
       // Nothing is pending: recv with a deadline reports ok == 0 instead of hanging, and no frame is lost.

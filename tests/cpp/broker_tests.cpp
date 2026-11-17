@@ -50,7 +50,7 @@ std::shared_ptr<ByteTaps> tap(shuttle::Subscription& keep, std::string pattern) 
       std::move(pattern),
       shuttle::nb([rec](const std::vector<std::byte>& b, const shuttle::Meta& m) {
         ++rec->frames;
-        rec->topics.push_back(m.topic);
+        rec->topics.push_back(m.topic_name);
         rec->topics.push_back(
             std::to_string(b.size()));  // also record the wire length to verify the encoding length
       }));
@@ -197,7 +197,7 @@ WEAVE_TEST(broker_tests) {
     expect(found, "topics() contains this topic");
   });
 
-  // case9: many-to-many — two Publishers on one topic, Meta.seq globally monotonic per topic
+  // case9: many-to-many — two Publishers on one topic, Meta.topic_seq globally monotonic per topic
   run_case(__func__, "case9", [] {
     shuttle::Publisher<BkrTx> pub_a("bkr.multi");
     shuttle::Publisher<BkrTx> pub_b("bkr.multi");
@@ -205,7 +205,7 @@ WEAVE_TEST(broker_tests) {
     std::vector<std::uint32_t> addrs;
     auto sub = shuttle::subscribe<BkrTx>("bkr.multi",
                                          shuttle::nb([&](const BkrTx& tx, const shuttle::Meta& m) {
-                                           seqs.push_back(m.seq);
+                                           seqs.push_back(m.topic_seq);
                                            addrs.push_back(tx.addr);
                                          }));
 

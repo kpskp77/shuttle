@@ -132,7 +132,7 @@ WEAVE_TEST(publish_tests) {
     auto s =
         shuttle::subscribe<PubMsg>("pub.seq.fifo", [&](const PubMsg& m, const shuttle::Meta& meta) {
           seen.push_back(m.v);
-          seqs.push_back(meta.seq);
+          seqs.push_back(meta.topic_seq);
           weave::sleep(50_us);  // deliberately slow: does not change the ordering guarantee
         });
 

@@ -51,8 +51,8 @@ WEAVE_TEST(mailbox_tests) {
     auto item = box.try_recv();
     expect(item.has_value(), "the frame is already queued");
     expect_eq(static_cast<long long>(item->value.data), 0xAA, "payload unchanged");
-    expect(item->meta.topic == "mbx.now", "metadata travels with the frame");
-    expect_eq(static_cast<long long>(item->meta.seq), 1, "the frame carries the topic's seq");
+    expect(item->meta.topic_name == "mbx.now", "metadata travels with the frame");
+    expect_eq(static_cast<long long>(item->meta.topic_seq), 1, "the frame carries the topic's seq");
     expect(!box.try_recv().has_value(), "the queue is drained");
   });
 
@@ -206,7 +206,7 @@ WEAVE_TEST(mailbox_tests) {
     expect(item.has_value() && item->value.data == 42, "retained payload delivered");
   });
 
-  // case11: wildcard pattern — one mailbox collects several topics, meta.topic tells them apart
+  // case11: wildcard pattern — one mailbox collects several topics, meta.topic_name tells them apart
   run_case(__func__, "case11", [] {
     auto box = shuttle::mailbox<MbxResp>("mbx.wild.>");
     shuttle::Publisher<MbxResp> a("mbx.wild.a");
@@ -217,7 +217,7 @@ WEAVE_TEST(mailbox_tests) {
     auto first = box.try_recv();
     auto second = box.try_recv();
     expect(first.has_value() && second.has_value(), "both topics reach the mailbox");
-    expect(first->meta.topic == "mbx.wild.a" && second->meta.topic == "mbx.wild.b",
+    expect(first->meta.topic_name == "mbx.wild.a" && second->meta.topic_name == "mbx.wild.b",
            "metadata identifies the publishing topic");
   });
 
@@ -241,13 +241,13 @@ WEAVE_TEST(mailbox_tests) {
   });
 
   // case13: request/response round trip — the responder replies on a second topic and echoes
-  // meta.seq as the correlation id; the requester waits for its own frame, then for the reply
+  // meta.topic_seq as the correlation id; the requester waits for its own frame, then for the reply
   run_case(__func__, "case13", [] {
     auto replies = shuttle::mailbox<MbxResp>("mbx.rr.resp");
     shuttle::Publisher<MbxResp> responder_pub("mbx.rr.resp");
     auto sub = shuttle::subscribe<MbxReq>("mbx.rr.req", [&](const MbxReq& req,
                                                            const shuttle::Meta& meta) {
-      responder_pub.publish_serial(MbxResp{static_cast<std::uint32_t>(meta.seq), req.op * 2});
+      responder_pub.publish_serial(MbxResp{static_cast<std::uint32_t>(meta.topic_seq), req.op * 2});
     });
 
     shuttle::Publisher<MbxReq> requester("mbx.rr.req");

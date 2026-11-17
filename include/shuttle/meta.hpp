@@ -9,12 +9,13 @@
 namespace shuttle {
 
 struct Meta {
-  std::string topic;     // the actual full topic published to (still the concrete topic name for
-                         // wildcard subscriptions)
-  std::string type_tag;  // message type tag (SHUTTLE_REFLECT name / typeid name)
-  std::uint64_t seq;  // per-topic monotonically increasing sequence number, assigned by the broker,
-                      // consistent across languages
-  std::int64_t time_fs;  // simulation time at publish (femtoseconds), from now_fs()
+  std::string topic_name;   // the concrete topic the frame was published to (never a wildcard
+                            // pattern: a wildcard subscription is told the real name here)
+  std::string type_tag;     // message type tag (SHUTTLE_REFLECT name / typeid name)
+  std::uint64_t topic_seq;  // index of this frame within its topic: a per-topic counter starting at
+                            // 1, assigned by the broker, identical across languages. (topic_name,
+                            // topic_seq) identifies a frame -- neither field does on its own
+  std::int64_t time_fs;     // simulation time at publish (femtoseconds), from now_fs()
 };
 
 // Current simulation time (femtoseconds).

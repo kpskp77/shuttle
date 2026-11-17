@@ -44,7 +44,7 @@ C++ 内部零拷贝与懒编码、与 SV `{>>{}}` 逐字节一致的线上格式
 
 | 术语 | 含义 |
 | --- | --- |
-| **帧**（frame） | 一次发布产生的不可变快照：载荷 + `Meta{topic, type_tag, seq, time_fs}`。三种方式都先建帧再生效 |
+| **帧**（frame） | 一次发布产生的不可变快照：载荷 + `Meta{topic_name, type_tag, topic_seq, time_fs}`。三种方式都先建帧再生效 |
 | **目标**（target） | 本帧匹配到的订阅者之一。目标集合在发布调用瞬间按当时的注册表快照确定 |
 | **入口**（entry） | 订阅者被调用的那一个函数：`blocking`（可消耗仿真时间）或 `nonblocking`（零延时）。一次注册只有一条 |
 | **投递**（delivery） | broker 把一个目标与一帧配对的尝试，结果是终态之一（§9） |
@@ -316,7 +316,7 @@ struct Topic {
   std::optional<Binding> binding;        // 未绑定 = 只能发纯字节流（三件事是一个东西，所以是一个 optional）
   // struct Binding { std::string tag;    // C++ SHUTTLE_REFLECT 名 / SV type_tag
   //                  const detail::TypeOps* ops; };  // raw_ops = 纯字节流
-  std::uint64_t seq;                     // topic 级序号（跨多个 Publisher 单调递增）
+  std::uint64_t seq;                     // topic 级序号：每个 topic 各自从 1 起（不是全局唯一）
   std::uint64_t published, delivered, deferred;           // deferred = 被 defer 进链的次数
   std::uint64_t retired, skipped, failed;                // 未成功投递的三分解，dropped() = 三者之和
   bool retained_on; std::shared_ptr<const Envelope> retained_env;
@@ -344,6 +344,29 @@ struct Envelope {                        // 一帧的不可变快照
 
 `Broker` 是函数内静态单例（`Broker::get()`），持有 `topics`、`subs`、`pubs` 与两个 id 计数器。
 每个进程一份；SV 侧只维护一层注册表，二者共享同一个 broker。
+
+**`Meta.topic_name` 与 `Meta.topic_seq` 是两条正交轴，不能互相替代**：`topic_name` 回答"哪条信道"
+（同一 topic 的所有帧共享它，所以它不标识一帧），`topic_seq` 回答"该信道上第几帧"（每个 topic 从 1 起
+独立递增，所以 `a.1` 与 `b.1` 并存，它不是全局唯一）。`(topic_name, topic_seq)` 合起来才是帧标识
+（broker 生命周期内）。
+
+两个都不能省：
+
+- **只留一个全局序号**：同 topic 相邻两帧的差变成任意值，"a.tx 上我是否漏了第 6 帧"就答不了；
+  而 `published`/`delivered`/`skipped`/`retired` 全部是 per-topic 计数，`topic_seq` 的用途正是与
+  它们对账（跳号 = 中间有帧没到；`serial` 链上应严格递增，可当顺序断言）。
+- **只留 topic_name**：同一 topic 的帧彻底不可区分——retained 重放与实时帧无法分辨，日志里也指认
+  不出"第几帧"。注意 retained 复用同一个 `Envelope`（§6），晚注册的订阅者会先看到**旧**的
+  `topic_seq`（如 5），随后实时帧从 6 继续，这个跳变正是"补发的历史帧"的信号。
+- **名字本身省不掉**：通配符订阅一次注册可命中多个具体名（`a.*` 同时收 `a.tx` 与 `a.rx`），
+  回调里必须知道具体来源；类型绑定、retained 槽、错误消息与 `topic_info` 都以名字为索引，
+  `topics` 就是 `std::map<std::string, Topic>`。帧里永远只有**具体名**，订阅模式（含 `*`/`>`）
+  从不进入 `Meta`（§10）。
+
+`topic_seq` 原样过 DPI（`shuttle_sv_dispatch` 的 `longint topic_seq`），所以 C++ 日志与 SV `$display`
+可以用 `(topic_name, topic_seq)` 对齐到同一帧；但它**不能**当请求-响应关联 id 用——发布方看不到
+自己那帧的 `topic_seq`（§17）。字段名带作用域前缀就是为了不让读者以为它是全局序号（`seq` 这个名字
+曾被误读成"全局唯一"）。
 
 ### 8.2 PubState（完成跟踪）
 
@@ -748,8 +771,8 @@ auto call = client.send_serial(Req{0, 21});
 for (const auto& reply : call.wait_all(1_ms)) use(reply);
 ```
 
-**关联 id 为什么放在载荷里**：`Meta.seq` 由 broker 分配且对发布方不可见
-（`Publication` 只有计数与失败，拿不到本帧 `seq`），所以请求方无法得知自己请求的 seq。
+**关联 id 为什么放在载荷里**：`Meta.topic_seq` 由 broker 分配且对发布方不可见
+（`Publication` 只有计数与失败，拿不到本帧的 `topic_seq`），所以请求方无法得知自己请求的序号。
 于是 rid 由 `Requester` 分配、写进请求载荷，`serve` 在回执里原样回填——两端同一个值，
 不需要 broker 支持，跨语言也不变（SV 响应者按同样的字段布局回显即可，见
 `tests/sv/shuttle_tests.sv` 的 `SvRqSink`）。默认约定两个载荷都有 `rid` 字段
@@ -757,8 +780,8 @@ for (const auto& reply : call.wait_all(1_ms)) use(reply);
 
 **没有 rid 会怎样（逐条）**：一个 `Requester` 只有**一条回执订阅**（一个 topic、一条入口、
 一个回调 `ReplyTable::deliver`），所有请求的回执都从这一个回调进来。帧里只有 `{TResp, Meta{}}`，
-而 `Meta.seq` 是**回执 topic 自己的**发布序号、与请求帧的 seq 无关，请求方也拿不到自己请求帧的
-seq（`Publication` 只回计数）。于是没有 rid 时：
+而 `Meta.topic_seq` 是**回执 topic 自己的**发布序号、与请求帧的序号无关，请求方也拿不到自己请求帧的
+序号（`Publication` 只回计数）。于是没有 rid 时：
 
 - **乱序即错配**：A(op=1)、B(op=2) 两个在途请求，答案 101/102，若 B 的回执先到，FIFO 会把 101
   分给 B（`requester_tests::case2` 钉的就是这条：`rb.at(0).data == 102` 会失败）。两次问同一地址

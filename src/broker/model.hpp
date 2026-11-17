@@ -43,7 +43,7 @@ inline const TypeOps raw_ops{
 inline const std::vector<std::byte>& envelope_bytes(const Envelope& env) {
   if (!env.encoded) {
     if (!env.ops || !env.ops->encode)
-      throw PublishError(std::string("shuttle: type of topic ") + env.meta.topic +
+      throw PublishError(std::string("shuttle: type of topic ") + env.meta.topic_name +
                          " is not encodable; cannot deliver to SV/byte subscribers");
     env.encoded =
         std::make_shared<const std::vector<std::byte>>(env.ops->encode(env.payload.get()));

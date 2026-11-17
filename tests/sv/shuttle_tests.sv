@@ -110,7 +110,7 @@ module shuttle_tests;
       blk_count++;
       last = m;
       order.push_back(int'(m.addr));
-      seqs.push_back(meta.seq);
+      seqs.push_back(meta.topic_seq);
       #(1ns);  // consuming simulation time inside a blocking callback is a legal usage
     endtask
 
@@ -119,7 +119,7 @@ module shuttle_tests;
       nb_count++;
       last = m;
       order.push_back(int'(m.addr));
-      seqs.push_back(meta.seq);
+      seqs.push_back(meta.topic_seq);
     endfunction
   endclass
 
@@ -567,7 +567,7 @@ module shuttle_tests;
     check(box.try_recv(payload, meta) != 0, "mbox.try_recv_ok");
     got = XMsg::unpack(payload);
     check(got.addr == 32'h701 && got.data == 32'h702, "mbox.payload");
-    check(meta.topic == "sv.t.mbox", "mbox.meta_topic");
+    check(meta.topic_name == "sv.t.mbox", "mbox.meta_topic");
     check(box.try_recv(payload, meta) == 0, "mbox.try_recv_empty");
     check(box.received() == 1, "mbox.received_count");
 

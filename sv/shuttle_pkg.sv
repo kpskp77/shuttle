@@ -131,15 +131,15 @@ package shuttle_pkg;
 
   // ── Metadata: passed with each delivery, mirrors shuttle::Meta on the C++ side ──
   class shuttle_meta;
-    string  topic;
+    string  topic_name;
     string  type_tag;
-    longint seq;
+    longint topic_seq;
     longint time_fs;
-    function new(string topic, string type_tag, longint seq, longint time_fs);
-      this.topic   = topic;
-      this.type_tag = type_tag;
-      this.seq     = seq;
-      this.time_fs = time_fs;
+    function new(string topic_name, string type_tag, longint topic_seq, longint time_fs);
+      this.topic_name = topic_name;
+      this.type_tag   = type_tag;
+      this.topic_seq  = topic_seq;
+      this.time_fs    = time_fs;
     endfunction
   endclass
 
@@ -722,9 +722,10 @@ package shuttle_pkg;
   // runs in the SV process hosting that weave task and may legally consume
   // simulation time. The payload is obtained via the frame-pull protocol (see
   // the header of this file).
-  task automatic shuttle_sv_dispatch(input int sub_id, input string topic, input string type_tag,
-                                     input longint seq, input longint time_fs);
-    shuttle_meta m = new(topic, type_tag, seq, time_fs);
+  task automatic shuttle_sv_dispatch(input int sub_id, input string topic_name,
+                                     input string type_tag, input longint topic_seq,
+                                     input longint time_fs);
+    shuttle_meta m = new(topic_name, type_tag, topic_seq, time_fs);
     byte payload[];
     shuttle_frame_bytes(payload);
     shuttle_registry::dispatch(sub_id, payload, m);
@@ -733,10 +734,10 @@ package shuttle_pkg;
   // Dispatch of `publish_now`: runs in the publisher's process context and
   // must be zero-delay (the compiler enforces this for a function). The
   // payload is obtained via the frame-pull protocol.
-  function automatic void shuttle_sv_dispatch_nb(input int sub_id, input string topic,
-                                                 input string type_tag, input longint seq,
+  function automatic void shuttle_sv_dispatch_nb(input int sub_id, input string topic_name,
+                                                 input string type_tag, input longint topic_seq,
                                                  input longint time_fs);
-    shuttle_meta m = new(topic, type_tag, seq, time_fs);
+    shuttle_meta m = new(topic_name, type_tag, topic_seq, time_fs);
     byte payload[];
     shuttle_frame_bytes(payload);
     shuttle_registry::dispatch_nb(sub_id, payload, m);

@@ -38,13 +38,13 @@
 
 | 函数 | 签名 | 阻塞性 | 说明 |
 |---|---|---|---|
-| `shuttle_sv_dispatch` | `task (int sub_id, string topic, string type_tag, longint seq, longint time_fs)` | **可阻塞** | `serial` / `concurrent` 的投递入口：由 C++ broker 的 weave task 调用，在承载该 task 的 SV 进程中执行，用户回调（`shuttle_sink.invoke`）可消耗仿真时间 |
+| `shuttle_sv_dispatch` | `task (int sub_id, string topic_name, string type_tag, longint topic_seq, longint time_fs)` | **可阻塞** | `serial` / `concurrent` 的投递入口：由 C++ broker 的 weave task 调用，在承载该 task 的 SV 进程中执行，用户回调（`shuttle_sink.invoke`）可消耗仿真时间 |
 | `shuttle_sv_dispatch_nb` | `function void (同参)` | **不可阻塞** | `publish_now` 同步段的投递入口：在**发布者进程上下文**中执行，function 语义由编译器强制零延时；回调为 `shuttle_sink_nb.invoke_nb` |
 | `shuttle_sv_time_fs` | `function longint ()` | 不阻塞 | 仿真时间源，C++ `shuttle::now_fs()` 的 svdpi 实现；返回当前仿真时间的飞秒数 |
 
 两个 dispatch export 都**没有 payload 形参**：负载由 export 体内调用
 `shuttle_c_frame_len` / `shuttle_c_frame_qword` 从 C++ 侧的 `FrameContext` 拉取（§1）。
-`sub_id` 即 `shuttle_c_subscribe` 传入的 `sv_sid`；`seq` 是 topic 内单调递增序号
+`sub_id` 即 `shuttle_c_subscribe` 传入的 `sv_sid`；`topic_seq` 是 topic 内单调递增序号
 （broker 分配，跨语言一致）；`time_fs` 是发布时刻的仿真时间。
 
 ## 3. 常量表
@@ -112,7 +112,7 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
 ## 5. 语义要点
 
 1. **多对多**：同一 topic 允许多个 Publisher 实例同时发布、任意多个订阅者，每个订阅者独立
-   收到每个发布帧。`Meta.seq` 由 broker 在 topic 内全局单调递增（跨 Publisher 实例连续），
+   收到每个发布帧。`Meta.topic_seq` 由 broker 在 topic 内单调递增（跨 Publisher 实例连续），
    订阅者可据此区分多个发布者的帧。发布者身份不做强制区分，需要区分时由消息字段自行携带。
 2. **DPI open array**：`byte payload[]` 在 C 侧映射为 `svOpenArrayHandle`，配合 `svSize` /
    `svGetArrElemPtr1` 访问；空数组（len = 0）合法。

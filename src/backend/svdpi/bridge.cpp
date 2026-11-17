@@ -18,10 +18,10 @@
 
 // ── C prototypes of the SV-side exports (defined in shuttle_pkg.sv) ──────
 extern "C" {
-void shuttle_sv_dispatch(int sv_sid, const char* topic, const char* type_tag, long long seq,
-                         long long time_fs);
-void shuttle_sv_dispatch_nb(int sv_sid, const char* topic, const char* type_tag, long long seq,
-                            long long time_fs);
+void shuttle_sv_dispatch(int sv_sid, const char* topic_name, const char* type_tag,
+                         long long topic_seq, long long time_fs);
+void shuttle_sv_dispatch_nb(int sv_sid, const char* topic_name, const char* type_tag,
+                            long long topic_seq, long long time_fs);
 long long shuttle_sv_time_fs();
 }
 
@@ -41,22 +41,24 @@ bool available() {
   return true;
 }
 
-void dispatch(int handle, const std::string& topic, const std::string& type_tag, std::uint64_t seq,
-              std::int64_t time_fs, const std::vector<std::byte>& payload) {
+void dispatch(int handle, const std::string& topic_name, const std::string& type_tag,
+              std::uint64_t topic_seq, std::int64_t time_fs,
+              const std::vector<std::byte>& payload) {
   SvScopeGuard scope;
   FrameContext ctx(payload);
   g_retired_hit = false;
-  shuttle_sv_dispatch(handle, topic.c_str(), type_tag.c_str(), static_cast<long long>(seq),
-                      static_cast<long long>(time_fs));
+  shuttle_sv_dispatch(handle, topic_name.c_str(), type_tag.c_str(),
+                      static_cast<long long>(topic_seq), static_cast<long long>(time_fs));
 }
 
-void dispatch_nb(int handle, const std::string& topic, const std::string& type_tag,
-                 std::uint64_t seq, std::int64_t time_fs, const std::vector<std::byte>& payload) {
+void dispatch_nb(int handle, const std::string& topic_name, const std::string& type_tag,
+                 std::uint64_t topic_seq, std::int64_t time_fs,
+                 const std::vector<std::byte>& payload) {
   SvScopeGuard scope;
   FrameContext ctx(payload);
   g_retired_hit = false;
-  shuttle_sv_dispatch_nb(handle, topic.c_str(), type_tag.c_str(), static_cast<long long>(seq),
-                         static_cast<long long>(time_fs));
+  shuttle_sv_dispatch_nb(handle, topic_name.c_str(), type_tag.c_str(),
+                         static_cast<long long>(topic_seq), static_cast<long long>(time_fs));
 }
 
 void note_retired_delivery() {

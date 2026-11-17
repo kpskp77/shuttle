@@ -29,10 +29,10 @@
 //     static void set_rid(Resp& r, std::uint32_t v) { r.corr = v; }
 //   };
 //
-// ── Why a correlation field and not Meta.seq ────────────────────────────
-// Meta.seq is assigned by the broker and is not visible to the publisher of the
-// frame (Publication carries counters, not the frame's seq), so a requester
-// cannot learn the seq of its own request. The rid is therefore allocated by
+// ── Why a correlation field and not Meta.topic_seq ──────────────────────
+// Meta.topic_seq is assigned by the broker and is not visible to the publisher
+// of the frame (Publication carries counters, not the frame's topic_seq), so a
+// requester cannot learn the topic_seq of its own request. The rid is allocated by
 // the Requester and overwritten by `serve` into the reply — the same value on
 // both ends, with no broker support and no protocol change.
 //

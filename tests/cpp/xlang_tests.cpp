@@ -107,7 +107,7 @@ WEAVE_TEST(xlang_tests) {
     st->from_sv =
         shuttle::subscribe<XMsg>(kFromSvTopic, [st](const XMsg& m, const shuttle::Meta& meta) {
           st->got.push_back(m);
-          st->seqs.push_back(meta.seq);
+          st->seqs.push_back(meta.topic_seq);
           st->tags.push_back(meta.type_tag);
         });
 
@@ -153,7 +153,7 @@ WEAVE_TEST(xlang_tests) {
     expect_eq(static_cast<long long>(item->value.size()), 8,
               "the ready frame keeps its wire length in the mailbox");
     expect(item->meta.type_tag == "XMsg", "type_tag survives the cross-language hop");
-    expect(item->meta.topic == kReadyTopic, "metadata identifies the SV-published topic");
+    expect(item->meta.topic_name == kReadyTopic, "metadata identifies the SV-published topic");
   });
 
   // case5: cross-language request/response — a C++ Requester calls the SV responder registered by

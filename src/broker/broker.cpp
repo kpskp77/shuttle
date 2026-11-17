@@ -175,14 +175,14 @@ Delivery Broker::deliver(const std::shared_ptr<Subscriber>& sub, const Envelope&
   // unsubscribing; `removed` must be checked before the kind branch.
   if (sub->removed) {
     ++sub->retired;
-    ++topic_for(env.meta.topic).retired;
+    ++topic_for(env.meta.topic_name).retired;
     return Delivery::retired;
   }
   switch (sub->kind) {
     case SubKind::typed:
       // A pure byte-stream frame must never be reinterpreted as T*.
       if (env.ops == &raw_ops)
-        throw PublishError(std::string("shuttle: frame of topic ") + env.meta.topic +
+        throw PublishError(std::string("shuttle: frame of topic ") + env.meta.topic_name +
                            " was not materialized as a C++ object (type unbound)");
       sub->cb(env.payload.get(), env.meta);
       break;
@@ -193,16 +193,16 @@ Delivery Broker::deliver(const std::shared_ptr<Subscriber>& sub, const Envelope&
       // An import function's call chain cannot invoke an export task; `now`
       // has already partitioned by cap, so here we only follow the registered entry.
       if (use_nb)
-        backend::dispatch_nb(sub->handle, env.meta.topic, env.meta.type_tag, env.meta.seq,
-                             env.meta.time_fs, envelope_bytes(env));
+        backend::dispatch_nb(sub->handle, env.meta.topic_name, env.meta.type_tag,
+                             env.meta.topic_seq, env.meta.time_fs, envelope_bytes(env));
       else
-        backend::dispatch(sub->handle, env.meta.topic, env.meta.type_tag, env.meta.seq,
+        backend::dispatch(sub->handle, env.meta.topic_name, env.meta.type_tag, env.meta.topic_seq,
                           env.meta.time_fs, envelope_bytes(env));
       // The SV registry has already dropped this sink: this in-flight
       // delivery is retired, not delivered.
       if (backend::take_retired_delivery()) {
         ++sub->retired;
-        ++topic_for(env.meta.topic).retired;
+        ++topic_for(env.meta.topic_name).retired;
         return Delivery::retired;
       }
       break;
@@ -257,9 +257,9 @@ std::shared_ptr<const Envelope> Broker::make_envelope(std::string_view topic,
   auto env = std::make_shared<Envelope>();
   env->payload = std::move(payload);
   env->ops = ops;
-  env->meta.topic = std::string(topic);
+  env->meta.topic_name = std::string(topic);
   env->meta.type_tag = t.binding->tag;
-  env->meta.seq = ++t.seq;
+  env->meta.topic_seq = ++t.seq;
   env->meta.time_fs = backend::now_fs();
   ++t.published;
   if (t.retained_on) t.retained_env = env;
@@ -292,9 +292,9 @@ std::shared_ptr<const Envelope> Broker::make_envelope_bytes(std::string_view top
     auto env = std::make_shared<Envelope>();
     env->payload = std::move(payload);
     env->ops = &raw_ops;
-    env->meta.topic = std::string(topic);
+    env->meta.topic_name = std::string(topic);
     env->meta.type_tag = t.binding->tag;
-    env->meta.seq = ++t.seq;
+    env->meta.topic_seq = ++t.seq;
     env->meta.time_fs = backend::now_fs();
     ++t.published;
     if (t.retained_on) t.retained_env = env;
@@ -318,7 +318,7 @@ void Broker::retained_catchup(const std::shared_ptr<Subscriber>& sub) {
       auto env_copy = t.retained_env;
       weave::create_task("shuttle-retained", [this, sub, env_copy]() {
         if (deliver(sub, *env_copy) == Delivery::delivered)
-          ++topic_for(env_copy->meta.topic).delivered;
+          ++topic_for(env_copy->meta.topic_name).delivered;
       });
     } else {
       if (deliver(sub, *t.retained_env) == Delivery::delivered) ++t.delivered;

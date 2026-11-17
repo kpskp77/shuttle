@@ -39,7 +39,7 @@ WEAVE_TEST(basic_demo) {
   auto async_mon =
       shuttle::subscribe<UartTx>("uart0.tx", [](const UartTx& tx, const shuttle::Meta& m) {
         std::printf("[async] seq=%llu addr=0x%08x data=0x%08x\n",
-                    static_cast<unsigned long long>(m.seq), tx.addr, tx.data);
+                    static_cast<unsigned long long>(m.topic_seq), tx.addr, tx.data);
         weave::sleep(10_ns);  // blocking-capability callback: waiting is allowed
       });
 
@@ -94,7 +94,7 @@ WEAVE_TEST(basic_demo) {
   // debugging / pass-through, or for consuming messages published from SV.
   auto raw_tap = shuttle::subscribe_bytes(
       "uart0.>", [](const std::vector<std::byte>& bytes, const shuttle::Meta& m) {
-        std::printf("[raw] topic=%s payload=%zu bytes\n", m.topic.c_str(), bytes.size());
+        std::printf("[raw] topic=%s payload=%zu bytes\n", m.topic_name.c_str(), bytes.size());
       });
   pub.publish_now(UartTx{0x14, 0x44}, shuttle::NowPolicy::skip);
 
