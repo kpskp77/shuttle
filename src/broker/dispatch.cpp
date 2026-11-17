@@ -95,12 +95,21 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
     return pub;
   }
 
-  // `mine` — the chain-tail event this frame must release — must be captured
-  // at publish time; reading topic.chain inside the task body would pick up a
-  // later frame's tail.
-  auto prev = std::make_shared<weave::Event>(topic_for(topic).chain);
+  // `mine` — the chain-tail event this frame must release — is always created
+  // here and never re-read from the topic later (invariant 5).
   auto mine = std::make_shared<weave::Event>();
-  topic_for(topic).chain = *mine;
+  // A frame whose trigger is already satisfied reserves the tail inside the
+  // publish call, so its delivery order equals the publish order and does not
+  // depend on when weave first runs the task. A deferred frame must NOT reserve
+  // here: an un-fired trigger would otherwise hold the topic's chain tail and
+  // stall every later frame (and deadlock whenever the trigger itself depends
+  // on one of them). It joins the chain at trigger time instead.
+  const bool queued = trig.immediate();
+  std::shared_ptr<weave::Event> prev;
+  if (queued) {
+    prev = std::make_shared<weave::Event>(topic_for(topic).chain);
+    topic_for(topic).chain = *mine;
+  }
   weave::create_task(
       std::string("shuttle-seq-") + std::string(topic),
       [this, pub, env, trig = std::move(trig), targets = std::move(targets), prev, mine]() mutable {
@@ -110,6 +119,14 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
             0;  // targets already in a terminal state; used to backfill on unit-level failure
         try {
           wait_trigger(trig);
+          if (!prev) {
+            // Deferred frame joining the chain now. Reading the tail and
+            // installing ours is a single step: no suspension point lies
+            // between them (single-active-process invariant), so no other
+            // frame can interleave and steal the tail.
+            prev = std::make_shared<weave::Event>(topic_for(env->meta.topic).chain);
+            topic_for(env->meta.topic).chain = *mine;
+          }
           prev->wait();
           for (; idx < targets.size(); ++idx) {
             const auto& sub = targets[idx];
@@ -119,8 +136,8 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
               else
                 ++pub->retired;
             } catch (const weave::CancelledError&) {
-              throw;  // handled by the outer scope as a unit-level failure; also guarantees `mine`
-                      // is finally set
+              throw;  // handled by the outer scope as a unit-level failure; also guarantees
+                      // `mine` is finally set
             } catch (const std::exception&) {
               count_failed(t, sub);
               if (!failure) failure = failure_of(describe(sub), std::current_exception());
@@ -145,6 +162,7 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
           target_finished(pub);
         }
         mine->set();  // release the next frame regardless of outcome, to prevent chain stall
+                      // (harmless when a deferred frame never installed it)
         record_failure(pub, failure);
         if (pub->finished == pub->target_count && !pub->done_flag) pub_complete(pub);
       });

@@ -66,18 +66,19 @@ h.wait_done();                                                    // 挂起当�
 | 方式 | C++ | SV | 调度方式 | 顺序 | 返回时状态 |
 | --- | --- | --- | --- | --- | --- |
 | `now` | `publish_now(msg, policy)` | `publish_now(msg, SHUTTLE_NOW_*)` | 发布者进程内同步，全程不出让调度权 | 按注册顺序 | 入口为 nonblocking 的目标已执行完；入口为 blocking 的目标按策略处置（默认转后台链） |
-| `serial` | `publish_serial(msg, trig)` | `publish_serial(msg, trig)` | 后台**一个** weave task（topic 级） | 严格 FIFO | 立即返回句柄，回调尚未开始 |
+| `serial` | `publish_serial(msg, trig)` | `publish_serial(msg, trig)` | 后台**一个** weave task（topic 级） | 严格 FIFO（按入队顺序；延迟帧在触发时刻入队） | 立即返回句柄，回调尚未开始 |
 | `concurrent` | `publish_concurrent(msg, trig)` | `publish_concurrent(msg, trig)` | 后台**每订阅者一个** weave task | 无承诺 | 立即返回句柄，回调尚未开始 |
 
 选型：
 
-- 默认用 `serial`。同 topic 的后台投递顺序等于发布调用顺序，排查问题时最容易复现。
+- 默认用 `serial`。同 topic 的后台投递顺序等于入队顺序（即时帧即发布顺序），排查问题时最容易复现。
 - 要求当帧生效、且回调不消耗仿真时间（例如配置下发、握手应答）用 `now`。
 - 订阅者之间互不依赖、单个回调耗时可观时用 `concurrent`，由 weave 调度器并发推进。
 
 `serial` / `concurrent` 支持**延迟触发**：发布后不立即回调，条件满足才启动（`Trigger` /
 `shuttle_trigger`，支持延时、事件、另一个发布完成、all/any 组合）。三种方式都遵循**快照
-语义**：调用瞬间锁定订阅者集合与消息拷贝。
+语义**：调用瞬间锁定订阅者集合与消息拷贝。延迟帧不占用串行链的队头：它在触发时刻才入队，
+因此一个长期未满足的触发器不会把同 topic 的后续帧一起拖住。
 
 ## 订阅入口
 
@@ -216,7 +217,7 @@ just test-all   # 两者都跑
 | `tests/cpp/codec_tests.cpp` | 线格式黄金字节、各宽度大端与补码、IEEE754、长度前缀、enum 底层类型、嵌套 struct、越界抛 `DecodeError`、类型标签与 `has_codec_v` |
 | `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、类型不相交的帧不入目标集（含绑定时的通配符豁免）、topic 名与订阅模式的语法校验（`TopicPatternError`，被拒时不留 topic 条目） |
 | `tests/cpp/publish_tests.cpp` | `NowPolicy` 三策略、`wait/wait(timeout)/done/result/failures`、计数契约、失败聚合不影响其余目标、零目标立即完成、类型不相交即零目标、入口选择、`defer` 与 `serial` 共享 FIFO |
-| `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发等待期间退订（在途帧记 retired） |
+| `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发等待期间退订（在途帧记 retired）、延迟帧不阻塞后续同 topic 帧、触发器由后续帧回调放行 |
 | `tests/cpp/xlang_tests.cpp` | 跨语言往返（仅 svdpi 后端）：就绪握手、双向各三帧、类型标签与 seq 单调 |
 | `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、订阅先于绑定的标签冲突、通配符 topic 发布被拒（`publish_now` 返回 null + last_error）、快照、`shuttle_event`、跨语言往返 |
 

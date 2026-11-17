@@ -136,8 +136,9 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    上报并返回，C++ 无法捕获 SV 异常；broker 把 dispatch 正常返回视为成功，SV 侧错误计入
    仿真器的错误报告系统。
 8. **顺序保证**：`publish_now` 严格 FIFO；`publish_serial` 经 per-topic 串行链保证 topic 级
-   FIFO；`publish_concurrent` 不承诺任何顺序。`SHUTTLE_NOW_DEFER` 的帧进入的是与
-   `publish_serial` **同一条**链，因此同一 topic 的后台投递顺序等于发布调用顺序。
+   FIFO（按**入队**顺序：`SHUTTLE_TRIG_NONE` 的帧在发布调用内入队，因此顺序即发布顺序；
+   带触发器的帧在触发时刻才入队，未满足的触发不会占住链头）；`publish_concurrent` 不承诺任何顺序。
+   `SHUTTLE_NOW_DEFER` 的帧进入的是与 `publish_serial` **同一条**链。
 9. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
    快照的投递仍可能到达 SV 侧（C++ 侧靠 `Subscriber::removed` 拦住同一类投递，两侧口径
    一致：记 `retired`）。SV 注册表把这些已退订 id 记为 retired，静默丢弃并经

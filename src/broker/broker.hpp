@@ -78,8 +78,10 @@ public:
   std::shared_ptr<const Envelope> make_envelope_bytes(std::string_view topic, std::string_view tag,
                                                       const std::vector<std::byte>& bytes);
 
-  // Background scheduling. start_serial completes the per-topic chain-tail
-  // handoff before returning.
+  // Background scheduling. start_serial performs the per-topic chain-tail
+  // handoff before returning only when the trigger is already satisfied; a
+  // deferred frame joins the chain in its task, after wait_trigger, so an
+  // un-fired trigger never holds the tail (see docs/architecture.md §5.2).
   static void wait_trigger(const Trigger& trig);
   std::shared_ptr<PubState> start_serial(std::string_view topic,
                                          std::shared_ptr<const Envelope> env, Trigger trig,

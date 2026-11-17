@@ -11,6 +11,10 @@
 //     not *to whom* or *what*;
 //   · under `publish_concurrent` all subscriber processes share the same
 //     trigger (they wait on the same condition);
+//   · a deferred frame does not hold its topic's serial chain while the
+//     trigger is pending: it joins the chain at trigger time, so a delayed
+//     `publish_serial` never blocks later frames of the same topic (delivery
+//     order is therefore "join order", not "publish order" for such frames);
 //   · Trigger::wait() is a blocking primitive, called by the broker's
 //     dispatch task; it requires a weave task context.
 

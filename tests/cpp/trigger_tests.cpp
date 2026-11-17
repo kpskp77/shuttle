@@ -152,10 +152,9 @@ WEAVE_TEST(trigger_tests) {
 
   // case7: unsubscribe during the trigger wait — unsubscribe takes effect immediately: the snapshot
   // only says "who was selected"; if the target has unsubscribed by release time it never enters
-  // the callback ("in-flight frames
-  //  are unaffected by unsubscribe" was the old, deprecated contract: the SV sink is deleted from
-  //  the registry at unsubscribe time, both languages now share "unsubscribe takes effect
-  //  immediately", and such deliveries are recorded as retired).
+  // the callback ("in-flight frames are unaffected by unsubscribe" was the old, deprecated
+  // contract: the SV sink is deleted from the registry at unsubscribe time, so both languages now
+  // share "unsubscribe takes effect immediately" and such deliveries are recorded as retired).
   run_case(__func__, "case7", [] {
     shuttle::Publisher<TrigMsg> pub("trig.unsub");
     std::size_t frames = 0;
@@ -176,6 +175,53 @@ WEAVE_TEST(trigger_tests) {
     expect(h.done(), "still reaches a terminal state");
     pub.publish_serial(TrigMsg{2}).wait();
     expect_eq(static_cast<long long>(frames), 0, "no new frames after unsubscribing");
+  });
+
+  // case8: a pending trigger does not hold the topic's serial chain — a deferred frame joins the
+  // chain only when its trigger fires, so a later trigger-free frame is not blocked behind it
+  run_case(__func__, "case8", [] {
+    shuttle::Publisher<TrigMsg> pub("trig.chain");
+    weave::Event ev;  // deliberately left unset while the second frame is published
+    std::string order;
+    auto s = shuttle::subscribe<TrigMsg>("trig.chain",
+                                        [&](const TrigMsg& m, const shuttle::Meta&) {
+                                          order += std::to_string(m.v);
+                                        });
+
+    auto deferred = pub.publish_serial(TrigMsg{1}, shuttle::after(ev));
+    auto plain = pub.publish_serial(TrigMsg{2});
+
+    expect(plain.wait(200_us), "a trigger-free frame is not held back by a pending trigger");
+    expect_eq(static_cast<long long>(order.size()), 1, "only the trigger-free frame was delivered");
+    expect(order == "2", "the trigger-free frame overtakes the deferred one");
+    expect(!deferred.done(), "the deferred frame is still waiting for its trigger");
+
+    ev.set();
+    expect(deferred.wait(200_us), "the deferred frame delivers once its trigger fires");
+    expect(order == "21", "the deferred frame delivers once its trigger fires (ready order)");
+    expect(deferred.done(), "the deferred frame reaches a terminal state");
+  });
+
+  // case9: a trigger may be satisfied by the callback of a frame published later on the same topic —
+  // this is the deadlock case that reserving the chain tail at publish time used to create
+  run_case(__func__, "case9", [] {
+    shuttle::Publisher<TrigMsg> pub("trig.feed");
+    weave::Event gate;
+    std::string order;
+    auto s = shuttle::subscribe<TrigMsg>("trig.feed", [&](const TrigMsg& m, const shuttle::Meta&) {
+      order += std::to_string(m.v);
+      if (m.v == 2) gate.set();  // the later frame's callback releases the earlier frame
+    });
+
+    auto first = pub.publish_serial(TrigMsg{1}, shuttle::after(gate));
+    auto second = pub.publish_serial(TrigMsg{2});
+    // Timed waits: with a pending trigger holding the chain this case would hang forever instead of
+    // failing, which is exactly the failure mode being guarded against.
+    expect(second.wait(200_us), "the later frame runs first");
+    expect(first.wait(200_us), "the gate set by the later frame's callback releases the earlier one");
+    expect(order == "21", "the later frame runs first and releases the earlier one");
+    expect(first.done() && second.done(), "both frames reach a terminal state");
+    expect(first.failures().empty() && second.failures().empty(), "no failures");
   });
 
   report(__func__);

@@ -164,9 +164,10 @@ SV 侧 export function），blocking 目标根本不在这个循环里。同步�
 ```
 publish_serial ─▶ targets 为空 ? 立即 pub_complete（不建单元、不装链尾）
                ─▶ target_count = targets.size()
-               ─▶ prev/mine 链尾交接（§6，同步段）
+               ─▶ trig.immediate() ? prev/mine 链尾交接（§6，同步段） : 不占链尾
                ─▶ create_task("shuttle-seq-<topic>")
                     ├─ wait_trigger(trig)              // 延迟启动条件
+                    ├─ 延迟帧：此刻才做 prev/mine 链尾交接（§6，原子读-改-写）
                     ├─ prev->wait()                    // 排在上一帧之后
                     ├─ 逐目标 deliver(sub, env)        // 用该注册的那条入口
                     │     └─ target_finished()         // ++finished
@@ -175,6 +176,13 @@ publish_serial ─▶ targets 为空 ? 立即 pub_complete（不建单元、不�
                     └─ finished == target_count 时 pub_complete()
 返回 Publication（立即可用）
 ```
+
+链尾交接为何要区分：immediate 帧在发布调用内占位，顺序就等价于发布顺序且不依赖 task 何时首跑；
+延迟帧则在 `wait_trigger` 返回后才入队。后者不是优化而是正确性要求——`after(Event)` 的延迟是
+无界的，若在发布瞬间就占住链尾，同 topic 后续每一帧（包括根本无触发器的帧）都会被它扣住，
+`publish_serial(...).wait()` 于是永久卡住；当触发器由"排在后面的同 topic 帧的回调"满足时
+更会形成真死锁。`trigger_tests.cpp` 的 case8（延迟帧不阻塞后续 immediate 帧）与 case9
+（后续帧的回调放行前一帧）钉住这两条。
 
 "单投递单元"意味着订阅者之间串行：前一个订阅者的回调彻底结束（含 SV 侧可阻塞的
 `invoke` task）才开始下一个。
@@ -228,23 +236,37 @@ Publisher<T>::publish_now/serial/concurrent         shuttle_pub#(T)::publish_now
 ## 6. 投递顺序：per-topic 串行链
 
 `publish_serial` 与 `publish_now(defer)` 共用每个 topic 的一条 FIFO 链，由此得到可测定律：
-**同一 topic 的后台投递顺序等于发布调用顺序**。
+**同一 topic 的后台投递顺序等于入队顺序**——immediate 触发帧的入队时刻就是发布调用，
+延迟帧的入队时刻是它的触发时刻（见 §5.2）。
 
-`start_serial` 在同步段（发布调用内）完成链尾交接，顺序不可交换：
+链尾交接的顺序不可交换（immediate 帧在同步段内完成）：
 
 ```cpp
+// 立即帧：发布调用内交接（顺序 = 发布顺序，不依赖 task 何时首跑）
 auto prev = std::make_shared<weave::Event>(topics[topic].chain);  // 本帧要等的链尾
 auto mine = std::make_shared<weave::Event>();                     // 本帧要放行的链尾
 topics[topic].chain = *mine;                                      // 安装新链尾
+
+// 延迟帧：先 wait_trigger，回到 task 后才做同样三步（无挂起点，读-改-写原子）
 ```
 
-投递单元先 `prev->wait()`，结束（无论成败）后 `mine->set()`。若在 task 体内才读取
+投递单元先 `prev->wait()`，结束（无论成败）后 `mine->set()`。若在投递完成时（而不是入队时）才读
 `topics[topic].chain`，并发发布会把其他帧的链尾 set 掉，而本帧该放行的那个永远不置位，
 后续帧随之永久阻塞——表现为仿真时间停在最后一个事件处且无任何报错。
 `mine->set()` 位于 `catch` 之外，保证失败与取消都不会使链停滞。
 
+延迟帧为什么不在发布瞬间入队：`after(Event)` / `after(Task)` 的延迟是无界的，占住链尾就会把
+同 topic 后续每一帧（含无触发器的帧）一起扣住，`publish_serial(...).wait()` 永久卡住；
+而若触发器本身要等"排在后面的同 topic 帧的回调"，两者相互等待即真死锁。
+`tests/cpp/trigger_tests.cpp` 的 case8/case9 分别钉住这两条。
+
 串行链的代价是跨订阅者的队头阻塞：前一个订阅者的回调彻底结束后才开始下一个。这是
 显式接受的取舍；需要并发时用 `publish_concurrent`。
+
+**禁止用法**：在串行回调里对同一 topic 发布串行帧并 `wait()`。内层帧必须排在本帧之后，
+而本帧又要等内层完成，任何 FIFO 链设计下都死锁（除非 weave 暴露当前任务身份，否则 `wait()`
+无法可靠检出——broker 内部的"正在投递"标记在链任务挂起期间对其他任务是陈旧的，据此报错会误报）。
+判据简单：回调里只发布不等待，或改用 `publish_concurrent` / 其他 topic。
 
 ## 7. 入口模型与 NowPolicy
 
