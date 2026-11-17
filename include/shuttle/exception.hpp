@@ -1,54 +1,55 @@
 #pragma once
 
-// 异常体系：遵循与 weave 相同的跨 DSO 纪律 ——
-// 每个异常类型的析构在头文件中仅声明、在 src/ 中定义（key function），
-// 保证 vtable/typeinfo 只在 libshuttle.so 中发射一次，
-// 跨 DSO 的 catch(const X&) 才能按 type_info 指针比较正确匹配。
+// Exception hierarchy: follows the same cross-DSO discipline as weave — each exception type's
+// destructor is declared in this header and defined in src/ (key function), so the vtable/typeinfo
+// are emitted exactly once in libshuttle.so and a cross-DSO catch(const X&) matches correctly by
+// type_info pointer comparison.
 
 #include <stdexcept>
 
 namespace shuttle {
 
-// 框架所有异常的基类
+// Base class of all framework exceptions
 class ShuttleError : public std::runtime_error {
 public:
   explicit ShuttleError(const char* what_arg) : std::runtime_error(what_arg) {}
   explicit ShuttleError(const std::string& what_arg) : std::runtime_error(what_arg) {}
-  ~ShuttleError() override;  // key function：src/exception.cpp 中定义
+  ~ShuttleError() override;  // key function: defined in src/exception.cpp
 };
 
-// 发布/投递路径失败：topic 类型绑定冲突、编码失败、帧未物化为 C++ 对象（类型未绑定）、
-// 编解码长度超限
+// Publish/delivery path failures: topic type-binding conflict, encoding failure, frame not
+// materialized as a C++ object (type unbound), codec length limit exceeded
 class PublishError : public ShuttleError {
 public:
   using ShuttleError::ShuttleError;
   ~PublishError() override;
 };
 
-// 能力不匹配：`publish_now` 遇到入口为 blocking（可消耗仿真时间）的订阅者
-// （NowPolicy::reject 下抛出）
+// Capability mismatch: `publish_now` met a subscriber whose entry is blocking (may consume
+// simulation time) (thrown under NowPolicy::reject)
 class CapabilityError : public ShuttleError {
 public:
   using ShuttleError::ShuttleError;
   ~CapabilityError() override;
 };
 
-// topic 的类型绑定冲突：同一 topic 被声明为两种不同的类型标签
+// Topic type-binding conflict: the same topic declared with two different type tags
 class TypeMismatchError : public ShuttleError {
 public:
   using ShuttleError::ShuttleError;
   ~TypeMismatchError() override;
 };
 
-// topic / 订阅模式的语法错误：发布、类型声明或 retained 用了含通配符的名字，
-// 或订阅模式里 ">" 不在末段、出现空段、通配符混进了普通段
+// Syntax error in a topic / subscription pattern: a wildcard appeared in a name used for publish,
+// type declaration, or retained; or in a subscription pattern ">" is not the last level, an empty
+// level appears, or a wildcard is embedded inside a plain level
 class TopicPatternError : public ShuttleError {
 public:
   using ShuttleError::ShuttleError;
   ~TopicPatternError() override;
 };
 
-// 解码失败：字节流长度不足、尾部多余字节、长度前缀越界等
+// Decoding failure: byte stream too short, trailing extra bytes, length prefix out of bounds, etc.
 class DecodeError : public ShuttleError {
 public:
   using ShuttleError::ShuttleError;

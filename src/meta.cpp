@@ -1,7 +1,8 @@
-// include/shuttle/meta.hpp 的后端无关实现。
+// Backend-agnostic implementation of include/shuttle/meta.hpp.
 //
-// now_fs() 是 Meta.time_fs 的唯一来源，只做“转发给当前后端”，因此不并入发布或订阅的
-// 任一 TU：它不属于句柄，也不产生句柄。
+// now_fs() is the sole source of Meta.time_fs; it only "forwards to the
+// current backend", so it is not merged into either the publish or subscribe
+// TU: it belongs to no handle and produces no handle.
 
 #include <cstdint>
 #include <shuttle/meta.hpp>

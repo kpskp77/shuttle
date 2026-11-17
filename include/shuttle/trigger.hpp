@@ -1,13 +1,18 @@
 #pragma once
 
-// Trigger：`serial`/`concurrent` 发布的延迟触发条件 —— "发布后等到条件满足再启动回调进程"。
+// Trigger: deferred start condition for `serial`/`concurrent` publications —
+// "publish now, start the callback process only once the condition holds".
 //
-// 语义要点：
-//   · 空触发器（默认构造）= 立即启动；
-//   · publish_serial / publish_concurrent 在调用瞬间即锁定订阅者集合与消息拷贝（快照语义），
-//     触发器只决定后台回调进程"何时开始"，不影响"给谁发、发什么"；
-//   · `publish_concurrent` 下所有订阅者进程共享同一个触发器（等待同一条件）；
-//   · Trigger::wait() 是阻塞原语，由 broker 的分发 task 调用，需 weave task 上下文。
+// Semantic essentials:
+//   · an empty trigger (default-constructed) = start immediately;
+//   · publish_serial / publish_concurrent lock in the subscriber set and the
+//     message copy at the moment of the call (snapshot semantics); the
+//     trigger only decides *when* the background callback process *starts*,
+//     not *to whom* or *what*;
+//   · under `publish_concurrent` all subscriber processes share the same
+//     trigger (they wait on the same condition);
+//   · Trigger::wait() is a blocking primitive, called by the broker's
+//     dispatch task; it requires a weave task context.
 
 #include <functional>
 #include <initializer_list>
@@ -19,16 +24,17 @@
 namespace shuttle {
 
 namespace detail {
-// 内部构造通道（定义在 src/detail/trigger.hpp，不随包安装）。
-// 公开工厂见下方 after() 系列。
+// Internal construction channel (defined in src/detail/trigger.hpp, not
+// installed). The public factories are the after() family below.
 struct TriggerAccess;
 }  // namespace detail
 
 class Trigger {
 public:
-  Trigger() = default;  // 空：立即
+  Trigger() = default;  // empty: immediate
 
-  // 阻塞至条件满足（空触发器立即返回）。仅 broker 内部分发路径调用。
+  // Block until the condition holds (an empty trigger returns immediately).
+  // Only invoked by the broker's internal dispatch paths.
   void wait() const {
     if (fn_) fn_();
   }
@@ -37,7 +43,8 @@ public:
 private:
   explicit Trigger(std::function<void()> fn) : fn_(std::move(fn)) {}
 
-  std::function<void()> fn_;  // 可拷贝、可被多个分发进程共享等待
+  std::function<void()>
+      fn_;  // copyable; may be awaited concurrently by multiple dispatch processes
 
   friend Trigger after(weave::Event& ev);
   friend Trigger after(weave::duration d);
@@ -47,22 +54,25 @@ private:
   friend struct detail::TriggerAccess;
 };
 
-// 等待一个事件被 set（C++ 侧一律用 weave::Event；SV 侧的事件句柄
-// `shuttle_event` 是另一套按 id 引用的东西，C++ 不持有它，见 shuttle_event）
+// Wait for an event to be set (on the C++ side always a weave::Event; the SV
+// side's event handle `shuttle_event` is a different, id-referenced thing —
+// C++ does not hold it, see shuttle_event)
 Trigger after(weave::Event& ev);
 
-// 等待一段仿真延时
+// Wait for a simulation-time delay
 Trigger after(weave::duration d);
 
-// 等待一个 weave 任务到达终态（DONE/FAILED/CANCELLED 均视为"完成"，不重抛其异常：
-// 触发器只表达"完成"这一事实，失败处理由 Publication::result() 承担）
+// Wait for a weave task to reach a terminal state (DONE/FAILED/CANCELLED all
+// count as "done"; its exception is not rethrown: a trigger only conveys the
+// fact of completion — failure handling belongs to Publication::result())
 Trigger after(const weave::Task& t);
 
-// 全部满足 / 任一满足（空集合按立即满足处理）
+// All of them / any one of them (an empty collection counts as immediately satisfied)
 Trigger after_all(std::vector<Trigger> trigs);
-// 注意：`after_any` 在元素 ≥2 时于**构造点**就为每个子触发器起一个竞速 task 并开始等待
-// （单元素直接返回它本身），因此必须在 weave task / 仿真进程上下文里调用，
-// 不能在 nonblocking 回调里构造。
+// Note: `after_any` with >= 2 elements spawns a racing task per sub-trigger
+// and starts waiting right at **construction** (a single element is returned
+// as-is), so it must be called in a weave task / simulation-process context —
+// never inside a nonblocking callback.
 Trigger after_any(std::vector<Trigger> trigs);
 inline Trigger after_all(std::initializer_list<Trigger> trigs) {
   return after_all(std::vector<Trigger>(trigs));

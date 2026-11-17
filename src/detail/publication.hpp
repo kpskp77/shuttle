@@ -1,9 +1,12 @@
 #pragma once
 
-// Publication 的私有实现与具名构造通道（不安装）。
+// Private implementation of Publication and the named construction channel
+// (not installed).
 //
-// 公开头只持有不透明的 shared_ptr<Impl>；broker API 与 svdpi 门面需要把 PubState
-// 包装成句柄或反查 pub_id，因此共享这一小块定义，而不必看到完整 Broker 实现。
+// The public header only holds the opaque shared_ptr<Impl>; the broker API
+// and the svdpi facade need to wrap a PubState into a handle or look up the
+// pub_id back, so this small shared definition exists without exposing the
+// full Broker implementation.
 
 #include <memory>
 #include <shuttle/publication.hpp>
@@ -17,7 +20,8 @@ struct Publication::Impl {
   std::shared_ptr<detail::PubState> pub;
 };
 
-// publication.hpp 中声明的友元：统一构造/反查，避免各入口直接触碰 impl_。
+// The friend declared in publication.hpp: unified construction / reverse
+// lookup, so entry points need not touch impl_ directly.
 struct detail_pub_access {
   static Publication make(std::shared_ptr<Publication::Impl> impl) {
     return Publication(std::move(impl));

@@ -1,18 +1,19 @@
-// 延迟触发（Trigger）示范。
+// Deferred trigger (Trigger) demo.
 //
-// 三种发布方式都在调用瞬间完成消息拷贝并锁定订阅者集合（快照语义）；
-// Trigger 只决定 `serial`/`concurrent` 的后台回调进程何时启动：
-//   after(weave::Event&)    —— 事件 set 时启动
-//   after(weave::duration)  —— 仿真延时后启动
-//   after(weave::Task&)     —— 指定任务终态（含失败/取消）后启动
-//   after_all / after_any   —— 组合多个触发器
-// 等待完成（wait/result）与触发器正交：句柄在回调全部结束后才 done。
+// All three publish flavors copy the message and lock in the subscriber set at
+// the moment of the call (snapshot semantics); a Trigger only decides *when*
+// the background callback process of `serial`/`concurrent` *starts*:
+//   after(weave::Event&)    — start when the event is set
+//   after(weave::duration)  — start after a simulation delay
+//   after(weave::Task&)     — start once the given task reaches a terminal state
+//   (failure/cancellation included) after_all / after_any   — combine multiple triggers
+// Waiting for completion (wait/result) is orthogonal to triggers: the handle
+// becomes done only after all callbacks finish.
 
 #include <cstdint>
 #include <cstdio>
-#include <stdexcept>
-
 #include <shuttle/shuttle.hpp>
+#include <stdexcept>
 #include <weave/test.hpp>
 #include <weave/weave.hpp>
 
@@ -27,36 +28,36 @@ WEAVE_TEST(trigger_demo) {
   shuttle::Publisher<Alarm> pub("soc.alarm");
 
   int received = 0;
-  auto sub = shuttle::subscribe<Alarm>(
-      "soc.alarm", [&](const Alarm& a, const shuttle::Meta&) {
-        std::printf("[alarm] code=%u\n", a.code);
-        ++received;
-      });
+  auto sub = shuttle::subscribe<Alarm>("soc.alarm", [&](const Alarm& a, const shuttle::Meta&) {
+    std::printf("[alarm] code=%u\n", a.code);
+    ++received;
+  });
 
-  // ── 仿真延时触发：100ns 后才启动回调进程 ──────────────────────────────
+  // ── Simulation-delay trigger: the callback process starts only after 100ns ──
   auto h1 = pub.publish_serial(Alarm{1}, shuttle::after(100_ns));
 
-  // ── 事件触发：weave::Event set 时启动（SV 侧对应 TRIG_EVENT）─────────
+  // ── Event trigger: starts when the weave::Event is set (SV counterpart: TRIG_EVENT) ───────
   weave::Event ev;
   auto h2 = pub.publish_concurrent(Alarm{2}, shuttle::after(ev));
-  if (h2.done()) throw std::logic_error("trigger_demo: 事件未触发前不应完成");
+  if (h2.done()) throw std::logic_error("trigger_demo: must not complete before the event fires");
   ev.set();
 
-  // ── 跟随任务：worker 到达终态后启动（成功/失败/取消均视为完成）────────
+  // ── Task-following trigger: starts once the worker reaches a terminal state
+  // (success/failure/cancel all count as done) ────────
   auto worker = weave::create_task("worker", [] { weave::sleep(50_ns); });
   auto h3 = pub.publish_serial(Alarm{3}, shuttle::after(worker));
 
-  // ── 组合触发：两个事件都 set 后才启动 ─────────────────────────────────
+  // ── Combined trigger: starts only after both events are set ───────────
   weave::Event a, b;
-  auto h4 = pub.publish_concurrent(Alarm{4},
-                         shuttle::after_all({shuttle::after(a), shuttle::after(b)}));
+  auto h4 =
+      pub.publish_concurrent(Alarm{4}, shuttle::after_all({shuttle::after(a), shuttle::after(b)}));
   a.set();
   b.set();
 
-  // 统一收尾：result() = wait + 重抛第一个失败；failures() 取全部明细。
+  // Unified wrap-up: result() = wait + rethrow the first failure; failures() gives all details.
   h1.result();
   h2.result();
   h3.result();
   h4.result();
-  if (received != 4) throw std::logic_error("trigger_demo: 回调次数不符");
+  if (received != 4) throw std::logic_error("trigger_demo: callback count mismatch");
 }

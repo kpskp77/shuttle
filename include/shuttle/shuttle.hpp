@@ -1,19 +1,28 @@
 #pragma once
 
-// shuttle —— 基于 weave 的 EDA 验证环境发布-订阅框架。
+// shuttle — publish-subscribe framework for EDA verification environments, built on weave.
 //
-// 特性概览：
-//   · 三种发布方式：`now` 同步回调（零挂起）/ `serial` 后台顺序回调 / `concurrent` 后台并发回调，
-//     `serial`/`concurrent` 默认不阻塞发布者，提供 Publication 句柄等待完成，并支持延迟触发（Trigger）；
-//   · 跨语言：C++ 与 SV（DPI）对等发布/订阅，消息按统一二进制格式编码（codec.hpp）；
-//   · 入口模型：每次订阅声明一条入口（blocking / nonblocking），决定回调能否在发布者调用栈
-//     内执行——nonblocking 可以，blocking 只能后台调度；`serial`/`concurrent` 对两种入口都投递，
-//     `publish_now` 只用 nonblocking；
-//   · topic 层级命名 + 通配符订阅 + retained（latched）；
-//   · C++ 内部投递零拷贝，只有跨语言投递、字节订阅者（subscribe_bytes）或来自 SV 的帧才编解码。
+// Feature overview:
+//   · Three publish flavors: `now` synchronous callback (zero suspension) /
+//     `serial` background in-order callback / `concurrent` background
+//     concurrent callback. `serial`/`concurrent` do not block the publisher
+//     by default, provide a Publication handle to await completion, and
+//     support deferred triggering (Trigger);
+//   · Cross-language: C++ and SV (DPI) publish/subscribe on equal footing,
+//     messages encoded in a unified binary format (codec.hpp);
+//   · Entry model: each subscription declares one entry (blocking /
+//     nonblocking), deciding whether the callback may run on the publisher's
+//     call stack — nonblocking may, blocking only from background scheduling;
+//     `serial`/`concurrent` deliver to both entries, `publish_now` only to
+//     nonblocking;
+//   · Hierarchical topic names + wildcard subscription + retained (latched);
+//   · Zero-copy delivery within C++; encoding/decoding happens only for
+//     cross-language delivery, byte subscribers (subscribe_bytes), or frames
+//     originating from SV.
 //
-// 后端：svdpi（跨语言全集）/ systemc（自动退化为纯 C++，API 不变）。
-// DPI 协议总表见 docs/dpi_protocol.md。
+// Backends: svdpi (full cross-language feature set) / systemc (automatically
+// degrades to pure C++; API unchanged).
+// The DPI protocol reference is docs/dpi_protocol.md.
 
 #include <shuttle/broker.hpp>
 #include <shuttle/codec.hpp>

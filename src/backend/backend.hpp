@@ -1,18 +1,22 @@
 #pragma once
 
-// 框架内部接口：broker 核心（`src/broker/`，后端无关）与仿真后端
-// （`src/backend/<backend>/`）之间的**唯一**依赖面。broker 只从这里认识后端。
+// Internal framework interface: the **only** dependency surface between the
+// broker core (`src/broker/`, backend-agnostic) and the simulation backend
+// (`src/backend/<backend>/`). The broker knows a backend only through here.
 //
-// 后端自己的实现细节——帧字节拉取通道、SV 事件注册表、DPI-C 导出面、作用域修正——
-// 全部留在 `src/backend/<backend>/` 里，不进这个头。加一个后端 = 加一个目录，
-// 不改 broker，也不改这个头（除非新后端连"投递 + 时间"这两件事都给不出）。
+// Backend-specific implementation details — the frame-byte pull channel, the
+// SV event registry, the DPI-C export surface, scope fixing — all stay inside
+// `src/backend/<backend>/` and do not enter this header. Adding a backend =
+// adding a directory; neither the broker nor this header changes (unless the
+// new backend cannot even provide "delivery + time").
 //
-// 当前实现：
-//   src/backend/svdpi/    bridge.cpp（本接口）+ dpi.cpp（DPI-C 导出面）
-//   src/backend/systemc/  bridge.cpp（退化：无外部订阅者通道）
+// Current implementations:
+//   src/backend/svdpi/    bridge.cpp (this interface) + dpi.cpp (DPI-C export surface)
+//   src/backend/systemc/  bridge.cpp (degraded: no external-subscriber channel)
 //
-// 本头属于后端边界，所以住在 `src/backend/` 里；`src/` 仍是包含根，
-// 引用方写 `#include "backend/backend.hpp"`。
+// This header belongs to the backend boundary, hence it lives in
+// `src/backend/`; `src/` is still the include root, so includers write
+// `#include "backend/backend.hpp"`.
 
 #include <cstdint>
 #include <string>
@@ -21,26 +25,31 @@
 namespace shuttle::detail {
 namespace backend {
 
-// 当前构建是否带外部（SV）订阅者通道：svdpi = true，systemc = false。
+// Whether the current build has an external (SV) subscriber channel:
+// svdpi = true, systemc = false.
 bool available();
 
-// `serial` / `concurrent` 的投递：在 weave task（仿真进程）上下文中调用；
-// 后端负责在外部进程里执行用户回调。`handle` 是该订阅者注册时拿到的后端侧编号，
-// broker 只透传、不解释。
+// Delivery for `serial` / `concurrent`: called in a weave task (simulation
+// process) context; the backend runs the user callback inside the external
+// process. `handle` is the backend-side number the subscriber received at
+// registration; the broker only passes it through without interpreting it.
 void dispatch(int handle, const std::string& topic, const std::string& type_tag, std::uint64_t seq,
               std::int64_t time_fs, const std::vector<std::byte>& payload);
 
-// `publish_now` 的投递：在发布者进程上下文中调用，**必须零阻塞**
-// （import function 的调用链里不能调 export task，见 AGENTS.md 不变量 3）。
+// Delivery for `publish_now`: called in the publisher's process context and
+// **must not block at all** (an import function's call chain cannot invoke an
+// export task; see AGENTS.md invariant 3).
 void dispatch_nb(int handle, const std::string& topic, const std::string& type_tag,
                  std::uint64_t seq, std::int64_t time_fs, const std::vector<std::byte>& payload);
 
-// 当前仿真时间（飞秒），用作 `Meta::time_fs`。
+// Current simulation time (femtoseconds), used as `Meta::time_fs`.
 std::int64_t now_fs();
 
-// 退订回告通道：后端在 dispatch 期间发现目标已退订（在途投递被丢弃）时调
-// `note_retired_delivery()`；broker 在 export 返回后调 `take_retired_delivery()`
-// 把这次投递记成 retired（AGENTS.md 不变量 7）。
+// Unsubscribe feedback channel: when the backend finds during dispatch that
+// the target has already unsubscribed (an in-flight delivery was dropped), it
+// calls `note_retired_delivery()`; after the export returns, the broker calls
+// `take_retired_delivery()` to record this delivery as retired (AGENTS.md
+// invariant 7).
 void note_retired_delivery();
 bool take_retired_delivery();
 

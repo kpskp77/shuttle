@@ -1,5 +1,7 @@
-// Broker 的发布调度：完成状态机、per-topic 串行链、逐订阅者并发单元与 publish_now。
-// 帧创建、目标匹配与 deliver 本身见同目录 broker.cpp；本文件不区分 C++/SV 帧来源。
+// Broker publish scheduling: completion state machine, per-topic serial
+// chain, per-subscriber concurrent units, and publish_now.
+// Frame creation, target matching, and deliver itself live in broker.cpp in
+// the same directory; this file does not distinguish C++/SV frame origins.
 
 #include <cstddef>
 #include <exception>
@@ -19,7 +21,7 @@
 
 namespace shuttle::detail {
 
-// ── 统一的完成与失败记账 ───────────────────────────────────────────────────
+// ── Unified completion and failure accounting ────────────────────────────
 
 void Broker::record_failure(const std::shared_ptr<PubState>& pub,
                             const std::optional<Publication::Failure>& failure) {
@@ -29,14 +31,15 @@ void Broker::record_failure(const std::shared_ptr<PubState>& pub,
     try {
       if (failure->error) pub->first_error = failure_error_what(*failure);
     } catch (...) {
-      pub->first_error = "<异常>";
+      pub->first_error = "<exception>";
     }
   }
 }
 
 void Broker::pub_complete(const std::shared_ptr<PubState>& pub) {
   pub->done_flag = true;
-  // 完成钩子先行：SV wait_done 依赖它唤醒等待进程；钩子失败不影响投递结果。
+  // Completion hooks run first: the SV wait_done relies on them to wake
+  // waiting processes; a hook failure does not affect delivery results.
   auto hooks = std::exchange(pub->on_complete, {});
   for (const auto& fn : hooks) {
     try {
@@ -47,7 +50,8 @@ void Broker::pub_complete(const std::shared_ptr<PubState>& pub) {
   pub->done_ev.set();
 }
 
-// 所有投递方式只有一个 finished 推进点；完成计数始终按目标订阅者计。
+// All delivery flavors advance `finished` only here; completion counts are
+// always per target subscriber.
 void Broker::target_finished(const std::shared_ptr<PubState>& pub) {
   if (++pub->finished == pub->expected && !pub->done_flag) pub_complete(pub);
 }
@@ -75,7 +79,8 @@ std::vector<std::shared_ptr<Subscriber>> Broker::select(
   return out;
 }
 
-// ── publish_serial：每帧一个投递单元，per-topic 串行链保发布序 FIFO ─────────
+// ── publish_serial: one delivery unit per frame, per-topic serial chain
+//    keeps publication-order FIFO ─────────────────────────────────────────
 
 std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
                                                std::shared_ptr<const Envelope> env, Trigger trig,
@@ -85,12 +90,14 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   pub->expected = targets.size();
   pubs[pub->id] = pub;
   if (targets.empty()) {
-    // 零目标立即完成：不建 task，也不安装链尾。
+    // Zero targets complete immediately: no task, no chain-tail installed.
     pub_complete(pub);
     return pub;
   }
 
-  // 必须在发布瞬间捕获本帧要放行的 mine；task 体内再读 topic.chain 会拿到后来者的链尾。
+  // `mine` — the chain-tail event this frame must release — must be captured
+  // at publish time; reading topic.chain inside the task body would pick up a
+  // later frame's tail.
   auto prev = std::make_shared<weave::Event>(topic_for(topic).chain);
   auto mine = std::make_shared<weave::Event>();
   topic_for(topic).chain = *mine;
@@ -99,7 +106,8 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
       [this, pub, env, trig = std::move(trig), targets = std::move(targets), prev, mine]() mutable {
         std::optional<Publication::Failure> failure;
         Topic& t = topic_for(env->meta.topic);
-        std::size_t idx = 0;  // 已到达终态的目标数；单元级失败时用它补齐
+        std::size_t idx =
+            0;  // targets already in a terminal state; used to backfill on unit-level failure
         try {
           wait_trigger(trig);
           prev->wait();
@@ -111,7 +119,8 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
               else
                 ++pub->retired;
             } catch (const weave::CancelledError&) {
-              throw;  // 交给外层统一记 failed，同时保证 mine 最终置位
+              throw;  // handled by the outer scope as a unit-level failure; also guarantees `mine`
+                      // is finally set
             } catch (const std::exception&) {
               count_failed(t, sub);
               if (!failure) failure = failure_of(describe(sub), std::current_exception());
@@ -128,20 +137,21 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
         } catch (...) {
           failure = failure_of("<trigger>", unknown_exc());
         }
-        // 触发失败、取消或单元级失败时，未尝试的目标也必须进入 failed 终态。
+        // On trigger failure, cancellation, or unit-level failure, the
+        // untried targets must also reach a terminal (failed) state.
         for (; idx < targets.size(); ++idx) {
           ++t.failed;
           ++targets[idx]->failed;
           target_finished(pub);
         }
-        mine->set();  // 无论成败都放行下一帧，防止链 stall
+        mine->set();  // release the next frame regardless of outcome, to prevent chain stall
         record_failure(pub, failure);
         if (pub->finished == pub->expected && !pub->done_flag) pub_complete(pub);
       });
   return pub;
 }
 
-// ── publish_concurrent：每个订阅者一个独立投递单元 ─────────────────────────
+// ── publish_concurrent: one independent delivery unit per subscriber ─────
 
 std::shared_ptr<PubState> Broker::start_concurrent(
     std::string_view topic, std::shared_ptr<const Envelope> env, Trigger trig,
@@ -181,17 +191,21 @@ std::shared_ptr<PubState> Broker::start_concurrent(
   return pub;
 }
 
-// ── publish_now：同步 nonblocking 段，blocking 目标按策略处理 ───────────────
+// ── publish_now: synchronous nonblocking section; blocking targets handled
+//    per policy ────────────────────────────────────────────────────────────
 
 std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope> env,
                                        NowPolicy policy) {
   const std::string_view topic = env->meta.topic;
   Topic& t = b.topic_for(topic);
   const auto matched = b.match_subs(topic, env->meta.type_tag);
-  // 每次注册只有一条 cap；now 的同步段只碰 nonblocking，从结构上满足 DPI 时序约束。
+  // Each registration has exactly one cap; the synchronous section of `now`
+  // only touches nonblocking entries, structurally satisfying the DPI timing
+  // constraints.
   auto nb_subs = Broker::select(matched, Capability::nonblocking);
   auto blocking_targets = Broker::select(matched, Capability::blocking);
-  // reject 已在建帧前预检，这里不会再因 blocking 目标抛错。
+  // reject was preflighted before frame creation, so no blocking-target error
+  // can occur here.
 
   auto pub = std::make_shared<PubState>();
   pub->id = b.next_pub_id++;
@@ -201,7 +215,9 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
   pub->skipped = defer ? 0 : blocking_targets.size();
   b.pubs[pub->id] = pub;
 
-  // 单个回调失败不中断其余目标；defer 链启动后再把第一个异常抛给发布者。
+  // A single callback failure does not interrupt the remaining targets; the
+  // first exception is rethrown to the publisher only after the defer chain
+  // has started.
   std::exception_ptr first_exc;
   for (const auto& sub : nb_subs) {
     try {
@@ -234,7 +250,8 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
     return pub;
   }
 
-  // defer 复用 publish_serial 的同一条链；完成时把剩余目标并回本帧句柄。
+  // defer reuses publish_serial's chain; on completion the remaining targets
+  // are merged back into this frame's handle.
   t.deferred += blocking_targets.size();
   auto chain = b.start_serial(topic, std::move(env), Trigger{}, std::move(blocking_targets));
   const std::size_t n = chain->expected;
@@ -249,7 +266,7 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
   return pub;
 }
 
-// watcher 与超时竞速；true = 已完成，false = 超时。
+// watcher plus timeout race; true = already completed, false = timed out.
 bool wait_pub_timed(const std::shared_ptr<PubState>& pub, weave::duration timeout) {
   if (pub->done_flag) return true;
   weave::Task watcher = weave::create_task("shuttle-pub-watch", [pub]() { pub->done_ev.wait(); });

@@ -1,22 +1,30 @@
-// svdpi 后端：外部门面——字节帧发布、外部订阅者注册、按 pub_id 的查询/等待、
-// 跨语言事件注册表（SV shuttle_event / SHUTTLE_TRIG_EVENT）。
+// svdpi backend: external facade — byte-frame publish, external-subscriber
+// registration, per-pub_id queries/waits, and the cross-language event
+// registry (SV shuttle_event / SHUTTLE_TRIG_EVENT).
 //
-// 这是 broker 的"FFI 入口"半边，与 `backend/backend.hpp`（broker→SV 方向的出口）
-// 相对。svdpi 是本仓库唯一带 FFI 通道的后端（systemc 没有外部订阅者，永不会有
-// 第二个 FFI 调用方），所以它住在 svdpi 目录里、systemc 构建不编译本文件。
-// 代价是 svdpi 目录可见 broker 内部（broker/broker.hpp）——这是显式接受的永久
-// 不对称，systemc 后端仍只经 `backend/backend.hpp` 窄口认识 broker。
+// This is the "FFI entry" half of the broker, opposite
+// `backend/backend.hpp` (the broker→SV exit direction). svdpi is the only
+// backend in this repository with an FFI channel (systemc has no external
+// subscribers and there will never be a second FFI caller), so it lives in the
+// svdpi directory and the systemc build does not compile this file. The price
+// is that the svdpi directory sees broker internals (broker/broker.hpp) — an
+// explicitly accepted, permanent asymmetry; the systemc backend still knows
+// the broker only through the `backend/backend.hpp` narrow port.
 //
-// 单独成文件而不并入 dpi.cpp：这里全是 broker 编排（preflight / 信封 / 目标集快照 /
-// 串行链），dpi.cpp 只做 DPI-C 类型翻译——两个抽象层不混。
+// A separate file rather than being merged into dpi.cpp: everything here is
+// broker orchestration (preflight / envelope / target-set snapshot / serial
+// chain), while dpi.cpp only does DPI-C type translation — the two abstraction
+// layers are not mixed.
 //
-// 名字的两段：
-//   ext_*  = 外部调用方进来的动作（帧从外面来、订阅者在外面）；
-//   pub_*  = 按 pub_id 读句柄的查询/等待。
+// The two name families:
+//   ext_*  = actions coming in from an external caller (frames from outside,
+//            subscribers living outside);
+//   pub_*  = handle queries/waits by pub_id.
 //
-// 记账语义（谁计入什么）由 broker 的 target_finished / pub_complete 决定，这里只做
-// "句柄 ↔ id"的翻译与错误上报。命名空间保持 shuttle::detail：声明见
-// svdpi_internal.hpp，dpi.cpp 以 detail::* 直接调用。
+// Accounting semantics (who counts into what) are decided by the broker's
+// target_finished / pub_complete; this file only does the "handle ↔ id"
+// translation and error reporting. The namespace stays shuttle::detail:
+// declarations are in svdpi_internal.hpp and dpi.cpp calls them as detail::*.
 
 #include <algorithm>
 #include <cstdint>
@@ -39,7 +47,8 @@
 namespace shuttle::detail {
 
 namespace {
-// 每进程独立的最近错误信息（shuttle_c_last_error 数据源；单活跃进程无需锁）。
+// Per-process most-recent error message (data source for shuttle_c_last_error;
+// the single-active-process guarantee makes locking unnecessary).
 std::string g_last_error;
 }  // namespace
 
@@ -50,12 +59,14 @@ const std::string& last_error() {
   return g_last_error;
 }
 
-// ── 外部接入门面（错误经 set_last_error + 返回码/异常报告）────────────────
+// ── External entry facade (errors reported via set_last_error + return code/exception) ──
 
 Publication ext_pub_now(const std::string& topic, const std::string& tag,
                         const std::vector<std::byte>& frame, NowPolicy policy) {
   Broker& b = Broker::get();
-  b.now_preflight(topic, tag, policy);  // 先判后建帧：reject 不消耗 seq / 不刷新 retained
+  b.now_preflight(
+      topic, tag,
+      policy);  // decide before building the frame: reject consumes no seq / refreshes no retained
   auto env = b.make_envelope_bytes(topic, tag, frame);
   return detail_pub_access::make(dispatch_now(b, std::move(env), policy));
 }
@@ -87,11 +98,13 @@ int pub_id(const Publication& p) {
 int ext_sub(std::string pattern, int caps, std::string type_tag, int handle) {
   try {
     Broker& b = Broker::get();
-    // 一次注册 = 一条入口：caps 必须恰好是 1（`shuttle_subscribe`）或 2
-    // （`shuttle_subscribe_nb`）。其它值没有定义——否则 `now` 与 `serial`/`concurrent` 会对同一个
-    // 订阅者走不同入口，违背不变量 4，直接拒绝。
+    // One registration = one entry: caps must be exactly 1 (`shuttle_subscribe`) or 2
+    // (`shuttle_subscribe_nb`). Any other value is undefined — otherwise `now`
+    // and `serial`/`concurrent` would take different entries for the same
+    // subscriber, violating invariant 4; rejected outright.
     if (caps != 1 && caps != 2)
-      throw std::invalid_argument("shuttle: 订阅能力必须恰好一位（blocking=1 / nonblocking=2）");
+      throw std::invalid_argument(
+          "shuttle: subscription capability must be exactly one bit (blocking=1 / nonblocking=2)");
     b.register_sub(std::move(pattern), SubKind::external,
                    caps == 1 ? Capability::blocking : Capability::nonblocking, std::move(type_tag),
                    nullptr, {}, {}, handle);
@@ -113,8 +126,9 @@ void ext_unsub(int handle) {
 
 namespace {
 
-// 按 id 取发布状态（未知 id = nullptr）：下面五个门面函数共用的唯一入口，
-// 免得每处都写一遍 find + 判 end。
+// Fetch the publication state by id (unknown id = nullptr): the single shared
+// entry point for the five facade functions below, so they need not each
+// repeat find + end-check.
 std::shared_ptr<PubState> pub_of(int pub_id) {
   Broker& b = Broker::get();
   const auto it = b.pubs.find(pub_id);
@@ -130,13 +144,13 @@ bool pub_done(int pub_id) {
 
 std::string pub_error(int pub_id) {
   const auto pub = pub_of(pub_id);
-  return pub ? pub->first_error : std::string("shuttle: 未知 pub_id");
+  return pub ? pub->first_error : std::string("shuttle: unknown pub_id");
 }
 
 void pub_wait(int pub_id, std::int64_t timeout_fs, int* status) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
   if (!pub) {
-    set_last_error("shuttle: 未知 pub_id " + std::to_string(pub_id));
+    set_last_error("shuttle: unknown pub_id " + std::to_string(pub_id));
     *status = 2;
     return;
   }
@@ -151,7 +165,8 @@ void pub_wait(int pub_id, std::int64_t timeout_fs, int* status) {
 
 long long pub_stat(int pub_id, int kind) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
-  // 线上 kind 是裸 int：先校验范围再转枚举，越界与未知 pub_id 同一口径（-1）
+  // The on-wire kind is a bare int: validate the range before converting to
+  // the enum; out-of-range and unknown pub_id share the same answer (-1).
   if (!pub || kind < 0 || kind > static_cast<int>(PubStatKind::retired)) return -1;
   switch (static_cast<PubStatKind>(kind)) {
     case PubStatKind::expected:
@@ -165,7 +180,7 @@ long long pub_stat(int pub_id, int kind) {
     case PubStatKind::retired:
       return static_cast<long long>(pub->retired);
   }
-  return -1;  // 不可达（范围已校验，枚举全覆盖）
+  return -1;  // unreachable (range validated, enum fully covered)
 }
 
 int pub_state(int pub_id) {
@@ -185,9 +200,11 @@ void pub_on_complete(int pub_id, std::function<void()> fn) {
   pub->on_complete.push_back(std::move(fn));
 }
 
-// ── 跨语言事件注册表（SV 侧 shuttle_event / SHUTTLE_TRIG_EVENT）──────────────
-// 事件只由 SV 侧创建（shuttle_c_event_create），C++ 侧从不持有句柄——按 id 访问，
-// 所以注册表独自持有对象，destroy 即释放（SV 的 shuttle_event::close() 走这里）。
+// ── Cross-language event registry (SV-side shuttle_event / SHUTTLE_TRIG_EVENT) ──
+// Events are created only on the SV side (shuttle_c_event_create); the C++
+// side never holds a handle — access is by id, so the registry alone owns the
+// objects and destroy frees them (SV's shuttle_event::close() goes through
+// here).
 namespace {
 struct EventSlot {
   int id;
@@ -203,11 +220,12 @@ std::shared_ptr<EventSlot> event_lookup(int ev_id) {
 }
 }  // namespace
 
-// TRIG_EVENT（SV 侧按 id 引用事件）的等待入口：必须在 weave task 上下文调用。
+// The wait entry of TRIG_EVENT (SV references events by id): must be called
+// in a weave task context.
 void event_wait_id(int ev_id) {
   const auto slot = event_lookup(ev_id);
   if (!slot)
-    throw std::invalid_argument("shuttle: 未知或已销毁的 event id " + std::to_string(ev_id));
+    throw std::invalid_argument("shuttle: unknown or destroyed event id " + std::to_string(ev_id));
   slot->ev.wait();
 }
 
@@ -221,7 +239,7 @@ int event_registry_create() {
 void event_registry_set(int ev_id) {
   const auto slot = event_lookup(ev_id);
   if (!slot)
-    throw std::invalid_argument("shuttle: 未知或已销毁的 event id " + std::to_string(ev_id));
+    throw std::invalid_argument("shuttle: unknown or destroyed event id " + std::to_string(ev_id));
   slot->ev.set();
 }
 

@@ -1,9 +1,12 @@
-// svdpi 后端：SV 侧的 import 面（`shuttle_c_*`，定义见 docs/dpi_protocol.md）。
+// svdpi backend: the SV-side import surface (`shuttle_c_*`; definitions in
+// docs/dpi_protocol.md).
 //
-// 这里只做"DPI-C 类型 ↔ C++ 类型"的翻译与错误上报，不持有 broker 状态；
-// broker 侧的外部接入门面是同目录 facade.cpp 的 `ext_*` / `pub_*`（声明在
-// svdpi_internal.hpp，以 detail::* 调用）。
-// `detail::backend` 的实现（dispatch / now_fs / retired 通道）在 bridge.cpp。
+// Only "DPI-C type ↔ C++ type" translation and error reporting happen here;
+// no broker state is held. The broker-side external entry facade is `ext_*` /
+// `pub_*` in facade.cpp in the same directory (declared in
+// svdpi_internal.hpp, invoked as detail::*).
+// The `detail::backend` implementation (dispatch / now_fs / retired channel)
+// is in bridge.cpp.
 
 #include <svdpi.h>
 
@@ -23,14 +26,18 @@
 #include "detail/trigger.hpp"
 #include "svdpi_internal.hpp"
 
-// ── weave 导出的 SV 原语（定义在 weave_pkg.sv）────────────────────────────
-// shuttle 需要"挂起当前 SV 进程"的能力，而 weave::Event::wait() 只在 weave task
-// 上下文中合法（普通 SV native 进程里会抛 "weave: blocking primitive outside task
-// context"），因此这里直接使用 weave 的 DPI export：事件 id 由 C++ 侧申请，
-// 发布完成瞬间由 C++ 触发它。
-// 语义（见 ../weave/sv/weave_pkg.sv 的 weave_sv_wait）：ev_id/tick 超时/abort 三腿
-// 竞速，status 0=事件命中 1=超时 2=取消；ev_id<0 表示无事件腿、timeout_ticks<0
-// 表示无超时腿、abort_id<0 表示无取消腿。timeout_ticks 的单位是 $time 的 tick。
+// ── SV primitives exported by weave (defined in weave_pkg.sv) ────────────
+// shuttle needs the ability to "suspend the current SV process", but
+// weave::Event::wait() is only legal inside a weave task context (it throws
+// "weave: blocking primitive outside task context" in a plain SV native
+// process), so we use weave's DPI exports directly: the event id is allocated
+// on the C++ side and fired by the C++ side at the moment of publication
+// completion.
+// Semantics (see ../weave/sv/weave_pkg.sv, weave_sv_wait): a three-way race
+// between the ev_id leg, the tick-timeout leg, and the abort leg; status
+// 0=event hit 1=timeout 2=cancelled; ev_id<0 means no event leg,
+// timeout_ticks<0 means no timeout leg, abort_id<0 means no cancel leg.
+// timeout_ticks is in units of $time ticks.
 extern "C" {
 int weave_sv_create_event();
 void weave_sv_trigger(int ev_id);
@@ -45,8 +52,9 @@ using shuttle::detail::last_error;
 using shuttle::detail::set_last_error;
 using WeaveScopeGuard = shuttle::detail::backend::SvScopeGuard;
 
-// DPI 常量 → NowPolicy：0 = reject / 1 = skip / 2 = defer（越界走默认 defer）。
-// 用显式映射而不是 static_cast：常量表变化时不会静默错位。
+// DPI constants → NowPolicy: 0 = reject / 1 = skip / 2 = defer (out-of-range
+// falls back to the default defer). An explicit mapping instead of
+// static_cast: a changed constant table cannot silently misalign.
 shuttle::NowPolicy now_policy_of(int v) {
   switch (v) {
     case 0:
@@ -58,21 +66,22 @@ shuttle::NowPolicy now_policy_of(int v) {
   }
 }
 
-// 从 SV open array 读取字节流（byte payload[] → 连续 8-bit 元素）。
+// Read a byte stream from an SV open array (byte payload[] → contiguous 8-bit
+// elements).
 std::vector<std::byte> read_payload(const svOpenArrayHandle h) {
   std::vector<std::byte> out;
   if (!h) return out;
   const int n = svSize(h, 1);
   out.reserve(n > 0 ? static_cast<std::size_t>(n) : 0);
   for (int i = 0; i < n; ++i) {
-    // SV byte 是 2-state 8-bit，svdpi.h 以 char 表示其元素类型
+    // SV byte is a 2-state 8-bit type; svdpi.h exposes its element type as char
     const char* p = static_cast<const char*>(svGetArrElemPtr1(h, i));
     out.push_back(static_cast<std::byte>(static_cast<unsigned char>(*p)));
   }
   return out;
 }
 
-// 按协议装配延迟触发条件（trig_kind 见 shuttle_pkg.sv 常量）。
+// Assemble the deferred trigger condition per protocol (trig_kind constants in shuttle_pkg.sv).
 shuttle::Trigger build_trigger(int trig_kind, long long trig_arg) {
   using namespace shuttle;
   switch (trig_kind) {
@@ -83,18 +92,20 @@ shuttle::Trigger build_trigger(int trig_kind, long long trig_arg) {
     case 2:
       return detail::TriggerAccess::from_fn(
           [ev_id = static_cast<int>(trig_arg)]() { detail::event_wait_id(ev_id); });
-    case 3:  // 等待另一次发布完成（TRIG_PUB）；其订阅者失败也视为"到达终态"
+    case 3:  // wait for another publication to complete (TRIG_PUB); its subscriber failures also
+             // count as "reached a terminal state"
       return detail::TriggerAccess::from_fn([pub_id = static_cast<int>(trig_arg)]() {
         int status = 0;
         detail::pub_wait(pub_id, 0, &status);
       });
     default:
-      throw std::invalid_argument("shuttle: 未知 trig_kind " + std::to_string(trig_kind));
+      throw std::invalid_argument("shuttle: unknown trig_kind " + std::to_string(trig_kind));
   }
 }
 
-// `serial`/`concurrent` 的公共骨架：帧字节 → 串行 / 并发调度 → pub_id。
-// 两种方式的差别只在调哪个 broker 入口，其余（读帧、触发器、错误上报）完全一致。
+// Common skeleton of `serial`/`concurrent`: frame bytes → serial/concurrent
+// scheduling → pub_id. The two flavors differ only in which broker entry they
+// call; the rest (frame read, trigger, error reporting) is identical.
 int publish_frame_bg(const char* topic, const char* type_tag, const svOpenArrayHandle payload,
                      int trig_kind, long long trig_arg, bool concurrent) {
   const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
@@ -111,7 +122,7 @@ int publish_frame_bg(const char* topic, const char* type_tag, const svOpenArrayH
     set_last_error(e.what());
     return 0;
   } catch (...) {
-    set_last_error("shuttle: 未知异常");
+    set_last_error("shuttle: unknown exception");
     return 0;
   }
 }
@@ -120,21 +131,26 @@ int publish_frame_bg(const char* topic, const char* type_tag, const svOpenArrayH
 
 extern "C" {
 
-// SV 注册表在 dispatch 期间发现目标已退订（retired）时回调本函数：只置标记、不报错
-// （契约：退订后的在途投递静默丢弃，不当成错误），由 dispatch/dispatch_nb 在 export
-// 返回后把标记转成一次 retired 记账，避免 C++ 侧把它记成 delivered（幻影成功）。
+// Called back by the SV registry when it finds during dispatch that the target
+// has already unsubscribed (retired): only sets a flag, no error (contract:
+// in-flight deliveries after unsubscribing are dropped silently, not treated
+// as errors). dispatch/dispatch_nb turn the flag into one retired accounting
+// record after the export returns, so the C++ side does not record it as
+// delivered (a phantom success).
 void shuttle_c_sub_retired(int /*sv_sid*/) {
   shuttle::detail::backend::note_retired_delivery();
 }
 
-// `publish_now`：返回本帧 pub_id（>0），失败返回 0（原因见 shuttle_c_last_error）。
-// nonblocking 部分在返回前已执行完；被 defer 的订阅者仍在后台串行链上，
-// SV 侧可拿着 pub_id 走 shuttle_c_wait_pub 等它们。
+// `publish_now`: returns this frame's pub_id (>0), or 0 on failure (see
+// shuttle_c_last_error). The nonblocking part has finished before returning;
+// the deferred subscribers are still on the background serial chain, and the
+// SV side can pass the pub_id to shuttle_c_wait_pub to wait for them.
 int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenArrayHandle payload,
                           int now_policy) {
-  // 这些 import 可能间接驱动 weave（创建任务/事件/挂起等待），weave 的 export 定义在
-  // weave_pkg 里；在入口处把作用域切到 weave_pkg，否则 VCS 会报
-  // Error-[DPI-DXFNF] 'weave_sv_*' 不可见（入口作用域是 shuttle_pkg）。
+  // These imports may indirectly drive weave (creating tasks/events/suspending
+  // waits); weave's exports are defined in weave_pkg, so switch the scope to
+  // weave_pkg at the entry, otherwise VCS reports Error-[DPI-DXFNF]
+  // 'weave_sv_*' invisible (the entry scope is shuttle_pkg).
   const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
     const shuttle::Publication pub =
@@ -145,39 +161,42 @@ int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenA
     set_last_error(e.what());
     return 0;
   } catch (...) {
-    set_last_error("shuttle: 未知异常");
+    set_last_error("shuttle: unknown exception");
     return 0;
   }
 }
 
-// `publish_serial`：后台单链顺序回调。返回 pub_id（>0），失败返回 0。
+// `publish_serial`: background single-chain, in-order callbacks. Returns pub_id (>0), or 0 on
+// failure.
 int shuttle_c_publish_serial(const char* topic, const char* type_tag,
                              const svOpenArrayHandle payload, int trig_kind, long long trig_arg) {
   return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, false);
 }
 
-// `publish_concurrent`：后台每订阅者一任务并发回调。返回 pub_id（>0），失败返回 0。
+// `publish_concurrent`: background, one task per subscriber, concurrent callbacks. Returns pub_id
+// (>0), or 0 on failure.
 int shuttle_c_publish_concurrent(const char* topic, const char* type_tag,
                                  const svOpenArrayHandle payload, int trig_kind,
                                  long long trig_arg) {
   return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, true);
 }
 
-// DPI task：阻塞等待一次发布完成。
-// 挂起点是 weave 导出的 task weave_sv_wait —— 它挂起的是**调用者这个 SV 进程**，
-// 因此普通 initial/always 进程也能直接等（不需要处在 weave task 里）。
-// timeout_fs<=0 表示无限等待。
+// DPI task: block until one publication completes.
+// The suspension point is the task exported by weave, weave_sv_wait — it
+// suspends **the calling SV process itself**, so an ordinary initial/always
+// process can wait directly (it need not be inside a weave task).
+// timeout_fs<=0 means wait forever.
 void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
   int sink = 0;
   if (!status) status = &sink;
   try {
     const int st = shuttle::detail::pub_state(pub_id);
     if (st < 0) {
-      set_last_error("shuttle: 未知 pub_id " + std::to_string(pub_id));
+      set_last_error("shuttle: unknown pub_id " + std::to_string(pub_id));
       *status = 2;
       return;
     }
-    if (st != 0) {  // 已完成：直接给出结论，不进入挂起
+    if (st != 0) {  // already completed: answer directly, without suspending
       *status = (st == 2) ? 2 : 0;
       return;
     }
@@ -185,12 +204,14 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
     const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
     const int w = weave_sv_create_event();
     if (w < 0) {
-      set_last_error("shuttle: 创建 SV 唤醒事件失败");
+      set_last_error("shuttle: failed to create the SV wakeup event");
       *status = 2;
       return;
     }
-    // 超时后事件 id 会被销毁，完成钩子必须知道它已失效（weave 的约定：
-    // 已销毁的 id 不能再被 trigger）。单活跃进程保证这里无需原子操作。
+    // After a timeout the event id is destroyed, so the completion hook must
+    // know it is already invalid (weave's convention: a destroyed id must not
+    // be triggered again). The single-active-process guarantee makes atomics
+    // unnecessary here.
     struct Slot {
       int ev;
       bool active = true;
@@ -212,11 +233,12 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
           1000000000000000ull);
     }
     int wst = 0;
-    weave_sv_wait(w, ticks, -1, &wst);  // ← 唯一挂起点：挂起当前 SV 进程
+    weave_sv_wait(w, ticks, -1,
+                  &wst);  // ← the only suspension point: suspends the current SV process
     slot->active = false;
     weave_sv_destroy_event(w);
 
-    if (wst == 1) {  // 超时腿胜出
+    if (wst == 1) {  // the timeout leg won
       *status = 1;
       return;
     }
@@ -225,7 +247,7 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
     set_last_error(e.what());
     *status = 2;
   } catch (...) {
-    set_last_error("shuttle: 等待被取消或未知异常");
+    set_last_error("shuttle: wait cancelled or unknown exception");
     *status = 2;
   }
 }
@@ -234,7 +256,8 @@ int shuttle_c_pub_done(int pub_id) {
   return shuttle::detail::pub_done(pub_id) ? 1 : 0;
 }
 
-// 发布计数查询：kind 0=目标数 1=已完成 2=策略跳过 3=deferred 4=退订跳过；未知 pub_id 返回 -1
+// Publication counter query: kind 0=expected 1=finished 2=skipped-by-policy
+// 3=deferred 4=retired; unknown pub_id returns -1
 int shuttle_c_pub_stat(int pub_id, int kind) {
   const long long v = shuttle::detail::pub_stat(pub_id, kind);
   return v > 2147483647LL ? 2147483647 : static_cast<int>(v);
@@ -255,7 +278,7 @@ int shuttle_c_subscribe(const char* topic_pattern, int caps, const char* type_ta
     set_last_error(e.what());
     return 1;
   } catch (...) {
-    set_last_error("shuttle: 未知异常");
+    set_last_error("shuttle: unknown exception");
     return 1;
   }
 }
@@ -277,7 +300,8 @@ const char* shuttle_c_last_error() {
   return last_error().c_str();
 }
 
-// 当前帧字节流：长度与 8 字节小端分块（SV 在 shuttle_sv_dispatch 体内拉取）。
+// Current frame byte stream: length and little-endian 8-byte chunks (SV pulls
+// them inside the shuttle_sv_dispatch body).
 int shuttle_c_frame_len() {
   return shuttle::detail::backend::frame_len();
 }
@@ -305,8 +329,9 @@ void shuttle_c_event_set(int ev_id) {
   }
 }
 
-// shuttle_pkg.sv 的 shuttle_event::close() 走这里（每个事件在 C++ 注册表里占一个 id，
-// 不释放就会一直留着；仿真结束可不调）。
+// shuttle_pkg.sv's shuttle_event::close() goes through here (each event
+// occupies one id in the C++ registry; not destroying it leaks it until the
+// end of simulation — which is also acceptable).
 void shuttle_c_event_destroy(int ev_id) {
   const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {

@@ -1,29 +1,37 @@
 // ============================================================================
-// shuttle_pkg.sv —— shuttle 发布-订阅框架的 SV 侧接口
+// shuttle_pkg.sv — SV-side interface of the shuttle publish-subscribe framework
 //
-// 依赖：weave_pkg（../weave/sv/weave_pkg.sv，由仿真脚本一并编译）。
-// DPI 协议总表见 docs/dpi_protocol.md；方向约定与 weave 一致：
-//   import（C++ 提供）：shuttle_c_*  —— 发布 / 订阅注册 / 完成等待 / 帧拉取
-//   export（SV 提供） ：shuttle_sv_* —— 订阅者回调分发入口 + 仿真时间
+// Depends on: weave_pkg (../weave/sv/weave_pkg.sv, compiled by the simulation
+// scripts along with this file). The DPI protocol reference is
+// docs/dpi_protocol.md; the direction convention matches weave:
+//   import (provided by C++): shuttle_c_*  — publish / subscribe registration /
+//                                            completion wait / frame pull
+//   export (provided by SV) : shuttle_sv_* — subscriber callback dispatch + sim time
 //
-// 帧拉取协议（dispatch 的 payload 不走 DPI 参数）：
-//   C++ 调 shuttle_sv_dispatch[_nb] 前把当前帧字节流设为进程级上下文；
-//   SV 在 export 体内经 shuttle_c_frame_len / shuttle_c_frame_qword（8 字节
-//   小端块）分块拉取。依赖仿真器单活跃进程不变性（与 weave 相同前提）。
+// Frame-pull protocol (the dispatch payload does not go through DPI arguments):
+//   before calling shuttle_sv_dispatch[_nb], C++ sets the current frame's byte
+//   stream as process-level context; SV pulls it in chunks inside the export
+//   body via shuttle_c_frame_len / shuttle_c_frame_qword (8-byte little-endian
+//   chunks). Relies on the simulator's single-active-process invariant (the
+//   same premise as weave).
 //
-// 回调入口模型（对应 C++ 端 shuttle::Capability）：
-//   shuttle_sink    —— blocking 入口（export task，可消耗仿真时间），经 shuttle_subscribe 登记
-//   shuttle_sink_nb —— nonblocking 入口（export function，零延时），经 shuttle_subscribe_nb 登记
-//   一个订阅类可同时 implements 两者（interface class 多实现，对已有代码零侵入）；
-//   此时"用哪个入口"由调用哪个注册函数决定，两个都要就注册两次。
+// Callback entry model (corresponds to shuttle::Capability on the C++ side):
+//   shuttle_sink    — blocking entry (export task, may consume simulation time),
+//                     registered via shuttle_subscribe
+//   shuttle_sink_nb — nonblocking entry (export function, zero delay),
+//                     registered via shuttle_subscribe_nb
+//   One subscriber class may implement both (multiple interface-class
+//   implementations, zero intrusion into existing code); which entry is used
+//   is then decided by which registration function is called — for both,
+//   register twice.
 //
-// 消息类约定（无需继承任何基类，供 shuttle_pub#(T) 使用）：
+// Message class convention (no base class to inherit; used by shuttle_pub#(T)):
 //   class Txn;
-//     int unsigned addr;                 // 成员类型须属于编码子集（见协议表 §线上格式）
+//     int unsigned addr;                 // member types must belong to the codec subset (wire format in the protocol doc)
 //     int unsigned data;
-//     localparam string type_tag = "Txn";         // 与 C++ 端 SHUTTLE_REFLECT 的名字一致
-//     function automatic void pack(output byte q[$]);  // 按声明顺序流式打包（大端线序）
-//       q = {>>{addr, data}};   // ← 必须用 {>>{...}}（1 位切片，从高位向低位）
+//     localparam string type_tag = "Txn";         // must equal the C++ SHUTTLE_REFLECT name
+//     function automatic void pack(output byte q[$]);  // streaming-pack in declaration order (big-endian wire order)
+//       q = {>>{addr, data}};   // ← must use {>>{...}} (1-bit slices, MSB first)
 //     endfunction
 //     static function automatic Txn unpack(byte b[]);
 //       Txn t = new();
@@ -31,19 +39,22 @@
 //       return t;
 //     endfunction
 //   endclass
-// 注意：string 字段须先流式写入 32 位长度前缀再写字节内容，即 {>>{32'(s.len()), s}}，
-//       与 C++ 端 Codec 对齐。
-// 线序提示：{>>{...}} 得到"字段声明序 + 每个字段高位在前"的字节流，正好等于
-//           C++ Writer 的大端写法；{<<{...}} 会把整段比特流反向，切勿混用。
+// Note: a string field must first stream a 32-bit length prefix and then the
+//       bytes, i.e. {>>{32'(s.len()), s}}, aligned with the C++ Codec.
+// Wire-order hint: {>>{...}} yields "field declaration order + each field
+//           MSB-first", exactly the C++ Writer's big-endian layout; {<<{...}}
+//           reverses the entire bit stream — never mix them up.
 // ============================================================================
 
 package shuttle_pkg;
-  // timeunit 约定与 weave_pkg 一致：决定 #() 与 1s 字面量的换算基准
-  //（shuttle_sv_time_fs 用 $realtime/1s*1e15 换算飞秒）。
+  // timeunit convention matches weave_pkg: it fixes the conversion basis for
+  // #() delays and 1s literals (shuttle_sv_time_fs converts $realtime/1s*1e15
+  // to femtoseconds).
   timeunit 1ps; timeprecision 1ps;
 
-  // ── DPI：import（由 C++ 的 libshuttle.so 提供）───────────────────────────
-  // 全部为 context import：实现内可能回调下面的 export（dispatch / time）。
+  // ── DPI: imports (provided by libshuttle.so on the C++ side) ───────────
+  // All are context imports: the implementations may call back into the
+  // exports below (dispatch / time).
   import "DPI-C" context function int shuttle_c_publish_now(
       string topic, string type_tag, byte payload[], int now_policy);
   import "DPI-C" context function int shuttle_c_publish_serial(
@@ -53,10 +64,12 @@ package shuttle_pkg;
   import "DPI-C" context task shuttle_c_wait_pub(
       int pub_id, longint timeout_fs, output int status);
   import "DPI-C" context function int shuttle_c_pub_done(int pub_id);
-  // 发布计数查询：kind 0=目标数 1=已完成 2=策略跳过 3=deferred 4=退订跳过
+  // Publication counter query: kind 0=expected 1=finished 2=skipped-by-policy
+  // 3=deferred 4=retired
   import "DPI-C" context function int shuttle_c_pub_stat(int pub_id, int kind);
   import "DPI-C" context function string shuttle_c_pub_error(int pub_id);
-  // 在途投递到达一个已退订的 id 时回告 C++（不报错，只让 C++ 把该次投递记成 retired）
+  // Report back to C++ when an in-flight delivery reaches an already-unsubscribed id
+  // (no error — just lets C++ record that delivery as retired)
   import "DPI-C" context function void shuttle_c_sub_retired(int sv_sid);
   import "DPI-C" context function int shuttle_c_subscribe(
       string topic, int caps, string type_tag, int sv_sid);
@@ -64,44 +77,48 @@ package shuttle_pkg;
   import "DPI-C" context function void shuttle_c_set_retained(string topic, bit retained);
   import "DPI-C" context function string shuttle_c_last_error();
 
-  // 帧拉取协议：C++ 调 shuttle_sv_dispatch[_nb] 前把当前帧字节流设为进程级上下文，
-  // SV 在 export 体内经这两个标量 import 分块拉取（每块 8 字节小端序）。
+  // Frame-pull protocol: before calling shuttle_sv_dispatch[_nb], C++ sets the
+  // current frame's byte stream as process-level context; SV pulls it in
+  // chunks inside the export body via these two scalar imports (8-byte
+  // little-endian chunks).
   import "DPI-C" context function int shuttle_c_frame_len();
   import "DPI-C" context function longint shuttle_c_frame_qword(int index);
 
-  // 跨语言事件：C++ 侧事件注册表的 DPI 入口（shuttle_event 使用）
+  // Cross-language events: DPI entries of the C++-side event registry (used by shuttle_event)
   import "DPI-C" context function int shuttle_c_event_create();
   import "DPI-C" context function void shuttle_c_event_set(int ev_id);
   import "DPI-C" context function void shuttle_c_event_destroy(int ev_id);
 
-  // ── DPI：export（本包提供，供 C++ broker 回调）───────────────────────────
-  // 与 weave 相同的先例：export 放在 package 内（VCS 已验证）；
-  // 若目标仿真器不接受 package 内 export，将这两个入口挪到 module 中即可，协议不变。
+  // ── DPI: exports (provided by this package, called back by the C++ broker) ──
+  // Same precedent as weave: exports live inside the package (verified on
+  // VCS); if a target simulator rejects in-package exports, move these two
+  // entries into a module — the protocol is unchanged.
   export "DPI-C" task shuttle_sv_dispatch;
   export "DPI-C" function shuttle_sv_dispatch_nb;
   export "DPI-C" function shuttle_sv_time_fs;
 
-  // ── 常量：与 C++ 端 enum 严格对齐（docs/dpi_protocol.md §常量表）─────────
-  // 订阅入口（shuttle_c_subscribe 的 caps 参数）：一次注册只可能是其中之一
-  // （同一个对象注册两次 = 两个订阅者，才会两个值都用上）
-  localparam int SHUTTLE_CAP_BLOCKING    = 1;  // blocking 入口：shuttle_subscribe
-  localparam int SHUTTLE_CAP_NONBLOCKING = 2;  // nonblocking 入口：shuttle_subscribe_nb
-  // publish_now 遇到入口为 blocking 的订阅者时的策略（shuttle_c_publish_now 的 now_policy 参数）
-  localparam int SHUTTLE_NOW_REJECT = 0;  // 报错（不投递任何订阅者）
-  localparam int SHUTTLE_NOW_SKIP   = 1;  // 跳过这些订阅者：不进 subscriber_count()，只进 skipped()
-  localparam int SHUTTLE_NOW_DEFER  = 2;  // 默认：交给本 topic 的后台串行链，稍后回调
-  // 触发器种类（shuttle_c_publish_serial / _concurrent 的 trig_kind 参数）
-  localparam int SHUTTLE_TRIG_NONE  = 0;  // 立即启动
-  localparam int SHUTTLE_TRIG_DELAY = 1;  // trig_arg = 仿真延时（飞秒）
-  localparam int SHUTTLE_TRIG_EVENT = 2;  // trig_arg = C++ 侧事件句柄 id（weave/shuttle Event）
-  localparam int SHUTTLE_TRIG_PUB   = 3;  // trig_arg = 另一个 Publication 的 pub_id
-  // shuttle_c_wait_pub 的 status 输出
-  localparam int SHUTTLE_WAIT_OK      = 0;  // 全部完成（不代表无订阅者失败）
+  // ── Constants: strictly aligned with the C++ enums (docs/dpi_protocol.md §constants) ──
+  // Subscription entries (caps argument of shuttle_c_subscribe): one
+  // registration can only ever be one of them (the same object registered
+  // twice = two subscribers — only then can both values be in play)
+  localparam int SHUTTLE_CAP_BLOCKING    = 1;  // blocking entry: shuttle_subscribe
+  localparam int SHUTTLE_CAP_NONBLOCKING = 2;  // nonblocking entry: shuttle_subscribe_nb
+  // Policy for publish_now meeting blocking-entry subscribers (now_policy argument)
+  localparam int SHUTTLE_NOW_REJECT = 0;  // error (deliver to no subscriber at all)
+  localparam int SHUTTLE_NOW_SKIP   = 1;  // skip these subscribers: not in subscriber_count(), only in skipped()
+  localparam int SHUTTLE_NOW_DEFER  = 2;  // default: hand to the topic's background serial chain, callback later
+  // Trigger kinds (trig_kind argument of shuttle_c_publish_serial / _concurrent)
+  localparam int SHUTTLE_TRIG_NONE  = 0;  // start immediately
+  localparam int SHUTTLE_TRIG_DELAY = 1;  // trig_arg = simulation delay (femtoseconds)
+  localparam int SHUTTLE_TRIG_EVENT = 2;  // trig_arg = C++-side event handle id (weave/shuttle Event)
+  localparam int SHUTTLE_TRIG_PUB   = 3;  // trig_arg = the pub_id of another Publication
+  // status output of shuttle_c_wait_pub
+  localparam int SHUTTLE_WAIT_OK      = 0;  // all completed (not necessarily failure-free)
   localparam int SHUTTLE_WAIT_TIMEOUT = 1;
-  localparam int SHUTTLE_WAIT_FAILED  = 2;  // 存在订阅者失败（详情 shuttle_c_pub_error）
-                                            // 或内部错误（详情 shuttle_c_last_error）
+  localparam int SHUTTLE_WAIT_FAILED  = 2;  // subscriber failure(s) present (see shuttle_c_pub_error)
+                                            // or an internal error (see shuttle_c_last_error)
 
-  // ── 元数据：随投递传递，与 C++ 端 shuttle::Meta 一致 ─────────────────────
+  // ── Metadata: passed with each delivery, mirrors shuttle::Meta on the C++ side ──
   class shuttle_meta;
     string  topic;
     string  type_tag;
@@ -115,9 +132,11 @@ package shuttle_pkg;
     endfunction
   endclass
 
-  // ── 帧拉取：C++ dispatch 上下文的字节流 → SV 动态数组 ────────────────────
-  // 协议：shuttle_c_frame_qword(i) 返回第 i 块 8 字节（小端序），拼接即完整帧。
-  // 依赖单活跃进程不变性：仅可在 shuttle_sv_dispatch[_nb] 执行体内调用。
+  // ── Frame pull: byte stream of the C++ dispatch context → SV dynamic array ──
+  // Protocol: shuttle_c_frame_qword(i) returns the i-th 8-byte chunk (little
+  // endian); concatenating them yields the complete frame.
+  // Relies on the single-active-process invariant: callable only inside the
+  // shuttle_sv_dispatch[_nb] body.
   function automatic void shuttle_frame_bytes(output byte b[]);
     int n = shuttle_c_frame_len();
     b = new [n];
@@ -128,29 +147,38 @@ package shuttle_pkg;
     end
   endfunction
 
-  // ── 回调接口：已有类 implements 即可接入，不占用单继承名额 ──────────────
+  // ── Callback interfaces: existing classes implement them to plug in, without
+  //    spending the single-inheritance slot ──────────────────────────────────
   interface class shuttle_sink;
-    // 可阻塞回调：blocking 入口的落地实现——`serial`/`concurrent` 的投递单元与 `publish_now`
-    // 的 defer 段都调它（在后台仿真进程中执行，可消耗时间）
+    // Blocking callback: the landing implementation of the blocking entry —
+    // invoked by the delivery units of `serial`/`concurrent` and by the defer
+    // section of `publish_now` (runs in a background simulation process, may
+    // consume time)
     pure virtual task invoke(input byte payload[], input shuttle_meta meta);
   endclass
 
   interface class shuttle_sink_nb;
-    // 不可阻塞回调：nonblocking 入口的落地实现——`publish_now` 在发布者进程内同步调它，
-    // `serial`/`concurrent` 也用它（编译器强制零阻塞）
+    // Nonblocking callback: the landing implementation of the nonblocking
+    // entry — invoked synchronously by `publish_now` inside the publisher's
+    // process, and also by `serial`/`concurrent` (the compiler enforces zero
+    // blocking)
     pure virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
   endclass
 
-  // ── 订阅注册表：sub_id → 回调对象 ────────────────────────────────────────
-  // DPI export 的名字必须静态，故 C++ 回调统一经 shuttle_sv_dispatch[_nb] 进入，
-  // 再由本注册表按 sub_id 分发到用户对象。
+  // ── Subscription registry: sub_id → callback object ─────────────────────
+  // DPI export names must be static, so C++ callbacks always enter via
+  // shuttle_sv_dispatch[_nb] and this registry dispatches them to user objects
+  // by sub_id.
   class shuttle_registry;
     static local int            next_id_  = 1;
     static local shuttle_sink    sinks_[int];
     static local shuttle_sink_nb sinks_nb_[int];
-    // 已退订的 id：C++ 侧可能仍有在途投递（发布瞬间已快照订阅者集合），
-    // 这些投递到达时静默丢弃（不当成 SV 侧错误），但经 shuttle_c_sub_retired 回告 C++，
-    // 让该帧记为该订阅者的 retired 终态（而不是幻影般的 delivered）；未登记过的 id 仍然报错。
+    // Unsubscribed ids: the C++ side may still have in-flight deliveries (the
+    // subscriber set was snapshotted at publish time); when such a delivery
+    // arrives, drop it silently (not an SV-side error) but report it back via
+    // shuttle_c_sub_retired so the frame records this subscriber's terminal
+    // state as retired (instead of a phantom delivered); an id that was never
+    // registered is still an error.
     static local bit            retired_[int];
 
     static function automatic int add(shuttle_sink s, shuttle_sink_nb snb);
@@ -166,36 +194,37 @@ package shuttle_pkg;
       retired_[id] = 1;
     endfunction
 
-    // 阻塞分发（`serial`/`concurrent`）：由 exported task shuttle_sv_dispatch 调用
+    // Blocking dispatch (`serial`/`concurrent`): called by the exported task shuttle_sv_dispatch
     static task automatic dispatch(int id, byte payload[], shuttle_meta meta);
       if (!sinks_.exists(id)) begin
-        // 退订后的在途投递：SV 侧静默丢弃（不 $error），但必须回告 C++，
-        // 否则 C++ 会把这次投递记成 delivered（幻影成功）。
+        // In-flight delivery after unsubscribing: dropped silently on the SV
+        // side (no $error), but C++ must be told, otherwise it would record
+        // this delivery as delivered (a phantom success).
         if (retired_.exists(id)) begin
           shuttle_c_sub_retired(id);
           return;
         end
-        $error("shuttle: 订阅者 %0d 不存在或不具备阻塞能力", id);
+        $error("shuttle: subscriber %0d does not exist or lacks the blocking entry", id);
         return;
       end
       sinks_[id].invoke(payload, meta);
     endtask
 
-    // 非阻塞分发（`publish_now`）：由 exported function shuttle_sv_dispatch_nb 调用
+    // Nonblocking dispatch (`publish_now`): called by the exported function shuttle_sv_dispatch_nb
     static function automatic void dispatch_nb(int id, byte payload[], shuttle_meta meta);
       if (!sinks_nb_.exists(id)) begin
         if (retired_.exists(id)) begin
           shuttle_c_sub_retired(id);
           return;
         end
-        $error("shuttle: 订阅者 %0d 不具备非阻塞能力（publish_now 不应分发至此）", id);
+        $error("shuttle: subscriber %0d lacks the nonblocking entry (publish_now must not dispatch to it)", id);
         return;
       end
       sinks_nb_[id].invoke_nb(payload, meta);
     endfunction
   endclass
 
-  // ── 订阅句柄 ────────────────────────────────────────────────────────────
+  // ── Subscription handle ────────────────────────────────────────────────
   class shuttle_sub;
     local int id_;
     local bit active_;
@@ -206,7 +235,8 @@ package shuttle_pkg;
     function int id();
       return id_;
     endfunction
-    // 显式退订（幂等）；退订后不再收到任何投递（进行中的投递不受影响）
+    // Explicit unsubscribe (idempotent); no deliveries after unsubscribing
+    // (in-progress deliveries are unaffected)
     function void unsubscribe();
       if (!active_) return;
       active_ = 0;
@@ -215,47 +245,55 @@ package shuttle_pkg;
     endfunction
   endclass
 
-  // ── 订阅入口 ────────────────────────────────────────────────────────────
-  // ── 订阅：入口由"调用哪个函数"决定 ──────────────────────────────────────
-  // 与 C++ 的 subscribe(topic, fn) / subscribe(topic, nb(fn)) 一一对应：
-  //   shuttle_subscribe    → 登记 blocking 入口（export task，可消耗仿真时间）
-  //   shuttle_subscribe_nb → 登记 nonblocking 入口（export function，零延时，编译器强制）
-  // 一个对象要同时拿到两个入口就注册两次（两个订阅者、每帧两次回调）；
-  // type_tag 非空时与 topic 的类型绑定做校验，不匹配在 C++ 侧报错。
-  // 想要"同一入口的两种行为"就建两个对象——SV 没有闭包，这等价于 C++ 的两个 lambda。
-  // 入口不再从"类实现了哪些 interface class"自动推断（旧实现的 $cast 探测正是导致
-  // 同一份配置在 C++ / SV 里 subscriber_count 与 `publish_now` 行为不一致的根源）。
-  // 内部：两个公开注册函数的公共实现（VCS 2018.09 不接受 package 里的 local function，
-  // 故不加 local，靠命名约定标为内部）
+  // ── Subscription entry points ──────────────────────────────────────────
+  // ── Subscription: the entry is decided by *which function is called* ───
+  // One-to-one with C++ subscribe(topic, fn) / subscribe(topic, nb(fn)):
+  //   shuttle_subscribe    → register the blocking entry (export task, may consume simulation time)
+  //   shuttle_subscribe_nb → register the nonblocking entry (export function,
+  //                            zero delay, enforced by the compiler)
+  // To get both entries on one object, register twice (two subscribers, two
+  // callbacks per frame); a non-empty type_tag is validated against the
+  // topic's type binding, with mismatches reported on the C++ side.
+  // For "two behaviors behind the same entry", create two objects — SV has no
+  // closures, which is equivalent to two lambdas on the C++ side.
+  // The entry is no longer inferred from "which interface classes the class
+  // implements": the old implementation's $cast probing was exactly the root
+  // cause of subscriber_count and `publish_now` behavior diverging between C++
+  // and SV for the same configuration.
+  // Internal: shared implementation of the two public registration functions
+  // (VCS 2018.09 rejects local functions inside packages, so this is not
+  // declared local; the naming convention marks it internal)
   function automatic shuttle_sub shuttle_register(string topic, shuttle_sink s,
                                                   shuttle_sink_nb snb, string type_tag,
                                                   int caps);
     int                   sid = shuttle_registry::add(s, snb);
     automatic shuttle_sub sub;
-    // SV 本地编号经 sv_sid 传给 C++，dispatch 时 C++ 原样带回，两侧无需维护映射
+    // The SV-local id goes to C++ as sv_sid and comes back verbatim at
+    // dispatch time; neither side maintains a mapping.
     if (shuttle_c_subscribe(topic, caps, type_tag, sid) != 0) begin
       shuttle_registry::remove(sid);
-      $error("shuttle: 订阅失败（topic=%s）：%s", topic, shuttle_c_last_error());
+      $error("shuttle: subscribe failed (topic=%s): %s", topic, shuttle_c_last_error());
       return null;
     end
     sub = new(sid);
     return sub;
   endfunction
 
-  // blocking 入口（SV：export task）：≙ C++ subscribe(topic, fn)
+  // blocking entry (SV: export task): ≙ C++ subscribe(topic, fn)
   function automatic shuttle_sub shuttle_subscribe(string topic, shuttle_sink cb,
                                                    string type_tag = "");
     return shuttle_register(topic, cb, null, type_tag, SHUTTLE_CAP_BLOCKING);
   endfunction
 
-  // nonblocking 入口（SV：export function）：≙ C++ subscribe(topic, nb(fn))
+  // nonblocking entry (SV: export function): ≙ C++ subscribe(topic, nb(fn))
   function automatic shuttle_sub shuttle_subscribe_nb(string topic, shuttle_sink_nb cb,
                                                       string type_tag = "");
     return shuttle_register(topic, null, cb, type_tag, SHUTTLE_CAP_NONBLOCKING);
   endfunction
 
-  // ── 发布完成句柄（对应 C++ 端 shuttle::Publication）──────────────────────
-  // SV 无异常机制：订阅者失败通过 first_error() 返回错误信息，由用户决定处置。
+  // ── Publication completion handle (corresponds to shuttle::Publication) ──
+  // SV has no exceptions: subscriber failures surface via first_error(), and
+  // the user decides how to handle them.
   class shuttle_handle;
     local int pub_id_;
     function new(int pub_id);
@@ -270,56 +308,60 @@ package shuttle_pkg;
     function bit done();
       return valid() && shuttle_c_pub_done(pub_id_) != 0;
     endfunction
-    // 阻塞至全部订阅者回调完成；timeout_fs = 0 表示无限等待（单位：飞秒）
+    // Block until all subscriber callbacks complete; timeout_fs = 0 means
+    // wait forever (unit: femtoseconds)
     task wait_done(longint timeout_fs = 0);
       int status;
       if (!valid()) return;
       shuttle_c_wait_pub(pub_id_, timeout_fs, status);
       if (status == SHUTTLE_WAIT_TIMEOUT)
-        $error("shuttle: 等待 Publication %0d 超时", pub_id_);
+        $error("shuttle: wait on Publication %0d timed out", pub_id_);
       else if (status == SHUTTLE_WAIT_FAILED)
-        $error("shuttle: Publication %0d 存在订阅者失败：%s", pub_id_, first_error());
+        $error("shuttle: Publication %0d has subscriber failure(s): %s", pub_id_, first_error());
     endtask
-    // ── 可见性计数（与 C++ Publication 同名语义）──────────────────────────
-    // 本帧的目标订阅者数（发布瞬间快照，含被 defer 的部分）
+    // ── Visibility counters (same names and semantics as C++ Publication) ──
+    // Target subscriber count of this frame (snapshot at publish time, including the deferred part)
     function int subscriber_count();
       return valid() ? shuttle_c_pub_stat(pub_id_, 0) : 0;
     endfunction
-    // 已结束（成功或失败）的订阅者数
+    // Subscribers finished (successfully or not)
     function int finished();
       return valid() ? shuttle_c_pub_stat(pub_id_, 1) : 0;
     endfunction
-    // 被策略跳过、本帧不会投递给它们的订阅者数
+    // Subscribers skipped by policy, to whom this frame will not be delivered
     function int skipped();
       return valid() ? shuttle_c_pub_stat(pub_id_, 2) : 0;
     endfunction
-    // 被推迟到后台串行链、稍后才投递的订阅者数
+    // Subscribers deferred to the background serial chain, delivered later
     function int deferred();
       return valid() ? shuttle_c_pub_stat(pub_id_, 3) : 0;
     endfunction
-    // 快照之后被退订、未进入回调的订阅者数（已计入 finished）
+    // Subscribers unsubscribed after the snapshot, never entered the callback (already counted in finished)
     function int retired();
       return valid() ? shuttle_c_pub_stat(pub_id_, 4) : 0;
     endfunction
-    // 第一个失败订阅者的错误信息（空串 = 无失败）
+    // Error message of the first failed subscriber (empty = no failure)
     function string first_error();
       if (!valid()) return "";
       return shuttle_c_pub_error(pub_id_);
     endfunction
   endclass
 
-  // ── 跨语言事件句柄（C++ 侧注册表持有底层对象，C++ 侧用 weave::Event 等待）──
-  // 底层对象驻留在 C++ 侧的注册表里（由 C++ 持有，SV 只持 id）：
-  // SV 侧 set() 唤醒正在等它的 TRIG_EVENT 投递单元；
-  // 也可作 shuttle_trigger::after_event(id) 的触发条件（见下）。
-  // C++ 侧没有按 id 等待的公开入口：C++ 自己的事件用 weave::Event + after()。
+  // ── Cross-language event handle (the C++-side registry owns the underlying
+  //    object; the C++ side waits on it with weave::Event) ──────────────────
+  // The underlying object resides in the C++-side registry (held by C++; SV
+  // only holds the id): the SV-side set() wakes TRIG_EVENT delivery units
+  // waiting on it; it can also serve as the trigger condition of
+  // shuttle_trigger::after_event(id) (below).
+  // There is no public C++ entry that waits by id: C++ code uses its own
+  // weave::Event + after().
   class shuttle_event;
     local int id_;
     local bit active_;
     function new();
       id_ = shuttle_c_event_create();
       active_ = (id_ > 0);
-      if (!active_) $error("shuttle: 创建事件失败：%s", shuttle_c_last_error());
+      if (!active_) $error("shuttle: failed to create event: %s", shuttle_c_last_error());
     endfunction
     function int id();
       return id_;
@@ -327,11 +369,11 @@ package shuttle_pkg;
     function bit valid();
       return active_;
     endfunction
-    // 唤醒所有等待者（C++ 侧等待本事件的 Trigger / TRIG_EVENT 任务被放行）
+    // Wake all waiters (Trigger / TRIG_EVENT tasks on the C++ side waiting on this event are released)
     function void set();
       if (active_) shuttle_c_event_set(id_);
     endfunction
-    // 主动释放（仿真结束可不调用，随进程消亡）
+    // Explicit release (may be omitted at end of simulation; dies with the process)
     function void close();
       if (!active_) return;
       active_ = 0;
@@ -339,9 +381,10 @@ package shuttle_pkg;
     endfunction
   endclass
 
-  // ── 延迟触发器（对应 C++ 端 shuttle::Trigger）────────────────────────────
-  // 快照语义与 C++ 一致：发布调用瞬间锁定订阅者集合与消息拷贝，
-  // 触发器只决定后台回调进程何时启动。
+  // ── Deferred trigger (corresponds to shuttle::Trigger) ─────────────────
+  // Snapshot semantics match C++: the subscriber set and the message copy are
+  // locked in at the moment of the publish call; the trigger only decides when
+  // the background callback process starts.
   class shuttle_trigger;
     int     kind = SHUTTLE_TRIG_NONE;
     longint arg  = 0;
@@ -349,23 +392,24 @@ package shuttle_pkg;
       shuttle_trigger t = new();
       return t;
     endfunction
-    // 仿真延时（飞秒）
+    // Simulation delay (femtoseconds)
     static function shuttle_trigger after_delay(longint fs);
       shuttle_trigger t = new();
       t.kind = SHUTTLE_TRIG_DELAY;
       t.arg  = fs;
       return t;
     endfunction
-    // 事件句柄 id（只由 SV 侧创建；C++ 侧按 id 等待，见 detail::event_wait_id）。
-    // 传 shuttle_event 时显式取 id：after_event(ev.id())
-    //（类句柄与 int 只支持隐式单项转换，VCS 不接受二者构成重载）
+    // Event handle id (created only on the SV side; the C++ side waits by id,
+    // see detail::event_wait_id). Pass an explicit id for a shuttle_event:
+    // after_event(ev.id()) (a class handle and an int support only a single
+    // implicit conversion; VCS rejects the two as overloads)
     static function shuttle_trigger after_event(int ev_id);
       shuttle_trigger t = new();
       t.kind = SHUTTLE_TRIG_EVENT;
       t.arg  = ev_id;
       return t;
     endfunction
-    // 另一个 Publication 完成（成功或失败均视为完成）
+    // Another publication completes (success or failure both count as done)
     static function shuttle_trigger after_pub(shuttle_handle h);
       shuttle_trigger t = new();
       t.kind = SHUTTLE_TRIG_PUB;
@@ -374,31 +418,35 @@ package shuttle_pkg;
     endfunction
   endclass
 
-  // ── 类型化发布器 ────────────────────────────────────────────────────────
-  // 类型参数 T 须满足文件头部的消息类约定（pack() + localparam type_tag）。
+  // ── Typed publisher ────────────────────────────────────────────────────
+  // The type parameter T must satisfy the message-class convention at the top
+  // of this file (pack() + localparam type_tag).
   class shuttle_pub #(type T = byte);
     local string topic_;
     function new(string topic);
       topic_ = topic;
     endfunction
 
-    // 队列 → 动态数组（DPI open array 形参要求动态数组；VCS 函数返回类型不支持 unpacked 数组）
+    // Queue → dynamic array (DPI open-array parameters require dynamic arrays;
+    // VCS does not support unpacked arrays as function return types)
     local function automatic void q2a(const ref byte q[$], output byte a[]);
       a = new [q.size()];
       foreach (q[i]) a[i] = q[i];
     endfunction
 
-    // ── 发布三件套：名字与 C++ 侧 publish_now / publish_serial / publish_concurrent
-    //    一一对应；调度方式写在函数名里，不再有 mode 参数 ────────────────────────
+    // ── Publish trio: names correspond 1:1 to publish_now / publish_serial /
+    //    publish_concurrent on the C++ side; the scheduling flavor is in the
+    //    function name — there is no mode argument ──────────────────────────
 
-    // 消息 → DPI open array 需要的动态数组（pack() 产出队列，见文件头的消息类约定）
+    // Message → dynamic array needed by the DPI open array (pack() produces a
+    // queue; see the message-class convention at the top of this file)
     local function void pack_payload(T msg, output byte payload[]);
       byte q[$];
       msg.pack(q);
       q2a(q, payload);
     endfunction
 
-    // 延迟触发器 → (trig_kind, trig_arg) 两个标量；null 表示立即启动
+    // Trigger → (trig_kind, trig_arg) scalars; null means start immediately
     local function void trig_scalars(shuttle_trigger trig, output int kind, output longint arg);
       kind = SHUTTLE_TRIG_NONE;
       arg  = 0;
@@ -408,13 +456,15 @@ package shuttle_pkg;
       end
     endfunction
 
-    // pub_id → 句柄；失败返回 null。loud=1 时额外 $error 提示。
-    // `publish_now` 保持静默（reject 策略下失败是预期结果，原因走 shuttle_c_last_error()）；
-    // `serial`/`concurrent` 打印，因为它们是"发了就不管"的异步接口，出错必须立刻可见。
+    // pub_id → handle; returns null on failure. loud=1 additionally prints $error.
+    // `publish_now` stays silent (under the reject policy, failure is the
+    // expected outcome; the reason goes through shuttle_c_last_error());
+    // `serial`/`concurrent` print because they are fire-and-forget async
+    // interfaces where errors must be visible immediately.
     local function shuttle_handle wrap(int pid, string what, bit loud);
       if (pid <= 0) begin
         if (loud)
-          $error("shuttle: %s 发布失败（topic=%s）：%s", what, topic_, shuttle_c_last_error());
+          $error("shuttle: %s publish failed (topic=%s): %s", what, topic_, shuttle_c_last_error());
         return null;
       end
       begin
@@ -423,20 +473,28 @@ package shuttle_pkg;
       end
     endfunction
 
-    // `publish_now`：发布者栈内同步回调，全程不挂起（执行所有入口为 nonblocking 的订阅者）。
-    // policy：入口为 blocking（无法在调用栈内被调用，即 shuttle_sink 的 invoke task）的
-    //         那些目标怎么处置，默认 SHUTTLE_NOW_DEFER（转后台串行链，稍后回调）。
-    //         — 一条注册只有一条入口，处置只看该策略，与本 topic 有无 nonblocking 订阅者无关。
-    // 返回本帧句柄（与 `serial`/`concurrent` 同一类型）：nonblocking 部分返回时已全部结束，被 skip 的计入
-    // skipped()，被 defer 的仍在后台链上——done()/wait_done() 覆盖这部分。
-    // 失败返回 null（原因见 shuttle_c_last_error()）。
+    // `publish_now`: synchronous callbacks on the publisher's stack, never
+    // suspending (invokes all subscribers with a nonblocking entry).
+    // policy: how to handle targets whose entry is blocking (cannot be called
+    //         on the caller's stack, i.e. the shuttle_sink invoke task);
+    //         defaults to SHUTTLE_NOW_DEFER (hand to the background serial
+    //         chain, callback later).
+    //         — one registration has exactly one entry; the policy only sees
+    //         that entry and is independent of whether the topic also has
+    //         nonblocking subscribers.
+    // Returns this frame's handle (same type as `serial`/`concurrent`): the
+    // nonblocking part has fully finished when it returns, skipped targets are
+    // in skipped(), and deferred targets are still on the background chain —
+    // done()/wait_done() cover that part.
+    // Returns null on failure (see shuttle_c_last_error()).
     function shuttle_handle publish_now(T msg, int policy = SHUTTLE_NOW_DEFER);
       byte payload[];
       pack_payload(msg, payload);
       return wrap(shuttle_c_publish_now(topic_, T::type_tag, payload, policy), "now", 1'b0);
     endfunction
 
-    // `publish_serial`：后台单链顺序回调（topic 级 FIFO），立即返回完成句柄。
+    // `publish_serial`: background single-chain, in-order callbacks
+    // (topic-level FIFO); returns the completion handle immediately.
     function shuttle_handle publish_serial(T msg, shuttle_trigger trig = null);
       byte payload[];
       int kind;
@@ -446,7 +504,8 @@ package shuttle_pkg;
       return wrap(shuttle_c_publish_serial(topic_, T::type_tag, payload, kind, arg), "serial", 1'b1);
     endfunction
 
-    // `publish_concurrent`：后台每订阅者一任务并发回调，立即返回完成句柄。
+    // `publish_concurrent`: background, one task per subscriber, concurrent
+    // callbacks; returns the completion handle immediately.
     function shuttle_handle publish_concurrent(T msg, shuttle_trigger trig = null);
       byte payload[];
       int kind;
@@ -457,17 +516,19 @@ package shuttle_pkg;
                   "concurrent", 1'b1);
     endfunction
 
-    // retained（latched）：开启后 broker 缓存最新一帧，新订阅者立即收到
+    // retained (latched): once enabled, the broker caches the latest frame
+    // and new subscribers receive it immediately
     function void set_retained(bit r);
       shuttle_c_set_retained(topic_, r);
     endfunction
 
   endclass
 
-  // ── DPI export 实现：C++ broker 的回调入口 ──────────────────────────────
-  // `serial`/`concurrent` 的分发：由 C++ 的 weave task 调用，
-  // 本 task 在承载该 weave task 的 SV 进程中执行，可合法消耗仿真时间。
-  // payload 经帧拉取协议取得（见文件头部说明）。
+  // ── DPI export implementations: callback entries of the C++ broker ─────
+  // Dispatch of `serial`/`concurrent`: called by the C++ weave task; this task
+  // runs in the SV process hosting that weave task and may legally consume
+  // simulation time. The payload is obtained via the frame-pull protocol (see
+  // the header of this file).
   task automatic shuttle_sv_dispatch(input int sub_id, input string topic, input string type_tag,
                                      input longint seq, input longint time_fs);
     shuttle_meta m = new(topic, type_tag, seq, time_fs);
@@ -476,8 +537,9 @@ package shuttle_pkg;
     shuttle_registry::dispatch(sub_id, payload, m);
   endtask
 
-  // `publish_now` 的分发：在发布者的进程上下文中执行，必须零延时（function 由编译器强制）。
-  // payload 经帧拉取协议取得。
+  // Dispatch of `publish_now`: runs in the publisher's process context and
+  // must be zero-delay (the compiler enforces this for a function). The
+  // payload is obtained via the frame-pull protocol.
   function automatic void shuttle_sv_dispatch_nb(input int sub_id, input string topic,
                                                  input string type_tag, input longint seq,
                                                  input longint time_fs);
@@ -487,10 +549,11 @@ package shuttle_pkg;
     shuttle_registry::dispatch_nb(sub_id, payload, m);
   endfunction
 
-  // 仿真时间源（C++ 端 shuttle::now_fs() 的实现）。
-  // $realtime 以本包 timeunit 为单位；换算为飞秒。
-  // 注意：real 仅 53bit 尾数，仿真时间很大时精度退化 ——
-  // 正式实现应改为 $time × 每 tick 飞秒数（与 weave_pkg 的 tick 约定对齐）。
+  // Simulation time source (implementation of shuttle::now_fs() on the C++
+  // side). $realtime is in this package's timeunit; converted to femtoseconds.
+  // Note: real has only a 53-bit mantissa, so precision degrades at very large
+  // simulation times — a production implementation should switch to $time ×
+  // femtoseconds-per-tick (aligned with the tick convention of weave_pkg).
   function automatic longint shuttle_sv_time_fs();
     return longint'($realtime / 1s * 1e15);
   endfunction

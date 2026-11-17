@@ -1,7 +1,8 @@
-// Trigger 工厂实现（声明见 trigger.hpp）。
+// Trigger factory implementations (declarations in trigger.hpp).
 //
-// after_any 在调用点（须为 weave task / 仿真进程上下文）为每个子触发器
-// 创建一个 weave task 竞速；after_all 按序等待（等价于"全部满足"）。
+// after_any spawns one weave task per sub-trigger at the call site (which
+// must be a weave task / simulation-process context) to race them; after_all
+// waits in order (equivalent to "all satisfied").
 
 #include "detail/trigger.hpp"
 
@@ -16,7 +17,7 @@
 namespace shuttle {
 
 Trigger after(weave::Event& ev) {
-  // std::function 按 const 目标实例化：经 shared_ptr 转发非 const 的 wait()
+  // std::function instantiates against a const target: forward the non-const wait() via shared_ptr
   auto evp = std::make_shared<weave::Event>(ev);
   return Trigger([evp]() { evp->wait(); });
 }
@@ -26,9 +27,11 @@ Trigger after(weave::duration d) {
 }
 
 Trigger after(const weave::Task& t) {
-  // 只表达"到达终态"这一事实：FAILED/CANCELLED 均不重抛（语义见头文件注释）
-  // 注：std::function 的调用路径按 const 目标实例化（libstdc++ 实现约束），
-  // 而 await() 非 const——故经 shared_ptr 转发捕获。
+  // Only conveys the fact of reaching a terminal state: FAILED/CANCELLED are
+  // not rethrown (see the header comment for semantics).
+  // Note: std::function's invocation path instantiates against a const target
+  // (a libstdc++ implementation constraint) while await() is non-const — so
+  // capture it via shared_ptr forwarding.
   auto tp = std::make_shared<weave::Task>(t);
   return Trigger([tp]() {
     try {
@@ -40,15 +43,17 @@ Trigger after(const weave::Task& t) {
 
 Trigger after_all(std::vector<Trigger> trigs) {
   return Trigger([trigs = std::move(trigs)]() {
-    for (const auto& tr : trigs) tr.wait();  // 按序等待；任一失败（非取消）向外传播
+    for (const auto& tr : trigs)
+      tr.wait();  // wait in order; the first failure (non-cancellation) propagates out
   });
 }
 
 Trigger after_any(std::vector<Trigger> trigs) {
-  if (trigs.empty()) return Trigger();  // 空集：按立即满足处理
+  if (trigs.empty()) return Trigger();  // empty set: treated as immediately satisfied
   if (trigs.size() == 1) return trigs.front();
   struct State {
-    weave::Event fired;  // 首个子触发器完成即 set（level 语义天然幂等）
+    weave::Event fired;  // set as soon as the first sub-trigger settles (level semantics are
+                         // naturally idempotent)
   };
   auto st = std::make_shared<State>();
   for (auto& tr : trigs) {
@@ -56,7 +61,8 @@ Trigger after_any(std::vector<Trigger> trigs) {
       try {
         tr.wait();
       } catch (...) {
-        // 竞速语义：取消/失败也算"该子触发器已落定"，不影响其它子触发器
+        // Racing semantics: cancellation/failure also counts as "this sub-trigger
+        // has settled" and does not affect the other sub-triggers
       }
       st->fired.set();
     });

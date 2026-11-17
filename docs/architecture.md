@@ -2,31 +2,42 @@
 
 本文描述 shuttle 的**实现结构**：三条发布路径、入口模型、数据结构、记账契约与后端边界。
 面向需要修改 `src/` 或排查投递行为的读者；只使用 API 请先读
-[`../README.md`](../README.md)。
+[`README.md`](../README.md)。
 
 | 文档 | 职责 |
 | --- | --- |
-| [`../README.md`](../README.md) | 能力、用法、选型 |
+| [`README.md`](../README.md) | 能力、用法、选型 |
 | 本文 | 实现结构与不变量 |
 | [`dpi_protocol.md`](dpi_protocol.md) | C++ ↔ SV 边界的权威定义（函数表、常量、线上格式、仿真器约束） |
-| [`../AGENTS.md`](../AGENTS.md) | 改动本仓库必须守住的硬约束清单 |
+| [`AGENTS.md`](AGENTS.md) | 改动本仓库必须守住的硬约束清单 |
 
 ## 1. 定位
 
-shuttle 在 weave 之上提供三件事，不重复 weave 的职责：
+shuttle 是**仿真进程内**的类型化发布-订阅框架：C++ 组件之间、SV 组件之间、C++ ↔ SV
+跨语言，三种通信共用同一个 broker、同一套类型系统与同一套投递语义。
 
-| 层 | 内容 |
-| --- | --- |
-| broker（`src/broker/`） | topic 表、通配符匹配、类型绑定、帧序号、三种发布编排、完成跟踪与 retained |
-| 类型化载荷（`include/shuttle/codec.hpp`） | 编解码与跨语言物化，类型擦除边界在 `detail/abi.hpp` |
-| 外部门面（svdpi 后端的 `facade.cpp`） | 字节帧发布（`ext_*`）、外部订阅者注册、按 `pub_id` 的查询/等待、跨语言事件注册表——FFI 入口半边，与 `backend/backend.hpp` 方向相对 |
-| DPI 桥（`src/backend/svdpi/` / `sv/shuttle_pkg.sv`） | import/export、帧拉取、作用域修正、SV 侧分派注册表 |
+核心命题：**仿真进程里，难的不是"发消息"，而是每条消息"何时、经哪条入口、以什么结局"
+到达订阅者。** 仿真时间是全进程共享的资源：回调能否消耗仿真时间，决定了它能在谁的调用栈里
+执行；发布方是否等待、后台投递按什么顺序推进、退订如何作用于在途帧——这些调度语义在传统
+验证代码里随每条通知通道各自实现，零散且不一致。shuttle 把它们收敛为一次注册、一次发布：
+发布方只认 topic；订阅关系与入口能力在注册时确定；发布瞬间快照目标集与消息；每个目标的
+结局——投递、失败、退订跳过、策略跳过——在句柄上全部可数。三种通信方式（C++ 内部、
+SV 内部、C++ ↔ SV）只是同一套语义的三个使用者，跨语言不是存在的理由，是自然结果。
 
-并发编排（task 创建、事件、等待、超时、取消）全部由 weave 提供。后端二选一：
-`svdpi`（真实仿真器，带 SV 桥）与 `systemc`（纯 C++，无 SV 桥）。后端选择只影响
-`detail::backend` 的实现，broker 与公开 API 完全相同（§12）。
+边界：
 
-非目标：跨进程/跨机器通信、持久化、流量整形、UVM 兼容层。
+- **单向通知，非 RPC**：无请求/应答配对，无返回值，发布方不持有订阅方。
+- **进程内，非跨进程**：broker 是进程级单例、状态无锁；该性质继承自 weave 的单活跃进程
+  契约（任一时刻只有一个进程执行记账代码），也是跨语言帧传递方案成立的前提。
+- **定义投递调度，不拥有并发原语**：task / 事件 / 等待由 weave 提供；shuttle 在其上定义
+  调度语义——同步（`now`）、per-topic FIFO（`serial`）、并发（`concurrent`）与条件延迟
+  （`Trigger`）。
+- **不做**：跨机器通信、持久化与重放、背压（`SubOptions` 仅预留）、UVM 适配层。
+
+shuttle 自身的职责两层：**broker**（topic 命名空间、通配符路由、topic ↔ 类型绑定、帧序号、
+retained、三种发布方式的目标集快照与调度、逐目标记账与完成跟踪）；**类型化载荷**（类型擦除、
+C++ 内部零拷贝与懒编码、与 SV `{>>{}}` 逐字节一致的线上格式）。与仿真环境的接入方式
+（DPI 桥 / 退化实现）只是这两层在某后端的落地，不构成定位的一部分。文件落点见 §3。
 
 ## 2. 术语
 
@@ -131,10 +142,15 @@ publisher 进程
   │                    ├─ 逐个 nonblocking 目标：deliver(sub, env)
   │                    │     （这些注册的 cap 已是 nonblocking → export function）
   │                    │     失败 → 记 failures + failed（dropped 的一部分），继续下一个目标
+  │                    │     每个目标结束都 target_finished()；skip（或无 blocking 目标）时
+  │                    │     最后一个目标使 finished == expected，就地 pub_complete()
+  │                    │     —— Publication 返回前已完成
   │                    ├─ policy==skip  → 计 skipped（dropped 的 skipped 分量）
   │                    └─ policy==defer → start_serial(topic, env, {}, blocking_targets)
-  │                                       完成钩子把失败与计数并回本帧
-  └ 返回 Publication（nonblocking 部分已结束，deferred 部分未结束）
+  │                                       完成钩子把失败与计数并回本帧，
+  │                                       finished == expected 时在串行链的 dispatch task
+  │                                       内 pub_complete()——晚于 publish_now 返回
+  └ 返回 Publication（skip：已完成；defer：nonblocking 部分已结束、deferred 部分未结束）
      └ 同步段出现异常时：以上全部完成后，重抛第一个异常
 ```
 
@@ -168,12 +184,15 @@ publish_serial ─▶ targets 为空 ? 立即 pub_complete（不建单元、不�
 ```
 publish_concurrent ─▶ targets 为空 ? 立即 pub_complete
                    : 每个订阅者 create_task("shuttle-par-<topic>")
-                          └─ wait_trigger → deliver(sub, env) → target_finished()
+                          └─ wait_trigger → deliver(sub, env) → unit_finished()
+                                                （最后一个完成的 task 使
+                                                 finished == expected 时 pub_complete()）
 ```
 
 订阅者之间无顺序承诺；同一订阅者的不同帧之间也不保证 FIFO（需要 FIFO 时用
 `publish_serial`）。每个 task 独立捕获自己的失败：`failures()` 按完成顺序累积，
-`result()` 重抛第一个。
+`result()` 重抛第一个。`pub_complete()` 没有独立的汇总 task：它由最后完成的那个投递
+task 在 `unit_finished()` 内触发，因此谁先谁后取决于回调耗时，与 task 创建顺序无关。
 
 ### 5.4 完整投递路径
 
@@ -188,6 +207,9 @@ Publisher<T>::publish_now/serial/concurrent         shuttle_pub#(T)::publish_now
                                   ▼
                       dispatch_now / start_serial / start_concurrent
                                   │ 快照目标集：名字匹配 ∩ 类型标签匹配
+                                  │ 每个目标结束都 target_finished()；
+                                  │ finished == expected 时 pub_complete()
+                                  │ （now 的 defer 段经串行链完成钩子回读本帧后触发）
                                   ▼
                                deliver(sub, env)
                                   │ 入口一律按该注册的 cap（不变量 4）：

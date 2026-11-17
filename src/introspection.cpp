@@ -1,4 +1,5 @@
-// shuttle::broker 的只读内省接口；不进入发布/投递路径。
+// Read-only introspection interface of shuttle::broker; never enters the
+// publish/delivery path.
 
 #include <optional>
 #include <shuttle/broker.hpp>

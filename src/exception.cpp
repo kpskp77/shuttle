@@ -1,7 +1,9 @@
-// exception.cpp —— 异常类型的 key-function 析构定义
+// exception.cpp — key-function destructor definitions for the exception types
 //
-// exception.hpp 中析构均为 out-of-line 声明（key function 惯例，与 weave 相同：
-// 保证 catch 类型匹配跨越 DSO 边界按主类型分派）。此处给出定义。
+// The destructors in exception.hpp are all out-of-line declarations (the key
+// function convention, same as weave: it guarantees catch-type matching is
+// dispatched by the primary type across DSO boundaries). The definitions live
+// here.
 #include "shuttle/exception.hpp"
 
 namespace shuttle {
@@ -13,4 +15,4 @@ TypeMismatchError::~TypeMismatchError() = default;
 TopicPatternError::~TopicPatternError() = default;
 DecodeError::~DecodeError() = default;
 
-} // namespace shuttle
+}  // namespace shuttle

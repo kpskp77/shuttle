@@ -1,48 +1,74 @@
 #pragma once
 
-// Publication：一次发布的完成句柄（对齐 asyncio Future / weave Task 的查询语义）。
+// Publication: completion handle for one publication (query semantics aligned
+// with asyncio Futures / weave Tasks).
 //
-// 默认发布不阻塞发布者（publish_serial/publish_concurrent 立即返回）；
-// 需要等待时通过本句柄：
-//   pub.wait();             // 阻塞至全部订阅者回调结束
-//   pub.wait(1_us);         // 带超时
-//   pub.result();           // 等待 + 重抛第一个失败的订阅者异常（对齐 weave TaskGroup 语义）
+// Publishing does not block the publisher by default (publish_serial/
+// publish_concurrent return immediately); use this handle when you need to
+// wait:
+//   pub.wait();             // block until all subscriber callbacks finish
+//   pub.wait(1_us);         // with timeout
+//   pub.result();           // wait + rethrow the first failed subscriber's exception
+//                           // (aligned with weave TaskGroup semantics)
 //
-// ── 目标集：名字 ∩ 类型 ─────────────────────────────────────────────────────
-// 一个订阅者只有在**名字匹配且类型标签匹配**时才是本帧的目标。类型不相交的订阅者连目标都
-// 不是：不进 subscriber_count()、不建投递单元、不产生任何计数。因此“通配符订阅者只收自己
-// 声明的类型”是目标集的判定结果，而不是逐帧过滤的结果。
+// ── Target set: name ∩ type ──────────────────────────────────────────────
+// A subscriber is a target of this frame only if **both the name matches and
+// the type tag matches**. Subscribers with disjoint types are not even
+// targets: they are not in subscriber_count(), no delivery unit is created
+// for them, and they produce no counters at all. Hence "a wildcard subscriber
+// only receives the type it declared" is a property of the target-set
+// decision, not a per-frame filter.
 //
-// ── 记账语义：每个目标订阅者只有五种结局，三种方式完全一致 ─────────────────────
-//   delivered  回调执行完毕（SV 侧 = export 返回）
-//   retired    快照之后、回调之前被退订：目标已到终态，内容没进回调，但没有任何人出错；
-//              计入 retired()，以及订阅者/topic 侧 dropped() 的 retired 分量。
-//              两种语言同一口径（退订即生效）
-//   failed     尝试了但没成功：回调抛异常 / 帧不可物化 / 投递被取消 / 触发条件失败
-//              （同时计入 dropped 的 failed 分量，并留下一条 Failure）
-//   deferred   返回时尚未开始（仅 publish_now 的 defer 段，后台串行链接走）
-//   skipped    发布者策略干脆不投（仅 publish_now 的 NowPolicy::skip），不算目标、
-//              也不入 subscriber_count()
-// reject 不产生帧，故没有终态。三种“没成功投递”的区别在**谁的决定**：retired 是订阅者自己走了，
-// skipped 是发布者的策略，failed 是试了没成（回调进去了、抛出异常，或帧没能物化、投递被取消）。
-// 不变量（三种方式都成立）：
-//   · finished() ≤ subscriber_count()，且 done() ≡ finished() == subscriber_count()
-//   · subscriber_count() + skipped() == 本帧的目标订阅者数（名字 ∩ 类型，且未被策略跳过）
-//   · finished() == delivered + retired + failed 的累计，deferred 完成后必落入前三者之一
-//   · 订阅者与 topic 侧的 dropped() 是这三个非投递终态的求和（skipped 也算在内）：
+// ── Accounting semantics: every target subscriber has exactly five
+//    possible outcomes, identical across all three flavors ──────────────
+//   delivered  callback ran to completion (SV side = the export returned)
+//   retired    unsubscribed after the snapshot but before the callback: the
+//              target reached a terminal state, the content never entered the
+//              callback, and nobody was at fault; counted in retired() and in
+//              the retired component of subscriber-/topic-level dropped().
+//              Same rule in both languages (unsubscribe takes effect
+//              immediately)
+//   failed     attempted but unsuccessful: callback threw / frame could not
+//              be materialized / delivery was cancelled / trigger condition
+//              failed (also counted in the failed component of dropped, and
+//              recorded as one Failure)
+//   deferred   not yet started when the handle was returned (only the defer
+//              section of publish_now, taken over by the background serial
+//              chain)
+//   skipped    the publisher's policy chose not to deliver at all (only
+//              NowPolicy::skip of publish_now): not a target and not in
+//              subscriber_count()
+// reject produces no frame, so it has no terminal state. The three kinds of
+// "unsuccessful delivery" differ in **who decided**: retired = the
+// subscriber left, skipped = the publisher's policy, failed = tried but did
+// not succeed (the callback ran and threw, or the frame could not be
+// materialized, or the delivery was cancelled).
+// Invariants (hold for all three flavors):
+//   · finished() ≤ subscriber_count(), and done() ≡ finished() == subscriber_count()
+//   · subscriber_count() + skipped() == number of target subscribers of this
+//     frame (name ∩ type, and not skipped by policy)
+//   · finished() == the cumulative delivered + retired + failed; a deferred
+//     delivery always lands in one of the first three once it completes
+//   · subscriber- and topic-level dropped() is the sum of these three
+//     non-delivery terminal states (skipped included):
 //     dropped() == retired + skipped + failed
 //
-// 异常语义：单个订阅者回调抛异常不影响其余订阅者；失败聚合粒度因方式而异：`concurrent` 逐订阅者
-// 全收；`serial` 只保留第一条（其余只计入 dropped 的 failed 分量）；`now` 的同步段把每个失败都记入 failures，
-// 但**先把所有目标尝试完、并把 defer 段交给后台链**，最后才把第一个异常抛给发布者（句柄仍不返回，
-// 但本帧的其余目标照常投递），defer 段按 `serial` 的规则并入同一句柄。
+// Exception semantics: one subscriber's callback throwing does not affect the
+// others; failure aggregation granularity varies by flavor: `concurrent`
+// collects every subscriber's failure; `serial` keeps only the first (the
+// rest are counted solely in the failed component of dropped); the
+// synchronous section of `now` records every failure in failures(), but
+// **finishes attempting all targets and hands the defer section to the
+// background chain first**, and only then rethrows the first exception to the
+// publisher (no handle is returned, but the frame's remaining targets are
+// still delivered); the defer section merges into the same handle under the
+// `serial` rule.
 
 #include <cstdint>
 #include <exception>
 #include <memory>
 #include <string>
 #include <vector>
-
 #include <weave/time.hpp>
 
 namespace shuttle {
@@ -53,42 +79,52 @@ class Broker;
 
 class Publication {
 public:
-  // 单个订阅者的失败记录
+  // Failure record for a single subscriber
   struct Failure {
-    std::string subscriber;    // 订阅者描述：C++ 侧 "cpp sub <id>"、SV 侧 "sv sid <id>"；
-                               // 触发器等待失败或投递被取消时是 "<trigger>" / "<delivery>"
-    std::exception_ptr error;  // 回调抛出的异常
+    std::string subscriber;    // subscriber description: "cpp sub <id>" on the C++ side,
+                               // "sv sid <id>" on the SV side; "<trigger>" / "<delivery>"
+                               // when the trigger wait failed or the delivery was cancelled
+    std::exception_ptr error;  // the exception thrown by the callback
   };
 
   Publication() = default;
 
   [[nodiscard]] bool valid() const { return static_cast<bool>(impl_); }
 
-  // 阻塞至全部订阅者回调完成；需 weave task 上下文（阻塞原语）。
+  // Block until all subscriber callbacks complete; requires a weave task
+  // context (a blocking primitive).
   void wait();
-  // 带超时的等待：true = 完成，false = 超时。
+  // Timed wait: true = completed, false = timed out.
   bool wait(weave::duration timeout);
 
-  [[nodiscard]] bool done() const;  // 全部订阅者回调已结束（含失败）
+  [[nodiscard]] bool done() const;  // all subscriber callbacks have finished (failures included)
 
-  // wait() + 若存在失败则重抛第一个失败（完成顺序）的异常
+  // wait() + rethrow the first failure (in completion order) if any
   void result();
 
-  // 本次发布的目标订阅者数量（发布瞬间的快照，含被 defer 的部分，不含被 skip 跳过的部分）
+  // Number of target subscribers for this publication (a snapshot taken at
+  // publish time, including the deferred part, excluding the skip-skipped part)
   [[nodiscard]] std::size_t subscriber_count() const;
-  // 已到达终态（delivered / retired / failed）的订阅者数量
-  // 完成态恒有 done() ≡ finished() == subscriber_count()（零目标的三种方式都立即完成）
+  // Number of subscribers that reached a terminal state (delivered / retired / failed)
+  // The completion invariant always holds: done() ≡ finished() == subscriber_count()
+  // (all three flavors complete immediately when there are zero targets)
   [[nodiscard]] std::size_t finished() const;
 
-  // ── 可见性：任何"本帧没能成功送到某订阅者"都必须是数字（三种方式同一套术语）──
-  // 被策略跳过、本帧不会投递给它们的订阅者数量：只有 `publish_now` 的 `skip` 会非零，
-  // `serial`/`concurrent` 恒为 0（`reject` 直接抛异常、不返回句柄，且该帧从未发布过）
+  // ── Visibility: every "this frame failed to reach a subscriber" must be a
+  //    number (same vocabulary across all three flavors) ──
+  // Subscribers skipped by policy, to whom this frame will not be delivered:
+  // only `skip` of `publish_now` makes this nonzero; `serial`/`concurrent`
+  // always return 0 (`reject` throws directly, returns no handle, and the
+  // frame was never published)
   [[nodiscard]] std::size_t skipped() const;
-  // 被推迟到后台串行链、稍后才投递的订阅者数量（publish_now 的 defer）；是标记，完成后不回零
+  // Subscribers whose delivery was deferred to the background serial chain
+  // (publish_now's defer); a flag — it does not return to zero after completion
   [[nodiscard]] std::size_t deferred() const;
-  // 本帧快照之后被退订、因而未进入回调的订阅者数量（计入 finished，以及 dropped 的 retired 分量）。
-  // 快照保证"谁被选中"，不保证"一定被调用"：退订即生效，不分语言。
-  // 这是终端计数，不是错误明细，不进 failures()
+  // Subscribers unsubscribed after this frame's snapshot and therefore never
+  // entered the callback (counted in finished and in the retired component of
+  // dropped). The snapshot guarantees "who was selected", not "will certainly
+  // be invoked": unsubscribe takes effect immediately, in both languages.
+  // This is a terminal count, not an error detail; it does not enter failures()
   [[nodiscard]] std::size_t retired() const;
 
   [[nodiscard]] std::vector<Failure> failures() const;
@@ -99,7 +135,8 @@ private:
 
   std::shared_ptr<Impl> impl_;
 
-  // broker 分发路径构造句柄（Broker 是 src/ 下的实现细节，这里只前向声明）
+  // Constructed by the broker dispatch paths (Broker is an implementation
+  // detail under src/; only forward-declared here)
   friend struct detail_pub_access;
   friend class detail::Broker;
 };

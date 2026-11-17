@@ -1,29 +1,34 @@
-// 跨语言往返自检（仅 svdpi 后端）：C++ → SV 与 SV → C++ 各自的发布/订阅互通。
+// Cross-language round-trip self-checks (svdpi backend only): C++ → SV and SV → C++
+// publish/subscribe interoperability.
 //
-// 与 tests/sv/shuttle_tests.sv 里的 xlang 段配合，握手顺序：
-//   1. SV 侧先建立 C++→SV 的订阅，再在 "xlang.sv_ready" 上发布一帧（retained）；
-//   2. C++ 侧订阅 "xlang.sv_ready"（retained 保证即便 SV 抢先发布也能收到），
-//      随后在 "xlang.cpp2sv" 上顺序发布 3 帧并等每帧完成 —— 完成即代表 SV 侧
-//      3 个回调都已执行完（`Publication` 的完成语义正是"全部订阅者回调结束"）；
-//   3. SV 侧确认收到 3 帧后，在 "xlang.sv2cpp" 上发布 3 帧；
-//   4. C++ 侧等待并校验这 3 帧（内容、type_tag、seq 单调）。
+// Paired with the xlang section of tests/sv/shuttle_tests.sv; the handshake order is:
+//   1. the SV side first subscribes for C++→SV, then publishes one frame on "xlang.sv_ready"
+//   (retained);
+//   2. the C++ side subscribes to "xlang.sv_ready" (retained guarantees delivery even if SV
+//   published first),
+//      then publishes 3 frames in order on "xlang.cpp2sv" and waits for each — completion means all
+//      3 SV-side callbacks have already finished (that is exactly the Publication completion
+//      semantics);
+//   3. once the SV side confirms the 3 frames, it publishes 3 frames on "xlang.sv2cpp";
+//   4. the C++ side waits for and validates these 3 frames (content, type_tag, monotonic seq).
 //
-// 两侧都完成自己的断言后，由 tests/sv/shuttle_tests.sv 的 run_cpp_tests 汇总判定。
+// After both sides finish their assertions, run_cpp_tests in tests/sv/shuttle_tests.sv renders the
+// verdict.
 
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <shuttle/shuttle.hpp>
 #include <string>
 #include <vector>
-
-#include <shuttle/shuttle.hpp>
 #include <weave/test.hpp>
 #include <weave/weave.hpp>
 
 #include "case_runner.hpp"
 
-// 只在 svdpi 后端的测试 target 里编译：这个文件直接调 SV 桥入口，systemc 后端没有它们。
-// 构建按目录选后端文件后不再有 SHUTTLE_BACKEND_* 宏，所以这里是**无条件**的。
+// Compiled only into the svdpi backend's test target: this file calls the SV bridge entries
+// directly, which do not exist under the systemc backend (no SHUTTLE_BACKEND_* macros — backends
+// are selected by directory).
 
 using namespace weave::literals;
 using shuttle_test::expect;
@@ -31,9 +36,9 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// 消息类型（SHUTTLE_REFLECT 必须在全局作用域使用）。
-// 与 tests/sv/shuttle_tests.sv 的 class XMsg 逐字节对等：
-//   {>>{addr, data}} —— 两个 32 位无符号，大端；tag 均为 "XMsg"。
+// Message type (SHUTTLE_REFLECT must be used at global scope).
+// Byte-for-byte counterpart of `class XMsg` in tests/sv/shuttle_tests.sv:
+//   {>>{addr, data}} — two unsigned 32-bit values, big-endian; both tags are "XMsg".
 struct XMsg {
   std::uint32_t addr = 0;
   std::uint32_t data = 0;
@@ -42,19 +47,20 @@ SHUTTLE_REFLECT(XMsg, addr, data)
 
 namespace {
 
-constexpr const char* kReadyTopic  = "xlang.sv_ready";  // SV → C++ 就绪广播（retained）
-constexpr const char* kToSvTopic   = "xlang.cpp2sv";    // C++ → SV
-constexpr const char* kFromSvTopic = "xlang.sv2cpp";    // SV → C++
+constexpr const char* kReadyTopic = "xlang.sv_ready";  // SV → C++ ready broadcast (retained)
+constexpr const char* kToSvTopic = "xlang.cpp2sv";     // C++ → SV
+constexpr const char* kFromSvTopic = "xlang.sv2cpp";   // SV → C++
 
-// 跨用例共享的状态（订阅句柄必须活到测试结束，故放在堆上的 holder 里）
+// State shared across cases (subscription handles must outlive the test, so they live in a heap
+// holder)
 struct XlangState {
-  shuttle::Subscription    ready;    // retained 就绪帧
-  shuttle::Subscription    from_sv;  // SV → C++
-  weave::Event             ready_ev;
-  std::vector<XMsg>        got;
+  shuttle::Subscription ready;    // retained ready frame
+  shuttle::Subscription from_sv;  // SV → C++
+  weave::Event ready_ev;
+  std::vector<XMsg> got;
   std::vector<std::uint64_t> seqs;
-  std::vector<std::string>  tags;
-  std::size_t              ready_frames = 0;
+  std::vector<std::string> tags;
+  std::size_t ready_frames = 0;
 };
 
 }  // namespace
@@ -62,62 +68,66 @@ struct XlangState {
 WEAVE_TEST(xlang_tests) {
   auto st = std::make_shared<XlangState>();
 
-  // case1：等待 SV 侧就绪（订阅 "xlang.sv_ready"；retained 语义保证不丢）
+  // case1: wait for the SV-side ready signal (subscribing to "xlang.sv_ready"; retained semantics
+  // guarantee no loss)
   run_case(__func__, "case1", [st] {
     st->ready = shuttle::subscribe_bytes(
-        kReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
+        kReadyTopic,
+        [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
           ++st->ready_frames;
-          // 就绪帧与业务帧同一套线格式：两个 32 位
-          expect(bytes.size() == 8, "就绪帧线长应为 8 字节");
-          expect(meta.type_tag == "XMsg", "就绪帧的类型标签来自 SV 的 class XMsg");
+          // the ready frame shares the business-frame wire format: two 32-bit values
+          expect(bytes.size() == 8, "the ready frame wire length should be 8 bytes");
+          expect(meta.type_tag == "XMsg", "the ready frame type tag comes from the SV class XMsg");
           st->ready_ev.set();
-        }, shuttle::Capability::blocking);
+        },
+        shuttle::Capability::blocking);
 
     for (int i = 0; i < 200 && !st->ready_ev.is_set(); ++i) weave::sleep(100_us);
-    expect(st->ready_ev.is_set(), "等不到 SV 侧就绪广播（xlang.sv_ready）");
-    expect_eq(static_cast<long long>(st->ready_frames), 1, "就绪帧恰好一帧");
+    expect(st->ready_ev.is_set(), "never saw the SV-side ready broadcast (xlang.sv_ready)");
+    expect_eq(static_cast<long long>(st->ready_frames), 1, "exactly one ready frame");
   });
 
-  // case2：C++ → SV —— 顺序发布 3 帧，逐帧等到"SV 侧回调结束"
+  // case2: C++ → SV — publish 3 frames in order, waiting for each "all SV-side callbacks finished"
   run_case(__func__, "case2", [st] {
-    // 先建好订阅：SV 收到 3 帧后才会回发，但句柄要在本测试内一直活着
-    st->from_sv = shuttle::subscribe<XMsg>(kFromSvTopic, [st](const XMsg& m,
-                                                             const shuttle::Meta& meta) {
-      st->got.push_back(m);
-      st->seqs.push_back(meta.seq);
-      st->tags.push_back(meta.type_tag);
-    });
+    // subscribe first: the SV side sends back only after receiving the 3 frames, and the handle
+    // must stay alive for the whole test
+    st->from_sv =
+        shuttle::subscribe<XMsg>(kFromSvTopic, [st](const XMsg& m, const shuttle::Meta& meta) {
+          st->got.push_back(m);
+          st->seqs.push_back(meta.seq);
+          st->tags.push_back(meta.type_tag);
+        });
 
     shuttle::Publisher<XMsg> pub(kToSvTopic);
     for (std::uint32_t i = 1; i <= 3; ++i) {
       auto h = pub.publish_serial(XMsg{i, i * 0x100});
-      expect_eq(static_cast<long long>(h.subscriber_count()), 1, "SV 侧应有 1 个阻塞订阅者");
+      expect_eq(static_cast<long long>(h.subscriber_count()), 1,
+                "the SV side should have 1 blocking subscriber");
       h.wait();
-      expect(h.done(), "发布完成后句柄应处于完成态");
-      expect(h.failures().empty(), "SV 侧回调不应失败");
+      expect(h.done(), "the handle should be complete after the publish finishes");
+      expect(h.failures().empty(), "the SV-side callbacks should not fail");
     }
     auto info = shuttle::broker::topic_info(kToSvTopic);
-    expect(info.has_value(), "topic 应已登记");
-    expect_eq(static_cast<long long>(info->published), 3, "累计发布 3 帧");
-    expect_eq(static_cast<long long>(info->delivered), 3, "累计投递 3 次");
+    expect(info.has_value(), "the topic should be registered");
+    expect_eq(static_cast<long long>(info->published), 3, "3 frames published in total");
+    expect_eq(static_cast<long long>(info->delivered), 3, "3 deliveries in total");
   });
 
-  // case3：SV → C++ —— 校验回发的 3 帧（内容、类型标签、seq 单调）
+  // case3: SV → C++ — validate the 3 frames sent back (content, type tag, monotonic seq)
   run_case(__func__, "case3", [st] {
     for (int i = 0; i < 200 && st->got.size() < 3; ++i) weave::sleep(100_us);
-    expect_eq(static_cast<long long>(st->got.size()), 3, "SV → C++ 应收到 3 帧");
+    expect_eq(static_cast<long long>(st->got.size()), 3, "3 frames should be received SV → C++");
 
     for (std::size_t i = 0; i < st->got.size(); ++i) {
       expect_eq(static_cast<long long>(st->got[i].addr), static_cast<long long>(0x51 + i),
-                "addr 字段跨语言一致");
+                "the addr field is consistent across languages");
       expect_eq(static_cast<long long>(st->got[i].data), static_cast<long long>(0xA0 + i),
-                "data 字段跨语言一致");
-      expect(st->tags[i] == "XMsg", "type_tag 为 SV 侧声明的 XMsg");
+                "the data field is consistent across languages");
+      expect(st->tags[i] == "XMsg", "type_tag is the XMsg declared on the SV side");
     }
     expect(st->seqs[0] < st->seqs[1] && st->seqs[1] < st->seqs[2],
-           "SV 侧发布的 seq 在 topic 内单调递增");
+           "the seq published from the SV side is monotonically increasing within the topic");
   });
 
   report(__func__);
 }
-

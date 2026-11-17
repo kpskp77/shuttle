@@ -1,5 +1,6 @@
-// Subscription 句柄与 detail::sub_typed/sub_raw。
-// 句柄 Impl 只在本 TU 定义；最后一次析构与显式 unsubscribe 共用 Broker::remove_sub。
+// Subscription handle and detail::sub_typed/sub_raw.
+// The handle Impl is defined only in this TU; the last destructor and the
+// explicit unsubscribe both go through Broker::remove_sub.
 
 #include <cstdint>
 #include <memory>
@@ -31,7 +32,8 @@ Subscription sub_typed(std::string pattern, const TypeOps* ops, ErasedCallback c
                        SubOptions opts) {
   (void)opts;
   Broker& b = Broker::get();
-  // 精确 topic 的 typed 订阅同时声明类型；通配符绑定推迟到字节帧发布时。
+  // A typed subscription to a concrete topic also declares the type; wildcard
+  // binding is deferred until a byte frame is published.
   if (ops && !Broker::has_wildcard(pattern)) topic_declare(pattern, ops);
   const auto sub = b.register_sub(std::move(pattern), SubKind::typed, cap, ops ? ops->tag : "", ops,
                                   std::move(cb), {}, 0);

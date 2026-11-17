@@ -1,10 +1,10 @@
--- 用户侧 API 示范（examples/）。构建方式与真实用户一致：只编译 examples/cpp 下的源文件，
--- 只使用 include/shuttle 的公开头文件，经 add_deps("shuttle") 链接 libshuttle.so
--- （间接带入 libweave.so），不内联任何内部源文件。
+-- User-side API demos (examples/). Built exactly like a real user: only the sources under
+-- examples/cpp are compiled, only the public headers in include/shuttle are used, and
+-- libshuttle.so is linked via add_deps("shuttle") (which brings in libweave.so);
 --
---   shuttle_examples_sc    systemc → 可执行文件，本地运行（入口 cpp/sc_main.cpp）
---   shuttle_examples_svdpi svdpi   → 共享库，随仿真器经 -sv_lib 加载，
---                                    由 sv/shuttle_demo.sv 中的 weave_run 启动
+--   shuttle_examples_sc    systemc → executable, run locally (entry cpp/sc_main.cpp)
+--   shuttle_examples_svdpi svdpi   → shared library, loaded by the simulator via -sv_lib,
+--                                    started by weave_run in sv/shuttle_demo.sv
 
 target("shuttle_examples_sc", function()
   set_kind("binary")

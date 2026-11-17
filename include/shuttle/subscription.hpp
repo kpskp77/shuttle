@@ -1,53 +1,74 @@
 #pragma once
 
-// Subscription：订阅句柄（共享语义，拷贝指向同一订阅，最后一份析构时自动退订）。
+// Subscription: subscription handle (shared semantics — copies refer to the
+// same subscription; the last handle's destructor unsubscribes automatically).
 //
-// subscribe<T> 的两个重载各声明一条互斥的入口（一次注册只有一条）：
-//   subscribe<T>(topic, cb)      —— blocking 入口（SV 侧 export task，可消耗仿真时间）：
-//                                  `serial`/`concurrent` 的投递单元与 `publish_now` 的 defer 段调它
-//   subscribe<T>(topic, nb(cb))  —— nonblocking 入口（SV 侧 export function，零延时）：
-//                                  `publish_now` 在发布者栈内同步调它，`serial`/`concurrent` 也用它
-// 同一对象要两条入口就注册两次（两个独立订阅者、两个句柄各自退订）。
+// The two overloads of subscribe<T> each declare one mutually exclusive entry
+// (one registration = one entry):
+//   subscribe<T>(topic, cb)      — blocking entry (SV export task, may consume
+//                                  simulation time): invoked by the delivery
+//                                  units of `serial`/`concurrent` and by the
+//                                  deferred section of `publish_now`
+//   subscribe<T>(topic, nb(cb))  — nonblocking entry (SV export function, zero
+//                                  delay): invoked synchronously on the
+//                                  publisher's stack by `publish_now`, and
+//                                  also by `serial`/`concurrent`
+// To have both entries on the same object, register twice (two independent
+// subscribers, two handles, each unsubscribed separately).
 //
-// topic 模式支持通配符："uart0.*" 匹配单级；"uart0.>" 匹配其后至少一级（不匹配 "uart0" 本身）。
-// 每段要么是普通段，要么是独占一段的 "*"，要么是独占一段且必须为末段的 ">"；空段、空串、
-// "a.>.b"、"a.rx*" 都抛 TopicPatternError（发布/声明/retained 的名字则完全不许含通配符）。
-// 同一 topic 允许多个订阅者（多对多）；多个订阅者各自独立接收每个发布帧。
+// Topic patterns support wildcards: "uart0.*" matches a single level;
+// "uart0.>" matches at least one further level (does not match "uart0"
+// itself). Each level is either a plain level, a "*" occupying a whole
+// level, or a ">" occupying a whole level and only allowed as the last one;
+// empty levels, the empty string, "a.>.b", and "a.rx*" all throw
+// TopicPatternError (names used for publish/declare/retained must not contain
+// wildcards at all). A topic may have multiple subscribers (many-to-many);
+// each subscriber independently receives every published frame.
 
 #include <cstdint>
 #include <memory>
-#include <string>
-#include <type_traits>
-#include <utility>
-
 #include <shuttle/detail/abi.hpp>
 #include <shuttle/meta.hpp>
 #include <shuttle/types.hpp>
+#include <string>
+#include <type_traits>
+#include <utility>
 
 namespace shuttle {
 
 class Subscription {
 public:
   Subscription() = default;
-  // 共享语义：拷贝/移动不复制底层订阅；最后一份句柄析构时自动 unsubscribe()
+  // Shared semantics: copy/move do not duplicate the underlying subscription;
+  // when the last handle is destroyed, unsubscribe() runs automatically
   ~Subscription();
 
-  [[nodiscard]] bool valid() const { return static_cast<bool>(impl_); }  // 其余成员函数都要求它
+  [[nodiscard]] bool valid() const {
+    return static_cast<bool>(impl_);
+  }  // all other member functions require this
 
-  // 显式退订（幂等）；退订后不再收到新的投递（已按快照开始/已排队的投递仍会完成）
-  // 注意：退订不使句柄失效——valid() 仍为 true，received()/dropped() 仍可读，
-  // 便于测试与诊断在退订之后复核计数。
+  // Explicit unsubscribe (idempotent); no new deliveries after unsubscribing
+  // (deliveries already started / already queued from a snapshot still run to
+  // completion). Note: unsubscribing does NOT invalidate the handle — valid()
+  // stays true and received()/dropped() remain readable, so tests and
+  // diagnostics can re-check the counters after unsubscribing.
   void unsubscribe();
 
-  [[nodiscard]] const std::string& topic() const;       // 订阅的 topic（含通配符原样）
+  [[nodiscard]] const std::string& topic()
+      const;  // the subscribed topic (wildcards preserved verbatim)
   [[nodiscard]] Capability capability() const;
 
-  // 诊断计数（口径：received + dropped == 本帧名字∩类型命中它的次数）
-  [[nodiscard]] std::uint64_t received() const;  // 已投递帧数
-  // 没有成功投递的帧数 = 快照后被退订 + 被策略 skip + 失败，三者之和
-  // （细分项不在本句柄上，读 broker::topic_info() 的三个字段）。判据是"没有以成功回调收尾"，
-  // 不是"回调没跑"——失败的那一类回调是进去了的（拿到内容后抛出）。注意它**含**被 skip 的帧：
-  // 帧级 subscriber_count() 不数它们，订阅者级 dropped 数它们——"我没成功收到"必须可观测。
+  // Diagnostic counters (invariant: received + dropped == number of frames
+  // whose name∩type matched this subscription)
+  [[nodiscard]] std::uint64_t received() const;  // frames successfully delivered
+  // Frames not successfully delivered = unsubscribed-after-snapshot +
+  // skipped-by-policy + failed, the sum of the three (the breakdown is not on
+  // this handle; read the three fields of broker::topic_info()). The criterion
+  // is "did not end with a successful callback", not "the callback never
+  // ran" — the failed kind did enter the callback (and threw after receiving
+  // the content). Note this **includes** skipped frames: frame-level
+  // subscriber_count() does not count them, while subscriber-level dropped
+  // does — "I failed to receive" must be observable.
   [[nodiscard]] std::uint64_t dropped() const;
 
 private:
@@ -56,17 +77,17 @@ private:
 
   std::shared_ptr<Impl> impl_;
 
-  friend Subscription detail::sub_typed(std::string, const detail::TypeOps*,
-                                              detail::ErasedCallback, Capability, SubOptions);
+  friend Subscription detail::sub_typed(std::string, const detail::TypeOps*, detail::ErasedCallback,
+                                        Capability, SubOptions);
   friend Subscription detail::sub_raw(std::string, ByteCallback, Capability, SubOptions);
 };
 
-// ── 类型化订阅 ───────────────────────────────────────────────────────────
-// 回调签名：void(const T&, const Meta&)
+// ── Typed subscription ──────────────────────────────────────────────────
+// Callback signature: void(const T&, const Meta&)
 template <typename T, typename F>
 Subscription subscribe(std::string topic, F&& cb, SubOptions opts = {}) {
   static_assert(std::is_invocable_v<F&, const T&, const Meta&>,
-                "shuttle: 回调签名应为 void(const T&, const shuttle::Meta&)");
+                "shuttle: callback signature should be void(const T&, const shuttle::Meta&)");
   return detail::sub_typed(
       std::move(topic), detail::type_ops<T>(),
       [fn = std::forward<F>(cb)](const void* p, const Meta& m) mutable {
@@ -75,11 +96,12 @@ Subscription subscribe(std::string topic, F&& cb, SubOptions opts = {}) {
       Capability::blocking, std::move(opts));
 }
 
-// 不可阻塞能力（`publish_now`）：契约由用户保证回调零阻塞，见 types.hpp nb() 的说明
+// Nonblocking capability (`publish_now`): the user guarantees the callback
+// never blocks; see the nb() notes in types.hpp
 template <typename T, typename F>
 Subscription subscribe(std::string topic, NonBlocking<F> cb, SubOptions opts = {}) {
   static_assert(std::is_invocable_v<F&, const T&, const Meta&>,
-                "shuttle: 回调签名应为 void(const T&, const shuttle::Meta&)");
+                "shuttle: callback signature should be void(const T&, const shuttle::Meta&)");
   return detail::sub_typed(
       std::move(topic), detail::type_ops<T>(),
       [fn = std::move(cb.fn)](const void* p, const Meta& m) mutable {
@@ -88,8 +110,9 @@ Subscription subscribe(std::string topic, NonBlocking<F> cb, SubOptions opts = {
       Capability::nonblocking, std::move(opts));
 }
 
-// ── 原始字节订阅 ─────────────────────────────────────────────────────────
-// 直接消费线上字节流：用于调试/透传，或订阅来自 SV 且 C++ 侧未注册类型的 topic。
+// ── Raw-byte subscription ───────────────────────────────────────────────
+// Consume the on-the-wire byte stream directly: for debugging / pass-through,
+// or for topics published from SV whose type is not registered on the C++ side.
 inline Subscription subscribe_bytes(std::string topic, ByteCallback cb,
                                     Capability cap = Capability::blocking, SubOptions opts = {}) {
   return detail::sub_raw(std::move(topic), std::move(cb), cap, std::move(opts));

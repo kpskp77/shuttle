@@ -1,6 +1,7 @@
 #pragma once
 
-// broker 内省接口：调试与统计查询（不影响投递路径，只读快照）。
+// Broker introspection interface: debugging and statistics queries (read-only
+// snapshots; they do not affect the delivery path).
 
 #include <cstddef>
 #include <cstdint>
@@ -13,23 +14,26 @@ namespace shuttle::broker {
 
 struct TopicInfo {
   std::string name;
-  std::string type_tag;  // 类型标签；空 = 尚无类型绑定（仅有通配符订阅）
-  // 名字匹配的订阅者数量（不判类型：同一个 topic 目录下可能有多种类型）
+  std::string type_tag;  // type tag; empty = no type binding yet (wildcard subscribers only)
+  // number of subscribers whose name matches (type not considered: one topic
+  // entry may serve multiple types)
   std::size_t subscriber_count;
-  bool retained;            // 是否开启 retained
-  std::uint64_t published;  // 累计发布帧数
-  std::uint64_t delivered;  // 累计投递次数（所有订阅者合计）
-  std::uint64_t dropped;    // 累计未成功投递次数（按订阅者计）= retired + skipped + failed
-  std::uint64_t retired;    // 其中：快照后被退订
-  std::uint64_t skipped;    // 其中：被 NowPolicy::skip 策略跳过
-  std::uint64_t failed;     // 其中：回调抛异常 / 投递被取消 / 投递单元级失败
-  std::uint64_t deferred;   // 累计被 defer 到后台串行链的投递数
+  bool retained;            // whether retained is enabled
+  std::uint64_t published;  // cumulative published frames
+  std::uint64_t delivered;  // cumulative deliveries (summed over all subscribers)
+  std::uint64_t dropped;    // cumulative unsuccessful deliveries (retired + skipped + failed)
+  std::uint64_t retired;    // of which: unsubscribed after the snapshot
+  std::uint64_t skipped;    // of which: skipped by the NowPolicy::skip policy
+  std::uint64_t failed;     // of which: callback threw / delivery cancelled /
+                            // delivery-unit-level failure
+  std::uint64_t deferred;   // cumulative deliveries deferred to the background serial chain
 };
 
-// 已发布过至少一帧的 topic（只有订阅、从未发布过的 topic 不在此列）
+// Topics that have published at least one frame (topics with subscribers but
+// zero publications are not listed)
 std::vector<std::string> topics();
 
-// 单个 topic 的信息；不存在返回 std::nullopt
+// Info for a single topic; returns std::nullopt if it does not exist
 std::optional<TopicInfo> topic_info(std::string_view name);
 
 }  // namespace shuttle::broker

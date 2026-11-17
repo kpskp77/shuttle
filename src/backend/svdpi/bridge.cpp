@@ -1,24 +1,27 @@
-// svdpi 后端：`detail::backend` 的实现（broker 认识的唯一接口面）。
+// svdpi backend: implementation of `detail::backend` (the only interface face
+// the broker knows).
 //
-// 帧的载荷不走 DPI 参数：C++ 调用 export 前把当前帧字节流放进进程级上下文
-// （FrameContext），SV 侧在 export 体内经 shuttle_c_frame_len / _qword 标量 import
-// 分块拉取。DPI-C 导出面（shuttle_c_*）在 dpi.cpp。
+// Frame payloads do not go through DPI arguments: before C++ calls the export,
+// it puts the current frame's byte stream into the process-level context
+// (FrameContext), and the SV side pulls it in chunks inside the export body
+// via the scalar imports shuttle_c_frame_len / _qword. The DPI-C export
+// surface (shuttle_c_*) lives in dpi.cpp.
+
+#include <svdpi.h>
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-#include <svdpi.h>
-
 #include "backend/backend.hpp"
 #include "svdpi_internal.hpp"
 
-// ── SV 侧 export 的 C 原型（定义在 shuttle_pkg.sv）────────────────────────
+// ── C prototypes of the SV-side exports (defined in shuttle_pkg.sv) ──────
 extern "C" {
-void shuttle_sv_dispatch(int sv_sid, const char* topic, const char* type_tag,
-                         long long seq, long long time_fs);
-void shuttle_sv_dispatch_nb(int sv_sid, const char* topic, const char* type_tag,
-                            long long seq, long long time_fs);
+void shuttle_sv_dispatch(int sv_sid, const char* topic, const char* type_tag, long long seq,
+                         long long time_fs);
+void shuttle_sv_dispatch_nb(int sv_sid, const char* topic, const char* type_tag, long long seq,
+                            long long time_fs);
 long long shuttle_sv_time_fs();
 }
 
@@ -27,16 +30,19 @@ namespace backend {
 
 namespace {
 
-// 本次 dispatch 期间 SV 注册表是否回告了"目标已退订"（见 dpi.cpp 的
-// shuttle_c_sub_retired）。单活跃进程保证无需原子操作。
+// Whether the SV registry reported "target already unsubscribed" during this
+// dispatch (see shuttle_c_sub_retired in dpi.cpp). The single-active-process
+// guarantee makes atomics unnecessary.
 bool g_retired_hit = false;
 
 }  // namespace
 
-bool available() { return true; }
+bool available() {
+  return true;
+}
 
-void dispatch(int handle, const std::string& topic, const std::string& type_tag,
-              std::uint64_t seq, std::int64_t time_fs, const std::vector<std::byte>& payload) {
+void dispatch(int handle, const std::string& topic, const std::string& type_tag, std::uint64_t seq,
+              std::int64_t time_fs, const std::vector<std::byte>& payload) {
   SvScopeGuard scope;
   FrameContext ctx(payload);
   g_retired_hit = false;
@@ -45,8 +51,7 @@ void dispatch(int handle, const std::string& topic, const std::string& type_tag,
 }
 
 void dispatch_nb(int handle, const std::string& topic, const std::string& type_tag,
-                 std::uint64_t seq, std::int64_t time_fs,
-                 const std::vector<std::byte>& payload) {
+                 std::uint64_t seq, std::int64_t time_fs, const std::vector<std::byte>& payload) {
   SvScopeGuard scope;
   FrameContext ctx(payload);
   g_retired_hit = false;
@@ -54,7 +59,9 @@ void dispatch_nb(int handle, const std::string& topic, const std::string& type_t
                          static_cast<long long>(time_fs));
 }
 
-void note_retired_delivery() { g_retired_hit = true; }
+void note_retired_delivery() {
+  g_retired_hit = true;
+}
 
 bool take_retired_delivery() {
   const bool hit = g_retired_hit;
@@ -67,7 +74,9 @@ std::int64_t now_fs() {
   return static_cast<std::int64_t>(shuttle_sv_time_fs());
 }
 
-int frame_len() { return g_frame ? static_cast<int>(g_frame->size()) : 0; }
+int frame_len() {
+  return g_frame ? static_cast<int>(g_frame->size()) : 0;
+}
 
 std::uint64_t frame_qword(int index) {
   if (!g_frame) return 0;

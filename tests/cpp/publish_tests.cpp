@@ -1,16 +1,16 @@
-// 三种发布方式的行为自检：
-//   `publish_now()`         —— 发布者栈内同步回调 nonblocking 入口，全程不挂起
-//   `publish_serial()`      —— 每 topic 一个后台 weave task 顺序回调，per-topic FIFO
-//   `publish_concurrent()`  —— 每个订阅者一个后台 weave task 并发回调，无顺序承诺
-// 以及它们的等待语义（wait / wait(timeout) / done / result / failures）。
+// Behavior self-checks of the three publish flavors:
+//   `publish_now()`         — synchronous callbacks to nonblocking entries on the publisher's
+//   stack; never suspends `publish_serial()`      — one background weave task per topic, in-order
+//   callbacks, per-topic FIFO `publish_concurrent()`  — one background weave task per subscriber,
+//   concurrent callbacks, no ordering promised
+// plus their waiting semantics (wait / wait(timeout) / done / result / failures).
 
 #include <cstdint>
 #include <memory>
+#include <shuttle/shuttle.hpp>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#include <shuttle/shuttle.hpp>
 #include <weave/test.hpp>
 #include <weave/weave.hpp>
 
@@ -22,79 +22,91 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── 消息类型（publish_tests 专用）：SHUTTLE_REFLECT 必须在全局作用域使用；
-// 类型名即跨语言 type_tag，各测试文件用互不相同的名字避免 ODR 冲突。
+// ── Message types (private to publish_tests): SHUTTLE_REFLECT must be used at global scope;
+// the type name is the cross-language type_tag, so each test file uses distinct names to avoid ODR
+// conflicts.
 struct PubMsg {
   std::uint32_t v = 0;
 };
 SHUTTLE_REFLECT(PubMsg, v)
 
-// 另一种类型，用于验证"类型不进目标集"（type_tag 不同则不是本帧的目标）
+// Another type, used to verify "type not in the target set" (a different type_tag is not a target
+// of this frame)
 struct PubMsgOther {
   std::uint32_t v = 0;
 };
 SHUTTLE_REFLECT(PubMsgOther, v)
 
 WEAVE_TEST(publish_tests) {
-  // case1：`publish_now` 同步 —— nb 回调在 publish_now 返回前就已执行（发布者全程不挂起）
+  // case1: `publish_now` is synchronous — the nb callback has already run before publish_now
+  // returns (the publisher never suspends)
   run_case(__func__, "case1", [] {
     shuttle::Publisher<PubMsg> pub("pub.now.sync");
     std::vector<std::uint32_t> order;
-    auto s1 = shuttle::subscribe<PubMsg>("pub.now.sync", shuttle::nb(
-        [&](const PubMsg& m, const shuttle::Meta&) { order.push_back(m.v + 100); }));
-    auto s2 = shuttle::subscribe<PubMsg>("pub.now.sync", shuttle::nb(
-        [&](const PubMsg& m, const shuttle::Meta&) { order.push_back(m.v + 200); }));
+    auto s1 = shuttle::subscribe<PubMsg>(
+        "pub.now.sync",
+        shuttle::nb([&](const PubMsg& m, const shuttle::Meta&) { order.push_back(m.v + 100); }));
+    auto s2 = shuttle::subscribe<PubMsg>(
+        "pub.now.sync",
+        shuttle::nb([&](const PubMsg& m, const shuttle::Meta&) { order.push_back(m.v + 200); }));
 
     pub.publish_now(PubMsg{1});
-    expect_eq(static_cast<long long>(order.size()), 2, "publish_now 返回时回调已全部执行完毕");
-    expect(order[0] == 101 && order[1] == 201, "按订阅顺序同步回调");
+    expect_eq(static_cast<long long>(order.size()), 2,
+              "all callbacks finished by the time publish_now returns");
+    expect(order[0] == 101 && order[1] == 201, "synchronous callbacks in subscription order");
   });
 
-  // case2：默认策略 = defer —— 入口为 blocking 的订阅者转后台串行链，发布者不被挂起
+  // case2: default policy = defer — blocking-entry subscribers move to the background serial chain;
+  // the publisher is not suspended
   run_case(__func__, "case2", [] {
     shuttle::Publisher<PubMsg> pub("pub.now.blk");
     std::size_t blocking_frames = 0;
-    auto s = shuttle::subscribe<PubMsg>("pub.now.blk", [&](const PubMsg&, const shuttle::Meta&) {
-      ++blocking_frames;
-    });
+    auto s = shuttle::subscribe<PubMsg>(
+        "pub.now.blk", [&](const PubMsg&, const shuttle::Meta&) { ++blocking_frames; });
 
-    auto h = pub.publish_now(PubMsg{1});  // 不抛异常
-    expect(h.valid(), "默认策略返回句柄");
-    expect_eq(static_cast<long long>(h.deferred()), 1, "仅 blocking 入口的订阅者被 defer");
-    expect_eq(static_cast<long long>(blocking_frames), 0, "defer 不阻塞发布者");
+    auto h = pub.publish_now(PubMsg{1});  // does not throw
+    expect(h.valid(), "the default policy returns a handle");
+    expect_eq(static_cast<long long>(h.deferred()), 1,
+              "only the blocking-entry subscriber is deferred");
+    expect_eq(static_cast<long long>(blocking_frames), 0, "defer does not block the publisher");
     h.wait();
-    expect_eq(static_cast<long long>(blocking_frames), 1, "让出控制权后收到帧");
-    expect(h.done(), "deferred 完成后句柄完成");
+    expect_eq(static_cast<long long>(blocking_frames), 1,
+              "the frame arrives after control is yielded");
+    expect(h.done(), "the handle completes once the deferred part finishes");
   });
 
-  // case3：skip 策略 —— 跳过仅有 blocking 入口的订阅者，不抛异常且计数可见
+  // case3: skip policy — subscribers with only a blocking entry are skipped, no exception, and the
+  // skip is countable
   run_case(__func__, "case3", [] {
     shuttle::Publisher<PubMsg> pub("pub.now.skip");
     std::size_t blocking_frames = 0;
-    auto s = shuttle::subscribe<PubMsg>("pub.now.skip", [&](const PubMsg&, const shuttle::Meta&) {
-      ++blocking_frames;
-    });
+    auto s = shuttle::subscribe<PubMsg>(
+        "pub.now.skip", [&](const PubMsg&, const shuttle::Meta&) { ++blocking_frames; });
     std::size_t nb_frames = 0;
-    auto n = shuttle::subscribe<PubMsg>("pub.now.skip", shuttle::nb(
-        [&](const PubMsg&, const shuttle::Meta&) { ++nb_frames; }));
+    auto n = shuttle::subscribe<PubMsg>(
+        "pub.now.skip", shuttle::nb([&](const PubMsg&, const shuttle::Meta&) { ++nb_frames; }));
 
     auto h = pub.publish_now(PubMsg{1}, shuttle::NowPolicy::skip);
-    expect_eq(static_cast<long long>(blocking_frames), 0, "skip 跳过仅有 blocking 入口的订阅者");
-    expect_eq(static_cast<long long>(nb_frames), 1, "nonblocking 入口的订阅者照常投递");
-    expect_eq(static_cast<long long>(h.skipped()), 1, "skip 计入 skipped");
-    // 被策略摘掉的目标在帧级不算目标（不进 subscriber_count），但在订阅者级必须可数：
-    // dropped 的三个分量里 skipped 就是它。两个口径的差异写在 publication.hpp 头部。
-    expect_eq(static_cast<long long>(s.dropped()), 1, "被跳过的目标计入该订阅者的 dropped（skipped 分量）");
-    expect_eq(static_cast<long long>(n.dropped()), 0, "被投递的订阅者没有 dropped");
+    expect_eq(static_cast<long long>(blocking_frames), 0,
+              "skip skips subscribers with only a blocking entry");
+    expect_eq(static_cast<long long>(nb_frames), 1,
+              "the nonblocking-entry subscriber is still delivered");
+    expect_eq(static_cast<long long>(h.skipped()), 1, "skip counts into skipped");
+    // A target removed by policy is not a frame-level target (not in subscriber_count), but must be
+    // countable at subscriber level: skipped is one of the three dropped components. The
+    // difference between the two views is written at the top of publication.hpp.
+    expect_eq(static_cast<long long>(s.dropped()), 1,
+              "a skipped target counts into that subscriber dropped (skipped component)");
+    expect_eq(static_cast<long long>(n.dropped()), 0, "a delivered subscriber has no dropped");
   });
 
-  // case4：reject / defer —— reject 报错且不部分投递；defer 不阻塞发布者
+  // case4: reject / defer — reject errors and delivers partially to no one; defer does not block
+  // the publisher
   run_case(__func__, "case4", [] {
     shuttle::Publisher<PubMsg> pub("pub.now.defer");
     std::size_t frames = 0;
-    auto s = shuttle::subscribe<PubMsg>("pub.now.defer", [&](const PubMsg&, const shuttle::Meta&) {
-      ++frames;
-    });
+    auto s = shuttle::subscribe<PubMsg>("pub.now.defer",
+                                        [&](const PubMsg&, const shuttle::Meta&) { ++frames; });
 
     bool threw = false;
     try {
@@ -102,25 +114,27 @@ WEAVE_TEST(publish_tests) {
     } catch (const shuttle::CapabilityError&) {
       threw = true;
     }
-    expect(threw, "reject 策略需报错，而不是静默丢帧");
-    expect_eq(static_cast<long long>(frames), 0, "报错时不得部分投递");
+    expect(threw, "the reject policy must error instead of silently dropping the frame");
+    expect_eq(static_cast<long long>(frames), 0, "no partial delivery on error");
 
     pub.publish_now(PubMsg{1}, shuttle::NowPolicy::defer);
-    expect_eq(static_cast<long long>(frames), 0, "defer 不阻塞发布者");
+    expect_eq(static_cast<long long>(frames), 0, "defer does not block the publisher");
     for (int i = 0; i < 50 && frames == 0; ++i) weave::sleep(100_us);
-    expect_eq(static_cast<long long>(frames), 1, "让出控制权后订阅者收到帧");
+    expect_eq(static_cast<long long>(frames), 1,
+              "the subscriber receives the frame after control is yielded");
   });
 
-  // case5：`publish_serial` per-topic FIFO —— 连续三帧按发布顺序到达
+  // case5: `publish_serial` per-topic FIFO — three consecutive frames arrive in publish order
   run_case(__func__, "case5", [] {
     shuttle::Publisher<PubMsg> pub("pub.seq.fifo");
     std::vector<std::uint32_t> seen;
     std::vector<std::uint64_t> seqs;
-    auto s = shuttle::subscribe<PubMsg>("pub.seq.fifo", [&](const PubMsg& m, const shuttle::Meta& meta) {
-      seen.push_back(m.v);
-      seqs.push_back(meta.seq);
-      weave::sleep(50_us);  // 故意放慢：不改变顺序承诺
-    });
+    auto s =
+        shuttle::subscribe<PubMsg>("pub.seq.fifo", [&](const PubMsg& m, const shuttle::Meta& meta) {
+          seen.push_back(m.v);
+          seqs.push_back(meta.seq);
+          weave::sleep(50_us);  // deliberately slow: does not change the ordering guarantee
+        });
 
     pub.publish_serial(PubMsg{1});
     pub.publish_serial(PubMsg{2});
@@ -128,62 +142,70 @@ WEAVE_TEST(publish_tests) {
     auto last = pub.publish_serial(PubMsg{4});
     last.wait();
 
-    expect_eq(static_cast<long long>(seen.size()), 4, "四帧全部到达");
+    expect_eq(static_cast<long long>(seen.size()), 4, "all four frames arrived");
     for (std::uint32_t i = 0; i < 4; ++i) {
-      expect_eq(static_cast<long long>(seen.at(i)), i + 1, "publish_serial 保 topic 级 FIFO");
+      expect_eq(static_cast<long long>(seen.at(i)), i + 1, "publish_serial keeps topic-level FIFO");
     }
-    expect(seqs[0] < seqs[1] && seqs[1] < seqs[2] && seqs[2] < seqs[3], "seq 与投递顺序一致");
+    expect(seqs[0] < seqs[1] && seqs[1] < seqs[2] && seqs[2] < seqs[3],
+           "seq consistent with delivery order");
   });
 
-  // case6：`publish_serial` 快照语义 —— 发布之后新增的订阅者不参与本次发布
+  // case6: `publish_serial` snapshot semantics — subscribers added after the publish call do not
+  // join this publication
   run_case(__func__, "case6", [] {
     shuttle::Publisher<PubMsg> pub("pub.seq.snap");
     std::size_t first = 0;
     auto s1 = shuttle::subscribe<PubMsg>("pub.seq.snap", [&](const PubMsg&, const shuttle::Meta&) {
       ++first;
-      weave::sleep(200_us);  // 撑开窗口：让新订阅者在投递过程中注册
+      weave::sleep(200_us);  // widen the window: let the new subscriber register mid-delivery
     });
 
     auto h = pub.publish_serial(PubMsg{1});
-    expect_eq(static_cast<long long>(h.subscriber_count()), 1, "快照在发布瞬间锁定");
+    expect_eq(static_cast<long long>(h.subscriber_count()), 1,
+              "the snapshot is locked at publish time");
 
     std::size_t late = 0;
-    auto s2 = shuttle::subscribe<PubMsg>("pub.seq.snap", [&](const PubMsg&, const shuttle::Meta&) {
-      ++late;
-    });
+    auto s2 = shuttle::subscribe<PubMsg>("pub.seq.snap",
+                                         [&](const PubMsg&, const shuttle::Meta&) { ++late; });
     h.wait();
 
-    expect_eq(static_cast<long long>(first), 1, "既有订阅者收到");
-    expect_eq(static_cast<long long>(late), 0, "发布之后新增的订阅者不收到本帧");
+    expect_eq(static_cast<long long>(first), 1, "the existing subscriber receives");
+    expect_eq(static_cast<long long>(late), 0,
+              "a subscriber added after the publish does not receive this frame");
   });
 
-  // case7：`publish_serial` 失败聚合 —— 单订阅者抛异常不影响其它订阅者，result() 重抛
+  // case7: `publish_serial` failure aggregation — one subscriber throwing does not affect the
+  // others; result() rethrows
   run_case(__func__, "case7", [] {
     shuttle::Publisher<PubMsg> pub("pub.seq.fail");
     std::size_t ok = 0;
     auto bad = shuttle::subscribe<PubMsg>("pub.seq.fail", [](const PubMsg&, const shuttle::Meta&) {
-      throw std::runtime_error("订阅者故意失败");
+      throw std::runtime_error("subscriber failing on purpose");
     });
-    auto good = shuttle::subscribe<PubMsg>("pub.seq.fail", [&](const PubMsg&, const shuttle::Meta&) {
-      ++ok;
-    });
+    auto good = shuttle::subscribe<PubMsg>("pub.seq.fail",
+                                           [&](const PubMsg&, const shuttle::Meta&) { ++ok; });
 
     auto h = pub.publish_serial(PubMsg{1});
     h.wait();
-    expect(h.done(), "全部订阅者回调结束（含失败）");
+    expect(h.done(), "all subscriber callbacks finished (failures included)");
     expect_eq(static_cast<long long>(h.finished()), 2, "finished == subscriber_count");
-    expect_eq(static_cast<long long>(ok), 1, "失败不阻断后续订阅者");
-    expect_eq(static_cast<long long>(h.failures().size()), 1, "失败被逐订阅者聚合");
-    expect(!h.failures().at(0).subscriber.empty(), "失败记录含订阅者描述");
-    // 失败在订阅者级与 topic 级都记成 failed（dropped 的第三分量；retired/skipped 都应为 0）
-    expect_eq(static_cast<long long>(bad.dropped()), 1, "失败的订阅者记 dropped");
-    expect_eq(static_cast<long long>(good.dropped()), 0, "成功的订阅者不记 dropped");
+    expect_eq(static_cast<long long>(ok), 1, "a failure does not block the remaining subscribers");
+    expect_eq(static_cast<long long>(h.failures().size()), 1,
+              "failures are aggregated per subscriber");
+    expect(!h.failures().at(0).subscriber.empty(),
+           "the failure record carries a subscriber description");
+    // The failure is recorded as failed at both subscriber and topic level (the third dropped
+    // component;
+    expect_eq(static_cast<long long>(bad.dropped()), 1, "the failed subscriber records dropped");
+    expect_eq(static_cast<long long>(good.dropped()), 0,
+              "the successful subscriber records no dropped");
     const auto info = shuttle::broker::topic_info("pub.seq.fail");
-    expect(info.has_value(), "topic 可内省");
-    expect_eq(static_cast<long long>(info->failed), 1, "topic 级记 failed");
-    expect_eq(static_cast<long long>(info->retired), 0, "没有退订");
-    expect_eq(static_cast<long long>(info->skipped), 0, "没有策略跳过");
-    expect_eq(static_cast<long long>(info->dropped), 1, "topic 级 dropped == retired + skipped + failed");
+    expect(info.has_value(), "topic is introspectable");
+    expect_eq(static_cast<long long>(info->failed), 1, "topic-level failed recorded");
+    expect_eq(static_cast<long long>(info->retired), 0, "no unsubscribes");
+    expect_eq(static_cast<long long>(info->skipped), 0, "no policy skips");
+    expect_eq(static_cast<long long>(info->dropped), 1,
+              "topic-level dropped == retired + skipped + failed");
 
     bool threw = false;
     std::string what;
@@ -193,11 +215,13 @@ WEAVE_TEST(publish_tests) {
       threw = true;
       what = e.what();
     }
-    expect(threw, "result() 必须重抛失败");
-    expect(what.find("订阅者故意失败") != std::string::npos, "重抛的异常可辨识");
+    expect(threw, "result() must rethrow the failure");
+    expect(what.find("subscriber failing on purpose") != std::string::npos,
+           "the rethrown exception is identifiable");
   });
 
-  // case8：`publish_concurrent` —— 每个订阅者各自一个回调进程，全部到达后才完成
+  // case8: `publish_concurrent` — each subscriber gets its own callback process; complete only
+  // after all arrive
   run_case(__func__, "case8", [] {
     shuttle::Publisher<PubMsg> pub("pub.par.all");
     std::size_t a = 0, b = 0, c = 0;
@@ -209,199 +233,219 @@ WEAVE_TEST(publish_tests) {
       ++b;
       weave::sleep(40_us);
     });
-    auto sc = shuttle::subscribe<PubMsg>("pub.par.all", [&](const PubMsg&, const shuttle::Meta&) {
-      ++c;
-    });
+    auto sc = shuttle::subscribe<PubMsg>("pub.par.all",
+                                         [&](const PubMsg&, const shuttle::Meta&) { ++c; });
 
     auto h = pub.publish_concurrent(PubMsg{7});
-    expect_eq(static_cast<long long>(h.subscriber_count()), 3, "发给三个订阅者");
-    expect_eq(static_cast<long long>(a + b + c), 0, "publish_concurrent 立即返回，不阻塞发布者");
+    expect_eq(static_cast<long long>(h.subscriber_count()), 3, "delivered to three subscribers");
+    expect_eq(static_cast<long long>(a + b + c), 0,
+              "publish_concurrent returns immediately without blocking the publisher");
 
     h.wait();
-    expect_eq(static_cast<long long>(a), 1, "订阅者 A 完成");
-    expect_eq(static_cast<long long>(b), 1, "订阅者 B 完成");
-    expect_eq(static_cast<long long>(c), 1, "订阅者 C 完成");
-    expect(h.done(), "全部完成后 done() 为真");
+    expect_eq(static_cast<long long>(a), 1, "subscriber A completed");
+    expect_eq(static_cast<long long>(b), 1, "subscriber B completed");
+    expect_eq(static_cast<long long>(c), 1, "subscriber C completed");
+    expect(h.done(), "done() is true once all complete");
   });
 
-  // case9：零订阅者发布 —— 立即完成，不悬挂
+  // case9: publishing with zero subscribers — completes immediately, does not hang
   run_case(__func__, "case9", [] {
     shuttle::Publisher<PubMsg> pub("pub.empty");
     auto h = pub.publish_serial(PubMsg{1});
-    expect_eq(static_cast<long long>(h.subscriber_count()), 0, "无订阅者");
+    expect_eq(static_cast<long long>(h.subscriber_count()), 0, "no subscribers");
     h.wait();
-    expect(h.done(), "无订阅者的发布立即完成");
+    expect(h.done(), "a publication with zero subscribers completes immediately");
 
     auto p = pub.publish_concurrent(PubMsg{2});
     p.wait();
-    expect(p.done(), "publish_concurrent 零订阅者同样立即完成");
+    expect(p.done(), "publish_concurrent with zero subscribers also completes immediately");
   });
 
-  // case10：wait(timeout) 超时返回 false，且不吞掉后续完成
+  // case10: wait(timeout) returns false on timeout and does not swallow the later completion
   run_case(__func__, "case10", [] {
     shuttle::Publisher<PubMsg> pub("pub.timeout");
-    auto s = shuttle::subscribe<PubMsg>("pub.timeout", [](const PubMsg&, const shuttle::Meta&) {
-      weave::sleep(20_ms);
-    });
+    auto s = shuttle::subscribe<PubMsg>(
+        "pub.timeout", [](const PubMsg&, const shuttle::Meta&) { weave::sleep(20_ms); });
 
     auto h = pub.publish_serial(PubMsg{1});
-    expect(!h.wait(1_us), "超时返回 false");
-    h.wait();  // 继续等，必须能等到
-    expect(h.done(), "超时后仍可继续等待至完成");
-    expect(h.failures().empty(), "无失败");
+    expect(!h.wait(1_us), "timeout returns false");
+    h.wait();  // keep waiting; must be able to complete
+    expect(h.done(), "still able to wait to completion after the timeout");
+    expect(h.failures().empty(), "no failures");
   });
 
-  // case11：入口选择 —— `now` 只走 nonblocking 入口；`serial`/`concurrent` 全量投递（每个订阅者用自己注册的那一条入口）
+  // case11: entry selection — `now` only uses the nonblocking entry; `serial`/`concurrent` deliver
+  // to all (each subscriber on the entry it registered)
   run_case(__func__, "case11", [] {
     shuttle::Publisher<PubMsg> pub("pub.once");
     std::size_t blocking_frames = 0;
     std::size_t nb_frames = 0;
-    auto sb = shuttle::subscribe<PubMsg>("pub.once", [&](const PubMsg&, const shuttle::Meta&) {
-      ++blocking_frames;
-    });
-    auto sn = shuttle::subscribe<PubMsg>("pub.once", shuttle::nb(
-        [&](const PubMsg&, const shuttle::Meta&) { ++nb_frames; }));
+    auto sb = shuttle::subscribe<PubMsg>(
+        "pub.once", [&](const PubMsg&, const shuttle::Meta&) { ++blocking_frames; });
+    auto sn = shuttle::subscribe<PubMsg>(
+        "pub.once", shuttle::nb([&](const PubMsg&, const shuttle::Meta&) { ++nb_frames; }));
 
-    pub.publish_now(PubMsg{1}, shuttle::NowPolicy::skip);  // 只命中 nonblocking 入口
-    expect_eq(static_cast<long long>(nb_frames), 1, "publish_now 命中 nonblocking 入口");
-    expect_eq(static_cast<long long>(blocking_frames), 0, "publish_now skip 不命中 blocking 入口");
+    pub.publish_now(PubMsg{1}, shuttle::NowPolicy::skip);  // only hits the nonblocking entry
+    expect_eq(static_cast<long long>(nb_frames), 1, "publish_now hits the nonblocking entry");
+    expect_eq(static_cast<long long>(blocking_frames), 0,
+              "publish_now skip does not hit the blocking entry");
 
-    // `serial`/`concurrent` 的目标集合是"全部匹配订阅者"：两者各收到一帧
+    // The target set of `serial`/`concurrent` is "all matching subscribers": each receives one
+    // frame
     auto hp = pub.publish_concurrent(PubMsg{2});
     hp.wait();
-    expect_eq(static_cast<long long>(blocking_frames), 1, "publish_concurrent 命中 blocking 入口");
-    expect_eq(static_cast<long long>(nb_frames), 2, "publish_concurrent 也命中 nonblocking 入口");
-    expect_eq(static_cast<long long>(hp.subscriber_count()), 2, "publish_concurrent 目标数 = 全部订阅者");
+    expect_eq(static_cast<long long>(blocking_frames), 1,
+              "publish_concurrent hits the blocking entry");
+    expect_eq(static_cast<long long>(nb_frames), 2,
+              "publish_concurrent also hits the nonblocking entry");
+    expect_eq(static_cast<long long>(hp.subscriber_count()), 2,
+              "publish_concurrent target count = all subscribers");
 
     auto hs = pub.publish_serial(PubMsg{3});
     hs.wait();
-    expect_eq(static_cast<long long>(blocking_frames), 2, "publish_serial 命中 blocking 入口");
-    expect_eq(static_cast<long long>(nb_frames), 3, "publish_serial 也命中 nonblocking 入口");
-    expect_eq(static_cast<long long>(hs.subscriber_count()), 2, "publish_serial 目标数 = 全部订阅者");
+    expect_eq(static_cast<long long>(blocking_frames), 2, "publish_serial hits the blocking entry");
+    expect_eq(static_cast<long long>(nb_frames), 3,
+              "publish_serial also hits the nonblocking entry");
+    expect_eq(static_cast<long long>(hs.subscriber_count()), 2,
+              "publish_serial target count = all subscribers");
   });
 
-  // case12：可见性计数 —— publish_now(defer) 返回的句柄覆盖 nonblocking 与 deferred 两部分
+  // case12: visibility counters — the handle returned by publish_now(defer) covers both the
+  // nonblocking and the deferred parts
   run_case(__func__, "case12", [] {
     shuttle::Publisher<PubMsg> pub("pub.vis");
     std::size_t blk = 0;
     std::size_t nbh = 0;
-    auto sb = shuttle::subscribe<PubMsg>("pub.vis", [&](const PubMsg&, const shuttle::Meta&) {
-      ++blk;
-    });
-    auto sn = shuttle::subscribe<PubMsg>("pub.vis", shuttle::nb(
-        [&](const PubMsg&, const shuttle::Meta&) { ++nbh; }));
+    auto sb =
+        shuttle::subscribe<PubMsg>("pub.vis", [&](const PubMsg&, const shuttle::Meta&) { ++blk; });
+    auto sn = shuttle::subscribe<PubMsg>(
+        "pub.vis", shuttle::nb([&](const PubMsg&, const shuttle::Meta&) { ++nbh; }));
 
     auto h = pub.publish_now(PubMsg{1}, shuttle::NowPolicy::defer);
-    expect_eq(static_cast<long long>(h.subscriber_count()), 2, "目标含 nonblocking 与 deferred 两部分");
-    expect_eq(static_cast<long long>(h.deferred()), 1, "deferred 计数为 1");
-    expect_eq(static_cast<long long>(h.skipped()), 0, "defer 不跳过任何人");
-    expect_eq(static_cast<long long>(nbh), 1, "nonblocking 部分返回时已结束");
-    expect_eq(static_cast<long long>(blk), 0, "deferred 部分还没开始");
-    expect(!h.done(), "deferred 未完成 → 句柄未完成");
+    expect_eq(static_cast<long long>(h.subscriber_count()), 2,
+              "targets include both the nonblocking and the deferred parts");
+    expect_eq(static_cast<long long>(h.deferred()), 1, "deferred count is 1");
+    expect_eq(static_cast<long long>(h.skipped()), 0, "defer skips no one");
+    expect_eq(static_cast<long long>(nbh), 1,
+              "the nonblocking part is done when publish_now returns");
+    expect_eq(static_cast<long long>(blk), 0, "the deferred part has not started yet");
+    expect(!h.done(), "deferred not finished → the handle is not done");
     h.wait();
-    expect(h.done(), "deferred 结束后句柄完成");
-    expect_eq(static_cast<long long>(blk), 1, "deferred 订阅者最终收到");
-    expect_eq(static_cast<long long>(h.finished()), 2, "finished 覆盖两部分");
+    expect(h.done(), "the handle completes once the deferred part finishes");
+    expect_eq(static_cast<long long>(blk), 1, "the deferred subscriber eventually receives");
+    expect_eq(static_cast<long long>(h.finished()), 2, "finished covers both parts");
 
     auto skip_h = pub.publish_now(PubMsg{2}, shuttle::NowPolicy::skip);
-    expect_eq(static_cast<long long>(skip_h.skipped()), 1, "skip 计入 skipped");
-    expect_eq(static_cast<long long>(skip_h.deferred()), 0, "skip 不计入 deferred");
+    expect_eq(static_cast<long long>(skip_h.skipped()), 1, "skip counts into skipped");
+    expect_eq(static_cast<long long>(skip_h.deferred()), 0, "skip does not count into deferred");
 
     auto info = shuttle::broker::topic_info("pub.vis");
-    expect(info.has_value(), "topic 存在");
-    expect_eq(static_cast<long long>(info->deferred), 1, "topic 累计 deferred 计数");
+    expect(info.has_value(), "topic exists");
+    expect_eq(static_cast<long long>(info->deferred), 1, "topic-level cumulative deferred counter");
   });
 
-  // case13：defer 与 publish_serial 共用同一条串行链 → 后台投递顺序 == 发布顺序
+  // case13: defer shares the same serial chain as publish_serial → background delivery order ==
+  // publish order
   run_case(__func__, "case13", [] {
     shuttle::Publisher<PubMsg> pub("pub.defer.order");
     std::vector<std::uint32_t> order;
-    auto sb = shuttle::subscribe<PubMsg>("pub.defer.order", [&](const PubMsg& m,
-                                                              const shuttle::Meta&) {
-      order.push_back(m.v);
-      weave::sleep(20_us);
-    });
+    auto sb =
+        shuttle::subscribe<PubMsg>("pub.defer.order", [&](const PubMsg& m, const shuttle::Meta&) {
+          order.push_back(m.v);
+          weave::sleep(20_us);
+        });
 
-    pub.publish_now(PubMsg{1}, shuttle::NowPolicy::defer);  // 骨架：走后台链
+    pub.publish_now(PubMsg{1},
+                    shuttle::NowPolicy::defer);  // skeleton: goes through the background chain
     pub.publish_serial(PubMsg{2});
     pub.publish_now(PubMsg{3}, shuttle::NowPolicy::defer);
     auto last = pub.publish_serial(PubMsg{4});
     last.wait();
 
-    expect_eq(static_cast<long long>(order.size()), 4, "四帧全部后台投递");
+    expect_eq(static_cast<long long>(order.size()), 4,
+              "all four frames delivered in the background");
     for (std::size_t i = 0; i < order.size(); ++i)
       expect_eq(static_cast<long long>(order.at(i)), static_cast<long long>(i + 1),
-                "defer 与 serial 混合仍保发布序");
+                "mixed defer and serial still keeps publication order");
   });
 
-  // case14：`publish_now` 同步段失败 —— 其余 nonblocking 目标照常尝试，defer 段照常入链，
-  // 第一个异常在全部尝试之后才抛给调用者（不再“先 pub_complete 再 throw”）
+  // case14: a failure in the synchronous section of `publish_now` — the remaining nonblocking
+  // targets are still attempted, the defer section still enters the chain, and the first
+  // exception is thrown to the caller only after all attempts (no more "pub_complete first, throw
+  // later").
   run_case(__func__, "case14", [] {
     shuttle::Publisher<PubMsg> pub("pub.now.throw");
     std::size_t second = 0, blocking_hits = 0;
-    auto s1 = shuttle::subscribe<PubMsg>("pub.now.throw", shuttle::nb(
-        [](const PubMsg&, const shuttle::Meta&) { throw std::runtime_error("boom"); }));
-    auto s2 = shuttle::subscribe<PubMsg>("pub.now.throw", shuttle::nb(
-        [&](const PubMsg&, const shuttle::Meta&) { ++second; }));
-    auto s3 = shuttle::subscribe<PubMsg>("pub.now.throw",
-                                        [&](const PubMsg&, const shuttle::Meta&) {
-                                          ++blocking_hits;
-                                        });
+    auto s1 = shuttle::subscribe<PubMsg>(
+        "pub.now.throw",
+        shuttle::nb([](const PubMsg&, const shuttle::Meta&) { throw std::runtime_error("boom"); }));
+    auto s2 = shuttle::subscribe<PubMsg>(
+        "pub.now.throw", shuttle::nb([&](const PubMsg&, const shuttle::Meta&) { ++second; }));
+    auto s3 = shuttle::subscribe<PubMsg>(
+        "pub.now.throw", [&](const PubMsg&, const shuttle::Meta&) { ++blocking_hits; });
 
     bool threw = false;
     try {
-      pub.publish_now(PubMsg{1});  // 默认 defer
+      pub.publish_now(PubMsg{1});  // default defer
     } catch (const std::exception&) {
       threw = true;
     }
-    expect(threw, "同步段异常仍传播给调用者");
-    expect_eq(static_cast<long long>(second), 1,
-              "第一个订阅者失败后仍尝试后面的 nonblocking 目标");
+    expect(threw, "a synchronous-section exception still propagates to the caller");
+    expect_eq(
+        static_cast<long long>(second), 1,
+        "the remaining nonblocking targets are still attempted after the first subscriber fails");
     weave::sleep(20_us);
-    expect_eq(static_cast<long long>(blocking_hits), 1, "同步段失败不影响 defer 段投递");
+    expect_eq(static_cast<long long>(blocking_hits), 1,
+              "a synchronous-section failure does not affect the defer-section delivery");
     auto info = shuttle::broker::topic_info("pub.now.throw");
-    expect(info.has_value(), "topic 存在");
-    expect_eq(static_cast<long long>(info->published), 1, "帧已发布");
-    expect_eq(static_cast<long long>(info->deferred), 1, "defer 段仍入链");
+    expect(info.has_value(), "topic exists");
+    expect_eq(static_cast<long long>(info->published), 1, "the frame was published");
+    expect_eq(static_cast<long long>(info->deferred), 1,
+              "the defer section still entered the chain");
   });
 
-  // case15：类型不属于目标集 —— 通配符订阅者只对"名字 ∩ 类型"的帧是目标；类型不相交的帧
-  // 连目标都不是：subscriber_count() 为 0、立即完成、不建投递单元、不产生任何计数
+  // case15: a type outside the target set — a wildcard subscriber is a target only for frames
+  // matching "name ∩ type"; type-disjoint frames are not even targets: subscriber_count() is 0,
+  // completes immediately, no delivery unit, no counters at all
   run_case(__func__, "case15", [] {
     shuttle::Publisher<PubMsg> pub_a("pub.filter.a");
     shuttle::Publisher<PubMsgOther> pub_b("pub.filter.b");
     std::size_t got = 0;
-    auto s = shuttle::subscribe<PubMsg>("pub.filter.*", [&](const PubMsg&, const shuttle::Meta&) {
-      ++got;
-    });
+    auto s = shuttle::subscribe<PubMsg>("pub.filter.*",
+                                        [&](const PubMsg&, const shuttle::Meta&) { ++got; });
 
     auto ha = pub_a.publish_serial(PubMsg{1});
     ha.wait();
-    expect_eq(static_cast<long long>(got), 1, "类型匹配照常投递");
-    expect_eq(static_cast<long long>(ha.subscriber_count()), 1, "匹配时是目标");
+    expect_eq(static_cast<long long>(got), 1, "a matching type is still delivered");
+    expect_eq(static_cast<long long>(ha.subscriber_count()), 1, "a target when matching");
 
     auto hb = pub_b.publish_serial(PubMsgOther{2});
     hb.wait();
-    expect_eq(static_cast<long long>(got), 1, "类型不相交的帧不进入回调");
-    expect_eq(static_cast<long long>(hb.subscriber_count()), 0, "类型不相交则不是目标");
-    expect_eq(static_cast<long long>(hb.finished()), 0, "零目标");
-    expect(hb.done(), "零目标立即完成");
-    expect_eq(static_cast<long long>(hb.retired()), 0, "不是目标就不会落进 retired");
-    expect_eq(static_cast<long long>(s.dropped()), 0, "订阅者级也不记 dropped（它本就不是目标）");
+    expect_eq(static_cast<long long>(got), 1, "a type-disjoint frame never enters the callback");
+    expect_eq(static_cast<long long>(hb.subscriber_count()), 0, "type-disjoint means not a target");
+    expect_eq(static_cast<long long>(hb.finished()), 0, "zero targets");
+    expect(hb.done(), "zero targets complete immediately");
+    expect_eq(static_cast<long long>(hb.retired()), 0,
+              "not a target means nothing lands in retired either");
+    expect_eq(static_cast<long long>(s.dropped()), 0,
+              "no subscriber-level dropped either (it was never a target)");
 
-    // 同一条发布方式、同一个 topic 目录下：`now` 的 reject 也只数目标集里的 blocking 订阅者
+    // Same publish flavor, same topic entry: reject of `now` also counts only blocking subscribers
+    // in the target set
     auto hc = pub_b.publish_now(PubMsgOther{3}, shuttle::NowPolicy::defer);
     hc.wait();
-    expect_eq(static_cast<long long>(hc.subscriber_count()), 0, "publish_now 同样按目标集计数");
+    expect_eq(static_cast<long long>(hc.subscriber_count()), 0,
+              "publish_now also counts by the target set");
   });
 
-  // case16：零目标的 `publish_serial` 立即完成；`reject` 的帧从不发布（不消耗 seq/published）
+  // case16: `publish_serial` with zero targets completes immediately; a `reject`ed frame is never
+  // published (consumes no seq/published)
   run_case(__func__, "case16", [] {
     shuttle::Publisher<PubMsg> pub("pub.now.empty");
     auto h = pub.publish_serial(PubMsg{1});
-    expect(h.done(), "零目标立即完成，不建投递单元");
-    expect_eq(static_cast<long long>(h.subscriber_count()), 0, "零目标");
-    expect_eq(static_cast<long long>(h.finished()), 0, "完成且计数为 0");
+    expect(h.done(), "zero targets complete immediately, no delivery unit created");
+    expect_eq(static_cast<long long>(h.subscriber_count()), 0, "zero targets");
+    expect_eq(static_cast<long long>(h.finished()), 0, "completed with zero counts");
 
     shuttle::Publisher<PubMsg> p2("pub.now.reject2");
     std::size_t hits = 0;
@@ -413,12 +457,12 @@ WEAVE_TEST(publish_tests) {
     } catch (const shuttle::CapabilityError&) {
       threw = true;
     }
-    expect(threw, "reject 抛 CapabilityError");
+    expect(threw, "reject throws CapabilityError");
     auto info = shuttle::broker::topic_info("pub.now.reject2");
-    expect(info.has_value(), "topic 存在");
+    expect(info.has_value(), "topic exists");
     expect_eq(static_cast<long long>(info->published), 0,
-              "被 reject 的帧从未发布（不消耗 seq）");
-    expect_eq(static_cast<long long>(hits), 0, "没有任何回调被调用");
+              "a rejected frame was never published (consumes no seq)");
+    expect_eq(static_cast<long long>(hits), 0, "no callback was invoked at all");
   });
 
   report(__func__);

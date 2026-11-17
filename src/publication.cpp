@@ -1,11 +1,15 @@
-// Publication 的 ABI 入口与句柄方法。
+// ABI entry points and handle methods of Publication.
 //
-// 归属规则：本 TU 是 include/shuttle/publication.hpp 与 abi.hpp 中“发布侧”符号的实现——
-// pub_now / pub_serial / pub_concurrent 产出 Publication，topic_* 是同一批发布前置操作，
-// 因此与 Publication 的成员方法放在一起。订阅侧的 sub_typed / sub_raw 则与 Subscription
-// 同处 subscription.cpp（它们必须看到只在那个 TU 定义的 Subscription::Impl）。
+// Ownership rule: this TU implements the "publish-side" symbols declared in
+// include/shuttle/publication.hpp and abi.hpp — pub_now / pub_serial /
+// pub_concurrent produce Publications and topic_* are the same batch of
+// publish preliminaries, so they live together with Publication's member
+// methods. The subscribe-side sub_typed / sub_raw live with Subscription in
+// subscription.cpp (they must see Subscription::Impl, which is defined only
+// in that TU).
 //
-// 状态定义在 broker/model.hpp，私有 Impl 在 detail/publication.hpp。
+// State is defined in broker/model.hpp; the private Impl is in
+// detail/publication.hpp.
 
 #include "detail/publication.hpp"
 
@@ -35,15 +39,17 @@ void topic_declare(const std::string& topic, const TypeOps* ops) {
     t.binding = Binding{ops->tag, ops};
     return;
   }
-  // SV 先发布形成的 raw 绑定，可在标签一致时升级为 typed 绑定。
+  // A raw binding formed by an earlier SV publication may be upgraded to a
+  // typed binding when the tag matches.
   if (t.binding->tag == ops->tag && t.binding->ops == &raw_ops) {
     t.binding->ops = ops;
     return;
   }
   if (t.binding->tag != ops->tag)
-    throw TypeMismatchError(std::string("shuttle: topic ") + topic + " 已绑定类型 " +
-                            t.binding->tag + "，与 " + ops->tag + " 冲突");
-  // 同标签重复声明放行：跨 DSO 的 type_ops<T> 实例地址不同但语义一致。
+    throw TypeMismatchError(std::string("shuttle: topic ") + topic + " is already bound to type " +
+                            t.binding->tag + ", conflicting with " + ops->tag);
+  // Re-declaration with the same tag is allowed: type_ops<T> instances from
+  // different DSOs have different addresses but identical semantics.
 }
 
 Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, const TypeOps* ops,
@@ -94,17 +100,17 @@ bool Publication::done() const {
 }
 
 void Publication::wait() {
-  if (!valid()) throw std::logic_error("shuttle: 空 Publication 句柄");
+  if (!valid()) throw std::logic_error("shuttle: empty Publication handle");
   impl_->pub->done_ev.wait();
 }
 
 bool Publication::wait(weave::duration timeout) {
-  if (!valid()) throw std::logic_error("shuttle: 空 Publication 句柄");
+  if (!valid()) throw std::logic_error("shuttle: empty Publication handle");
   return detail::wait_pub_timed(impl_->pub, timeout);
 }
 
 void Publication::result() {
-  if (!valid()) throw std::logic_error("shuttle: 空 Publication 句柄");
+  if (!valid()) throw std::logic_error("shuttle: empty Publication handle");
   wait();
   if (!impl_->pub->failures.empty()) std::rethrow_exception(impl_->pub->failures.front().error);
 }

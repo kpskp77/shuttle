@@ -25,11 +25,11 @@ target("shuttle", function()
   set_warnings("all", "extra", "error")
   add_headerfiles("include/(shuttle/**.hpp)")
   add_includedirs("include", { public = true })
-  -- 私有：src/ 是内部头包含根；broker/ 与 detail/ 不安装，后端窄口仍在 backend/。
-  -- svdpi 后端目录额外可见 broker 内部，见 AGENTS.md 头文件布局。
+  -- private: src/ is the include root for internal headers; broker/ and detail/ are not
+  -- installed; the backend narrow port stays in backend/. The svdpi backend directory
   add_includedirs("src", { public = false })
-  -- 公开 API/句柄 + broker 核心 + 当前后端。核心与后端分别枚举，避免递归规则把
-  -- 两个后端同时编进来；换后端仍只换目录，不依赖 -D 宏。
+  -- public API/handles + broker core + current backend. Core and backend are enumerated
+  -- separately so a recursive rule never compiles both backends in; switching backends
   add_files("src/*.cpp")
   add_files("src/broker/*.cpp")
   add_files("src/backend/" .. (get_config("backend") or "svdpi") .. "/**.cpp")
@@ -37,8 +37,8 @@ target("shuttle", function()
   add_packages("weave", { public = true })
 end)
 
--- VCS 运行（phony）：编译 weave_pkg + shuttle_pkg + SV demo，
--- 以 shuttle_examples_svdpi 为 payload 跑 simv，按输出标记判定。
+-- VCS run (phony): compile weave_pkg + shuttle_pkg + the SV demo,
+-- run simv with shuttle_examples_svdpi as the payload, judge by the output marker.
 target("shuttle_examples_svdpi_vcs", function()
   set_kind("phony")
   set_default(false)
@@ -52,7 +52,7 @@ target("shuttle_examples_svdpi_vcs", function()
 end)
 
 
--- 兼容性探针（可选）：用指定的 SV 包/顶层跑一次 VCS —— 定位仿真器兼容性用。
+-- Compatibility probe (optional): run VCS once with the given SV package/top —
 --   SHUTTLE_SV_PKG=<pkg.sv> SHUTTLE_SV_TB=<tb.sv> SHUTTLE_PROBE_LIB=<lib.so> --     xmake run shuttle_probe_vcs
 target("shuttle_probe_vcs", function()
   set_kind("phony")

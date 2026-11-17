@@ -1,11 +1,15 @@
 #pragma once
 
-// Trigger 的内部构造通道：仅 src/ 使用，不随包安装。
-// 路径 detail/trigger.hpp 与公开头 shuttle/trigger.hpp 对应，但内容严格限于内部友元通道。
+// Internal construction channel for Trigger: used only under src/, not
+// installed. The path detail/trigger.hpp mirrors the public header
+// shuttle/trigger.hpp, but the content is strictly limited to the internal
+// friend channel.
 //
-// 公开工厂是 shuttle::after() / after_all() / after_any()；这里的 from_fn 让桥接层
-// （svdpi 装配 SHUTTLE_TRIG_EVENT / SHUTTLE_TRIG_PUB）能用任意 std::function 直接构造
-// Trigger。Trigger 的构造函数是私有的，故经 detail::TriggerAccess 这个具名友元进入。
+// The public factories are shuttle::after() / after_all() / after_any();
+// from_fn here lets the bridge layer (svdpi assembling SHUTTLE_TRIG_EVENT /
+// SHUTTLE_TRIG_PUB) construct a Trigger directly from any std::function.
+// Trigger's constructor is private, so entry goes through the named friend
+// detail::TriggerAccess.
 
 #include <functional>
 #include <shuttle/trigger.hpp>
