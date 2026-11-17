@@ -59,11 +59,11 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
    `deliver` 里对 `raw_ops` 帧遇 typed 订阅者直接报 `PublishError`。
 10. **目标集 = 名字 ∩ 类型，完成计数按目标计，且只有一个入口在推进它**：目标集在快照时
     一次定完（`Broker::match_subs(topic, tag)` + `type_matches`）。类型不相交的订阅者**不是
-    目标**——不进 `expected`、不建投递单元、不计 `dropped`。`Publication::finished()` 对三种方式
+    目标**——不进 `target_count`、不建投递单元、不计 `dropped`。`Publication::finished()` 对三种方式
     都等于"已到达终态的目标数"，唯一推进点是 `src/broker/dispatch.cpp` 的 `target_finished()`
-    （`++finished` 后若 `finished == expected && !done_flag` 就 `pub_complete`）。任何路径——投递成功、
+    （`++finished` 后若 `finished == target_count && !done_flag` 就 `pub_complete`）。任何路径——投递成功、
     退订跳过、回调抛异常、串行单元的单元级失败（未尝试的目标要补齐计数）——都必须走它，
-    不能在函数末尾"一次性把 `finished` 置成 `expected`"（那样 `done()` 会先于真实完成成立）。
+    不能在函数末尾"一次性把 `finished` 置成 `target_count`"（那样 `done()` 会先于真实完成成立）。
     由此得到三条不变量：`done() ≡ finished() == subscriber_count()`（无例外路径）；
     `finished() == 投递 + 退订跳过 + 失败`；`retired() ≤ finished()`（退订跳过同时计入 `dropped()`）。
     零目标的发布必须立即完成（`publish_serial` 也要短路，不能建投递单元）。所有"没收到"都必须

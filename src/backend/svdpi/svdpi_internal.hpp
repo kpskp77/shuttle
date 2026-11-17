@@ -140,9 +140,9 @@ bool pub_done(int pub_id);
 // Publication counter query kinds: the values correspond 1:1 to the on-wire
 // kinds 0-4 (see the constant table in docs/dpi_protocol.md, invariant across
 // DPI). The enum lets the compiler check switch exhaustiveness.
-enum class PubStatKind { expected = 0, finished = 1, skipped = 2, deferred = 3, retired = 4 };
+enum class PubStatKind { target_count = 0, finished = 1, skipped = 2, deferred = 3, retired = 4 };
 
-// Publication counter query: kind 0=expected 1=finished 2=skipped-by-policy
+// Publication counter query: kind 0=target_count 1=finished 2=skipped-by-policy
 // 3=deferred 4=retired; unknown pub_id returns -1
 long long pub_stat(int pub_id, int kind);
 std::string pub_error(int pub_id);

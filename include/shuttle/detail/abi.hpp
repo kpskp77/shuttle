@@ -80,7 +80,7 @@ void topic_declare(const std::string& topic, const TypeOps* ops);
 // been copied at the call site (snapshot semantics). See NowPolicy for policy.
 // The return value covers the frame's **targets** (the nonblocking part has
 // finished when it returns; the deferred part runs on the background serial
-// chain); targets skipped by `skip` are not counted in `expected` and surface
+// chain); targets skipped by `skip` are not counted in `target_count` and surface
 // only in `skipped()` and the `skipped` component of `dropped()`; `reject`
 // throws CapabilityError directly and yields no return value.
 Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, const TypeOps* ops,

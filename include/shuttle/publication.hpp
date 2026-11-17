@@ -102,8 +102,9 @@ public:
   // wait() + rethrow the first failure (in completion order) if any
   void result();
 
-  // Number of target subscribers for this publication (a snapshot taken at
-  // publish time, including the deferred part, excluding the skip-skipped part)
+  // Number of target subscribers for this publication — the broker's
+  // PubState::target_count counter (a snapshot taken at publish time,
+  // including the deferred part, excluding the skip-skipped part)
   [[nodiscard]] std::size_t subscriber_count() const;
   // Number of subscribers that reached a terminal state (delivered / retired / failed)
   // The completion invariant always holds: done() ≡ finished() == subscriber_count()

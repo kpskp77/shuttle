@@ -138,17 +138,17 @@ publisher 进程
   │ pub_now ──▶ now_preflight（policy==reject 先判定；拒绝则什么都不发生）
   │          ──▶ make_envelope（类型绑定 + ++seq + time_fs + retained 快照）
   │              ─▶ dispatch_now
-  │                    ├─ 建 PubState（expected = nonblocking 目标数 + 待 defer 数）
+  │                    ├─ 建 PubState（target_count = nonblocking 目标数 + 待 defer 数）
   │                    ├─ 逐个 nonblocking 目标：deliver(sub, env)
   │                    │     （这些注册的 cap 已是 nonblocking → export function）
   │                    │     失败 → 记 failures + failed（dropped 的一部分），继续下一个目标
   │                    │     每个目标结束都 target_finished()；skip（或无 blocking 目标）时
-  │                    │     最后一个目标使 finished == expected，就地 pub_complete()
+  │                    │     最后一个目标使 finished == target_count，就地 pub_complete()
   │                    │     —— Publication 返回前已完成
   │                    ├─ policy==skip  → 计 skipped（dropped 的 skipped 分量）
   │                    └─ policy==defer → start_serial(topic, env, {}, blocking_targets)
   │                                       完成钩子把失败与计数并回本帧，
-  │                                       finished == expected 时在串行链的 dispatch task
+  │                                       finished == target_count 时在串行链的 dispatch task
   │                                       内 pub_complete()——晚于 publish_now 返回
   └ 返回 Publication（skip：已完成；defer：nonblocking 部分已结束、deferred 部分未结束）
      └ 同步段出现异常时：以上全部完成后，重抛第一个异常
@@ -163,7 +163,7 @@ SV 侧 export function），blocking 目标根本不在这个循环里。同步�
 
 ```
 publish_serial ─▶ targets 为空 ? 立即 pub_complete（不建单元、不装链尾）
-               ─▶ expected = targets.size()
+               ─▶ target_count = targets.size()
                ─▶ prev/mine 链尾交接（§6，同步段）
                ─▶ create_task("shuttle-seq-<topic>")
                     ├─ wait_trigger(trig)              // 延迟启动条件
@@ -172,7 +172,7 @@ publish_serial ─▶ targets 为空 ? 立即 pub_complete（不建单元、不�
                     │     └─ target_finished()         // ++finished
                     ├─ 单元级失败 → 未尝试的目标全部记 failed 并补齐
                     ├─ mine->set()                     // 成败都放行下一帧
-                    └─ finished == expected 时 pub_complete()
+                    └─ finished == target_count 时 pub_complete()
 返回 Publication（立即可用）
 ```
 
@@ -186,7 +186,7 @@ publish_concurrent ─▶ targets 为空 ? 立即 pub_complete
                    : 每个订阅者 create_task("shuttle-par-<topic>")
                           └─ wait_trigger → deliver(sub, env) → unit_finished()
                                                 （最后一个完成的 task 使
-                                                 finished == expected 时 pub_complete()）
+                                                 finished == target_count 时 pub_complete()）
 ```
 
 订阅者之间无顺序承诺；同一订阅者的不同帧之间也不保证 FIFO（需要 FIFO 时用
@@ -208,7 +208,7 @@ Publisher<T>::publish_now/serial/concurrent         shuttle_pub#(T)::publish_now
                       dispatch_now / start_serial / start_concurrent
                                   │ 快照目标集：名字匹配 ∩ 类型标签匹配
                                   │ 每个目标结束都 target_finished()；
-                                  │ finished == expected 时 pub_complete()
+                                  │ finished == target_count 时 pub_complete()
                                   │ （now 的 defer 段经串行链完成钩子回读本帧后触发）
                                   ▼
                                deliver(sub, env)
@@ -322,7 +322,7 @@ struct Envelope {                        // 一帧的不可变快照
 ```cpp
 struct PubState {
   int id;
-  std::size_t expected, finished;         // 单位是"订阅者"，不是"投递单元"
+  std::size_t target_count, finished;         // 单位是"订阅者"，不是"投递单元"
   std::size_t skipped, deferred, retired;  // 见 §9
   bool done_flag; weave::Event done_ev;
   std::vector<Publication::Failure> failures; std::string first_error;
@@ -378,9 +378,9 @@ topic 级写入走 `topic_declare` / `topic_set_retained`，注册走 `sub_typed
 `PubState` 的字段即上表的帧级投影：
 
 ```cpp
-expected;  // 目标数（不含 skipped）
+target_count;  // 目标数（不含 skipped）
 finished;  // 已达终态的目标数 = delivered + retired + failed
-skipped;   // 被 skip 跳过的目标数（不进 expected）
+skipped;   // 被 skip 跳过的目标数（不进 target_count）
 deferred;  // 转到后台链、返回时尚未开始的目标数（标记，不回零）
 retired;   // 快照后被退订而跳过、但计入 finished 的目标数（不分语言，§9.1.1）
 ```
@@ -389,7 +389,7 @@ retired;   // 快照后被退订而跳过、但计入 finished 的目标数（�
 
 **类型不匹配不是一种终态，因为它不是目标。** 目标集的判定在快照时一次做完
 （`Broker::match_subs(topic, tag)`：`Subscriber::filter_tag` 与帧的 `meta.type_tag` 相交）：
-类型不相交的订阅者不进 `expected`、不建投递单元、不动 `dropped`、也不出现在
+类型不相交的订阅者不进 `target_count`、不建投递单元、不动 `dropped`、也不出现在
 `subscriber_count()` 里。`deliver` 因此不看类型标签（§5 的时序图里"快照目标集"一步就是全部）。
 
 原因很直接：`subscribe<T>("uart.*")` 订阅的是 `uart.*` 下**类型 T** 的事件，类型不相交的帧
@@ -436,13 +436,13 @@ retired;   // 快照后被退订而跳过、但计入 finished 的目标数（�
 
 ```cpp
 void target_finished(const std::shared_ptr<PubState>& pub) {
-  if (++pub->finished == pub->expected && !pub->done_flag) pub_complete(pub);
+  if (++pub->finished == pub->target_count && !pub->done_flag) pub_complete(pub);
 }
 ```
 
 三种方式的每个目标结束都走这里——串行链单元、并发单元、`now` 的同步段，以及
 `now` 的 defer 段（由串行链的完成钩子按目标数并回）。不存在"整个单元一次性把
-`finished` 置成 `expected`"的分支，否则 §9.2 的第 1 条在部分失败时会失真。
+`finished` 置成 `target_count`"的分支，否则 §9.2 的第 1 条在部分失败时会失真。
 
 `pub_complete()` 的顺序固定：置 `done_flag` → 依次执行并清空 `on_complete` 钩子
 （异常吞掉，不影响投递结果）→ `done_ev.set()`。钩子先于事件触发，因此被 `done_ev`

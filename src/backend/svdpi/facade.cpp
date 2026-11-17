@@ -169,8 +169,8 @@ long long pub_stat(int pub_id, int kind) {
   // the enum; out-of-range and unknown pub_id share the same answer (-1).
   if (!pub || kind < 0 || kind > static_cast<int>(PubStatKind::retired)) return -1;
   switch (static_cast<PubStatKind>(kind)) {
-    case PubStatKind::expected:
-      return static_cast<long long>(pub->expected);
+    case PubStatKind::target_count:
+      return static_cast<long long>(pub->target_count);
     case PubStatKind::finished:
       return static_cast<long long>(pub->finished);
     case PubStatKind::skipped:

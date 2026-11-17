@@ -256,7 +256,7 @@ int shuttle_c_pub_done(int pub_id) {
   return shuttle::detail::pub_done(pub_id) ? 1 : 0;
 }
 
-// Publication counter query: kind 0=expected 1=finished 2=skipped-by-policy
+// Publication counter query: kind 0=target_count 1=finished 2=skipped-by-policy
 // 3=deferred 4=retired; unknown pub_id returns -1
 int shuttle_c_pub_stat(int pub_id, int kind) {
   const long long v = shuttle::detail::pub_stat(pub_id, kind);

@@ -116,7 +116,7 @@ void Publication::result() {
 }
 
 std::size_t Publication::subscriber_count() const {
-  return valid() ? impl_->pub->expected : 0;
+  return valid() ? impl_->pub->target_count : 0;
 }
 
 std::size_t Publication::finished() const {

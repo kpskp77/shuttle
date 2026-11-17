@@ -53,7 +53,7 @@ void Broker::pub_complete(const std::shared_ptr<PubState>& pub) {
 // All delivery flavors advance `finished` only here; completion counts are
 // always per target subscriber.
 void Broker::target_finished(const std::shared_ptr<PubState>& pub) {
-  if (++pub->finished == pub->expected && !pub->done_flag) pub_complete(pub);
+  if (++pub->finished == pub->target_count && !pub->done_flag) pub_complete(pub);
 }
 
 void Broker::unit_finished(const std::shared_ptr<PubState>& pub,
@@ -87,7 +87,7 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
                                                std::vector<std::shared_ptr<Subscriber>> targets) {
   auto pub = std::make_shared<PubState>();
   pub->id = next_pub_id++;
-  pub->expected = targets.size();
+  pub->target_count = targets.size();
   pubs[pub->id] = pub;
   if (targets.empty()) {
     // Zero targets complete immediately: no task, no chain-tail installed.
@@ -146,7 +146,7 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
         }
         mine->set();  // release the next frame regardless of outcome, to prevent chain stall
         record_failure(pub, failure);
-        if (pub->finished == pub->expected && !pub->done_flag) pub_complete(pub);
+        if (pub->finished == pub->target_count && !pub->done_flag) pub_complete(pub);
       });
   return pub;
 }
@@ -158,7 +158,7 @@ std::shared_ptr<PubState> Broker::start_concurrent(
     std::vector<std::shared_ptr<Subscriber>> targets) {
   auto pub = std::make_shared<PubState>();
   pub->id = next_pub_id++;
-  pub->expected = targets.size();
+  pub->target_count = targets.size();
   pubs[pub->id] = pub;
   if (targets.empty()) {
     pub_complete(pub);
@@ -210,7 +210,7 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
   auto pub = std::make_shared<PubState>();
   pub->id = b.next_pub_id++;
   const bool defer = (policy == NowPolicy::defer) && !blocking_targets.empty();
-  pub->expected = nb_subs.size() + (defer ? blocking_targets.size() : 0);
+  pub->target_count = nb_subs.size() + (defer ? blocking_targets.size() : 0);
   pub->deferred = defer ? blocking_targets.size() : 0;
   pub->skipped = defer ? 0 : blocking_targets.size();
   b.pubs[pub->id] = pub;
@@ -254,7 +254,7 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
   // are merged back into this frame's handle.
   t.deferred += blocking_targets.size();
   auto chain = b.start_serial(topic, std::move(env), Trigger{}, std::move(blocking_targets));
-  const std::size_t n = chain->expected;
+  const std::size_t n = chain->target_count;
   chain->on_complete.push_back([pub, chain, n]() {
     for (const auto& failure : chain->failures) pub->failures.push_back(failure);
     if (pub->first_error.empty()) pub->first_error = chain->first_error;

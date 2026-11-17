@@ -117,7 +117,7 @@ struct Topic {
 struct PubState {
   int id = 0;
   // All completion counters are per target subscriber, not per delivery unit.
-  std::size_t expected = 0;
+  std::size_t target_count = 0;
   std::size_t finished = 0;
   std::size_t skipped = 0;
   std::size_t deferred = 0;

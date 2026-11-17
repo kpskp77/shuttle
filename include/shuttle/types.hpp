@@ -44,7 +44,7 @@ enum class Capability {
 enum class NowPolicy {
   reject = 0,  // throw CapabilityError: the frame is never published at all
                // (type binding / seq / retained are all untouched)
-  skip = 1,    // skip these subscribers: not counted in expected, only in
+  skip = 1,    // skip these subscribers: not counted in target_count, only in
                // Publication::skipped() and the per-subscriber / per-topic
                // skipped counters (the frame is still delivered to the other
                // subscribers — this is not "message loss")
