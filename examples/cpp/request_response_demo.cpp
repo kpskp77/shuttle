@@ -59,8 +59,7 @@ public:
         // serve() registers on the blocking entry (a responder usually consumes
         // simulation time) and echoes the request's rid into the reply.
         responder_(shuttle::serve<RegReq, RegResp>(
-            request_topic_, reply_topic_,
-            [this](const RegReq& req, const shuttle::Meta&) {
+            request_topic_, reply_topic_, [this](const RegReq& req, const shuttle::Meta&) {
               RegResp resp;
               const bool hit = (req.addr >= base_ && req.addr < base_ + 0x100);
               resp.status = hit ? 0 : 1;  // 0 = decoded, 1 = outside this window
@@ -97,7 +96,7 @@ public:
   // only when nothing else subscribes to the request topic (see the observer
   // case below, and use wait_for(n) when the two differ).
   [[nodiscard]] std::vector<RegResp> query(std::uint32_t addr, weave::duration timeout) {
-    auto call = client_.send(RegReq{0, addr});
+    auto call = client_.send_serial(RegReq{0, addr});
     auto replies = call.wait_all(timeout);
     std::printf("[driver] addr=0x%02x rid=%u -> %zu reply(ies), %zu target(s)\n", addr, call.rid(),
                 replies.size(), call.publication().subscriber_count());
@@ -135,8 +134,8 @@ WEAVE_TEST(request_response_demo) {
   // Nothing serialises the calls: send both, then wait for each. The reply
   // demultiplexing is what keeps them apart, so the answers stay paired with
   // their request even though they travel on the same reply topic.
-  auto call_a = driver.client().send(RegReq{0, 0x0006});
-  auto call_b = driver.client().send(RegReq{0, 0x0102});
+  auto call_a = driver.client().send_serial(RegReq{0, 0x0006});
+  auto call_b = driver.client().send_serial(RegReq{0, 0x0102});
   if (call_a.rid() == call_b.rid())
     throw std::logic_error("request_response_demo: each request needs its own rid");
 
@@ -161,9 +160,9 @@ WEAVE_TEST(request_response_demo) {
   // replies will ever arrive — wait_all() would burn its whole timeout waiting
   // for the observer. wait_for(<responders>) is the right tool here.
   std::size_t observed = 0;
-  auto observer = shuttle::subscribe<RegReq>("reg.req",
-                                             [&](const RegReq&, const shuttle::Meta&) { ++observed; });
-  auto observed_call = driver.client().send(RegReq{0, 0x0007});
+  auto observer = shuttle::subscribe<RegReq>(
+      "reg.req", [&](const RegReq&, const shuttle::Meta&) { ++observed; });
+  auto observed_call = driver.client().send_serial(RegReq{0, 0x0007});
   auto observed_replies = observed_call.wait_for(2, 1_ms);
   observer.unsubscribe();
   std::printf("[driver] observer: %zu reply(ies), %zu target(s), observed=%zu\n",
@@ -174,7 +173,7 @@ WEAVE_TEST(request_response_demo) {
 
   // ── Nobody answers: the timeout returns an empty result, no hang ───────
   shuttle::Requester<RegReq, RegResp> lonely("reg.orphan.req", "reg.orphan.resp");
-  auto orphan = lonely.send(RegReq{0, 0x42});
+  auto orphan = lonely.send_serial(RegReq{0, 0x42});
   auto nothing = orphan.wait_all(1_ms);
   std::printf("[driver] no responder: %zu reply(ies), subscribers=%zu\n", nothing.size(),
               orphan.publication().subscriber_count());
@@ -187,7 +186,7 @@ WEAVE_TEST(request_response_demo) {
         throw std::runtime_error("device is not responding");
       });
   shuttle::Requester<RegReq, RegResp> broken_client("reg.broken.req", "reg.broken.resp");
-  auto broken_call = broken_client.send(RegReq{0, 0x1});
+  auto broken_call = broken_client.send_serial(RegReq{0, 0x1});
   broken_call.publication().wait();
   auto broken_replies = broken_call.wait_all(1_ms);
   for (const auto& f : broken_call.publication().failures()) {

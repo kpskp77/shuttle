@@ -63,7 +63,7 @@ WEAVE_TEST(requester_tests) {
         [](const RqReq& req, const shuttle::Meta&) { return RqResp{0, req.op * 2}; });
 
     shuttle::Requester<RqReq, RqResp> client("rq.basic.req", "rq.basic.resp");
-    auto call = client.send(RqReq{0, 21});
+    auto call = client.send_serial(RqReq{0, 21});
     expect_eq(static_cast<long long>(call.publication().subscriber_count()), 1,
               "the request targets the single responder");
     expect_eq(static_cast<long long>(call.rid()), 1, "the requester allocates rid 1");
@@ -78,9 +78,9 @@ WEAVE_TEST(requester_tests) {
     // A dropped handle frees its slot: the table only holds weak references.
     const std::size_t baseline = client.inflight();
     {
-      auto abandoned = client.send(RqReq{0, 1});
-      expect_eq(static_cast<long long>(client.inflight()),
-                static_cast<long long>(baseline) + 1, "the live handle owns a slot");
+      auto abandoned = client.send_serial(RqReq{0, 1});
+      expect_eq(static_cast<long long>(client.inflight()), static_cast<long long>(baseline) + 1,
+                "the live handle owns a slot");
       (void)abandoned;
     }
     expect_eq(static_cast<long long>(client.inflight()), static_cast<long long>(baseline),
@@ -95,8 +95,8 @@ WEAVE_TEST(requester_tests) {
         [](const RqReq& req, const shuttle::Meta&) { return RqResp{0, req.op + 100}; });
 
     shuttle::Requester<RqReq, RqResp> client("rq.demux.req", "rq.demux.resp");
-    auto a = client.send(RqReq{0, 1});
-    auto b = client.send(RqReq{0, 2});
+    auto a = client.send_serial(RqReq{0, 1});
+    auto b = client.send_serial(RqReq{0, 2});
     expect(a.rid() != b.rid(), "each request gets its own rid");
 
     // Take them out of order on purpose: each handle only ever sees its own rid.
@@ -120,7 +120,7 @@ WEAVE_TEST(requester_tests) {
         [](const RqReq& req, const shuttle::Meta&) { return RqResp{0, req.op * 10 + 1}; });
 
     shuttle::Requester<RqReq, RqResp> client("rq.multi.req", "rq.multi.resp");
-    auto call = client.send(RqReq{0, 3});
+    auto call = client.send_serial(RqReq{0, 3});
     expect_eq(static_cast<long long>(call.publication().subscriber_count()), 2,
               "two responders are targets");
     auto replies = call.wait_all(1_ms);  // n = subscriber_count() = 2
@@ -133,7 +133,7 @@ WEAVE_TEST(requester_tests) {
   // case4: no responder — recv/wait_all time out without hanging, and the handle stays usable
   run_case(__func__, "case4", [] {
     shuttle::Requester<RqReq, RqResp> client("rq.none.req", "rq.none.resp");
-    auto call = client.send(RqReq{0, 5});
+    auto call = client.send_serial(RqReq{0, 5});
     expect(!call.recv(200_us).has_value(), "recv times out when nobody answers");
     expect(call.wait_all(100_us).empty(), "wait_all times out with no replies");
     expect_eq(static_cast<long long>(call.publication().subscriber_count()), 0,
@@ -145,14 +145,13 @@ WEAVE_TEST(requester_tests) {
   run_case(__func__, "case5", [] {
     weave::Event gate;
     auto server = shuttle::serve<RqReq, RqResp>(
-        "rq.cancel.req", "rq.cancel.resp",
-        [&gate](const RqReq& req, const shuttle::Meta&) {
+        "rq.cancel.req", "rq.cancel.resp", [&gate](const RqReq& req, const shuttle::Meta&) {
           gate.wait();  // answer only once the test opens the gate
           return RqResp{0, req.op};
         });
 
     shuttle::Requester<RqReq, RqResp> client("rq.cancel.req", "rq.cancel.resp");
-    auto call = client.send(RqReq{0, 9});
+    auto call = client.send_serial(RqReq{0, 9});
     expect_eq(static_cast<long long>(client.inflight()), 1, "one call in flight");
     call.cancel();
     expect(call.cancelled(), "cancel() marks the handle");
@@ -170,14 +169,13 @@ WEAVE_TEST(requester_tests) {
 
   // case6: a responder whose handler throws is recorded as a delivery failure on the request frame
   run_case(__func__, "case6", [] {
-    auto bad = shuttle::serve<RqReq, RqResp>(
-        "rq.throw.req", "rq.throw.resp",
-        [](const RqReq&, const shuttle::Meta&) -> RqResp {
-          throw std::runtime_error("responder failed");
-        });
+    auto bad = shuttle::serve<RqReq, RqResp>("rq.throw.req", "rq.throw.resp",
+                                             [](const RqReq&, const shuttle::Meta&) -> RqResp {
+                                               throw std::runtime_error("responder failed");
+                                             });
 
     shuttle::Requester<RqReq, RqResp> client("rq.throw.req", "rq.throw.resp");
-    auto call = client.send(RqReq{0, 1});
+    auto call = client.send_serial(RqReq{0, 1});
     call.publication().wait();
     expect_eq(static_cast<long long>(call.publication().failures().size()), 1,
               "the throwing responder is recorded as a failure");
@@ -185,13 +183,13 @@ WEAVE_TEST(requester_tests) {
     (void)bad;
   });
 
-  // case7: a nonblocking responder works with the synchronous flavor (send_now): the reply is queued
-  // by the time send_now returns, because the nonblocking entry runs on the publisher's stack
+  // case7: a nonblocking responder works with the synchronous flavor (send_now): the reply is
+  // queued by the time send_now returns, because the nonblocking entry runs on the publisher's
+  // stack
   run_case(__func__, "case7", [] {
     auto fast = shuttle::serve<RqReq, RqResp>(
         "rq.now.req", "rq.now.resp",
-        [](const RqReq& req, const shuttle::Meta&) { return RqResp{0, req.op + 1}; },
-        shuttle::Capability::nonblocking);
+        shuttle::nb([](const RqReq& req, const shuttle::Meta&) { return RqResp{0, req.op + 1}; }));
 
     shuttle::Requester<RqReq, RqResp> client("rq.now.req", "rq.now.resp");
     auto call = client.send_now(RqReq{0, 41}, shuttle::NowPolicy::skip);
@@ -207,9 +205,10 @@ WEAVE_TEST(requester_tests) {
         [](const CorrReq& req, const shuttle::Meta&) { return CorrResp{0, req.op * 3}; });
 
     shuttle::Requester<CorrReq, CorrResp, CorrTraits> client("rq.traits.req", "rq.traits.resp");
-    auto call = client.send(CorrReq{0, 7});
+    auto call = client.send_serial(CorrReq{0, 7});
     auto replies = call.wait_all(1_ms);
-    expect_eq(static_cast<long long>(replies.size()), 1, "reply received through the custom traits");
+    expect_eq(static_cast<long long>(replies.size()), 1,
+              "reply received through the custom traits");
     expect_eq(static_cast<long long>(replies.at(0).data), 21, "answer content");
     expect_eq(static_cast<long long>(replies.at(0).corr), static_cast<long long>(call.rid()),
               "the custom correlation field carries the rid");
@@ -228,7 +227,7 @@ WEAVE_TEST(requester_tests) {
 
     shuttle::Requester<RqReq, RqResp> client("rq.echo.req", "rq.echo.resp");
     RqReq mine{0, 5};
-    auto call = client.send(mine);
+    auto call = client.send_serial(mine);
     call.wait_all(1_ms);
     expect_eq(static_cast<long long>(seen_rid), static_cast<long long>(call.rid()),
               "the responder saw the allocated rid");
@@ -250,7 +249,7 @@ WEAVE_TEST(requester_tests) {
 
     shuttle::Requester<RqReq, RqResp> client("rq.diag.req", "rq.diag.resp");
     const std::uint32_t first = client.next_rid();
-    auto call = client.send(RqReq{0, 1});
+    auto call = client.send_serial(RqReq{0, 1});
     expect_eq(static_cast<long long>(call.rid()), static_cast<long long>(first),
               "next_rid() predicts the next allocation");
     expect_eq(static_cast<long long>(client.next_rid()), static_cast<long long>(first) + 1,

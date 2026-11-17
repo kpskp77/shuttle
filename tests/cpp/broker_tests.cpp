@@ -48,13 +48,12 @@ std::shared_ptr<ByteTaps> tap(shuttle::Subscription& keep, std::string pattern) 
   // the callbacks only record and consume no simulation time, honoring the nb contract.
   keep = shuttle::subscribe_bytes(
       std::move(pattern),
-      [rec](const std::vector<std::byte>& b, const shuttle::Meta& m) {
+      shuttle::nb([rec](const std::vector<std::byte>& b, const shuttle::Meta& m) {
         ++rec->frames;
         rec->topics.push_back(m.topic);
         rec->topics.push_back(
             std::to_string(b.size()));  // also record the wire length to verify the encoding length
-      },
-      shuttle::Capability::nonblocking);
+      }));
   return rec;
 }
 

@@ -68,6 +68,11 @@ NonBlocking<std::decay_t<F>> nb(F&& f) {
   return {std::forward<F>(f)};
 }
 
+// Overloads that take NonBlocking<F> are more specialized, so `nb(cb)` selects
+// them by partial ordering alone — no enable_if, no trait, no runtime flag: the
+// entry kind is carried by the *type* of the registration argument
+// (subscribe<T>(topic, nb(cb)) vs subscribe<T>(topic, cb)).
+
 // ── Subscription options ────────────────────────────────────────────────
 // The broker keeps no per-subscriber queue: delivery executes synchronously
 // inside a scheduling unit, so for a plain `subscribe` the two fields below are

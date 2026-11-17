@@ -280,6 +280,11 @@ topics[topic].chain = *mine;                                      // 安装新�
 | blocking（`Capability::blocking`） | `subscribe<T>(topic, fn)` | `shuttle_subscribe(topic, obj)`（`SHUTTLE_CAP_BLOCKING`） | `serial` / `concurrent` 的投递单元；`now` 的后台链 |
 | nonblocking（`Capability::nonblocking`） | `subscribe<T>(topic, nb(fn))` | `shuttle_subscribe_nb(topic, obj)`（`SHUTTLE_CAP_NONBLOCKING`） | `now` 的同步段；`serial` / `concurrent`（该注册只有这一条） |
 
+字节订阅同构：`subscribe_bytes(topic, fn)` = blocking，`subscribe_bytes(topic, nb(fn))` =
+nonblocking。公开注册 API 里**没有**运行时 `Capability` 参数（`serve` / `subscribe_bytes` /
+`subscribe` 一律按参数类型选），枚举只出现在内部 `detail::sub_typed` / `detail::sub_raw` 与
+查询口 `Subscription::capability()`。
+
 一次注册只有一个订阅者、一条入口，因此 `Subscriber` 只存一个 `Capability cap`，
 `deliver(sub, env)` 也只读它：既没有优先级，也没有二选一，更没有"本次投递"级的入口覆盖。
 SV 桥的 `caps` 参数只接受恰好为 1 或 2，其他值直接拒绝——两位同置的订阅者不可构造。
@@ -737,9 +742,9 @@ box.close();                                   // 幂等：退订 + 唤醒等待
 shuttle::serve<Req, Resp>("dev.req", "dev.resp",
                           [](const Req& r, const shuttle::Meta&) { return Resp{0, business(r)}; });
 
-// 请求者
+// 请求者：三种发送方式与 `Publisher` 同名同参（send_serial / send_concurrent / send_now）
 shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
-auto call = client.send(Req{0, 21});
+auto call = client.send_serial(Req{0, 21});
 for (const auto& reply : call.wait_all(1_ms)) use(reply);
 ```
 
@@ -749,6 +754,25 @@ for (const auto& reply : call.wait_all(1_ms)) use(reply);
 不需要 broker 支持，跨语言也不变（SV 响应者按同样的字段布局回显即可，见
 `tests/sv/shuttle_tests.sv` 的 `SvRqSink`）。默认约定两个载荷都有 `rid` 字段
 （`shuttle::RidField`），第三个模板参数可换成自定义 traits。
+
+**没有 rid 会怎样（逐条）**：一个 `Requester` 只有**一条回执订阅**（一个 topic、一条入口、
+一个回调 `ReplyTable::deliver`），所有请求的回执都从这一个回调进来。帧里只有 `{TResp, Meta{}}`，
+而 `Meta.seq` 是**回执 topic 自己的**发布序号、与请求帧的 seq 无关，请求方也拿不到自己请求帧的
+seq（`Publication` 只回计数）。于是没有 rid 时：
+
+- **乱序即错配**：A(op=1)、B(op=2) 两个在途请求，答案 101/102，若 B 的回执先到，FIFO 会把 101
+  分给 B（`requester_tests::case2` 钉的就是这条：`rb.at(0).data == 102` 会失败）。两次问同一地址
+  时值相同，交换后**完全无法察觉**；
+- **多响应者无法计数**：一个请求命中 3 个目标产生 3 条回执，`wait_for(n)` / `wait_all` 依赖
+  "这条属于哪个 Call" 才能判断"还差几条"；
+- **迟到的回执污染下一次请求**：请求 A 超时（或 `cancel()`）后被丢弃，5ms 后它的回执到达——无 rid
+  时正好落进下一个请求 B 的队列，B 拿到 A 的答案（类型/取值都合法，静默错）。有 rid 时
+  `ReplyTable::deliver` 的 `inflight.find(rid)` 找不到，记 `stale_replies()`（不是黑洞，可数）；
+- **跨语言无法对齐**：SV 响应者必须把同一个整数抄回来，C++ 侧才能认领。
+
+rid 因此由**请求方**生成（它要建表，必须自己知道这个号），broker 无法代劳：它能给的只有
+"帧在本 topic 上的序号"，既不指向调用、也不回传发布方；要新增"回执指向哪个请求"的元数据就得改
+DPI 线上格式与两侧解析。放在载荷里则是零协议成本（两侧本来就在编解码，SV 侧同布局回显即可）。
 
 **回执计数是显式的**：框架不知道"该有几个回执"。`wait_for(n, timeout)` 等最多 n 条；
 `wait_all(timeout)` 采用默认约定"请求帧的每个目标订阅者恰好回一条"（n =
@@ -761,9 +785,11 @@ topic 开了 retained"不会毒化后续请求（仍不推荐）。
 **request/reply topic 必须不同**：响应者是在请求回调里发布回执的，同 topic 会让回执排在
 "发布它的那个回调"之后——`Requester`/`serve` 构造时直接抛 `std::invalid_argument`。
 
-**入口选择**：`serve` 默认注册 blocking 入口（响应者通常要消耗仿真时间），可传
-`Capability::nonblocking` 换非阻塞入口，此时可与 `send_now()`（`publish_now`）配合得到
-零 RTT 的同步请求-响应。
+**入口选择**：和 `subscribe` 完全一致——裸 handler 注册 blocking 入口（响应者通常要消耗
+仿真时间），`nb(handler)` 注册 nonblocking 入口，此时可与 `send_now()`（`publish_now`）配合
+得到零 RTT 的同步请求-响应。**刻意不提供运行时 `Capability` 参数**：一次注册 = 一个入口，
+入口必须写在调用处（不变 4）。SV 侧同一区分由函数名承担（`shuttle_subscribe` /
+`shuttle_subscribe_nb`），C++ 侧由参数类型承担，两者都不靠"运行时枚举"。
 
 ## 18. 构建
 

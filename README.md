@@ -143,15 +143,19 @@ shuttle::serve<Req, Resp>("dev.req", "dev.resp",
 
 // 请求方
 shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
-auto call = client.send(Req{0, 21});          // rid 自动分配并写进请求载荷
+auto call = client.send_serial(Req{0, 21});          // rid 自动分配并写进请求载荷
 auto replies = call.wait_all(1_ms);            // 每个目标订阅者回一条
 if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 ```
 
+- 发送方式与 `Publisher` 一一对应、同名同参：`send_serial(msg, trig)`（默认，保序）、
+  `send_concurrent(msg, trig)`、`send_now(msg, NowPolicy)`；
 - 多个未完成请求互不干扰：回执按 rid 分发到各自的 `Call`；
 - 超时给空结果、帧不丢；`cancel()` 或丢掉句柄会释放槽位，迟到的回执记 `stale_replies()`；
 - `wait_for(n, timeout)` 显式指定期望条数，`wait_all()` 用"每个请求目标回一条"的默认约定；
 - 自定义关联字段：第三个模板参数传自己的 traits（默认 `shuttle::RidField` 用 `.rid`）；
+- 入口和 `subscribe` 一样按参数类型选：裸 handler = blocking，`shuttle::nb(handler)` = nonblocking
+  （配 `send_now()` 得零 RTT）；
 - 跨语言可用：SV 侧订阅请求 topic、在回执里回显 rid 即可（见 `tests/sv/shuttle_tests.sv`）。
 
 ## 完成句柄与计数
@@ -196,7 +200,7 @@ if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
   [`docs/dpi_protocol.md`](docs/dpi_protocol.md) 的线上格式一节。
 
 需要绕过类型系统时用 `subscribe_bytes(topic, fn)`：回调收到 `const std::vector<std::byte>&`
-与 `Meta`，不做物化。
+与 `Meta`，不做物化（非阻塞入口同样写作 `subscribe_bytes(topic, nb(fn))`）。
 
 ## 延迟触发
 

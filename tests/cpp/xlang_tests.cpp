@@ -36,8 +36,9 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// Request/response payloads for the Requester ↔ SV-responder case (the SV mirror is SvRqReq/SvRqResp
-// in tests/sv/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT names).
+// Request/response payloads for the Requester ↔ SV-responder case (the SV mirror is
+// SvRqReq/SvRqResp in tests/sv/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT
+// names).
 struct XRqReq {
   std::uint32_t rid = 0;
   std::uint32_t op = 0;
@@ -86,15 +87,13 @@ WEAVE_TEST(xlang_tests) {
   // guarantee no loss)
   run_case(__func__, "case1", [st] {
     st->ready = shuttle::subscribe_bytes(
-        kReadyTopic,
-        [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
+        kReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
           ++st->ready_frames;
           // the ready frame shares the business-frame wire format: two 32-bit values
           expect(bytes.size() == 8, "the ready frame wire length should be 8 bytes");
           expect(meta.type_tag == "XMsg", "the ready frame type tag comes from the SV class XMsg");
           st->ready_ev.set();
-        },
-        shuttle::Capability::blocking);
+        });
 
     for (int i = 0; i < 200 && !st->ready_ev.is_set(); ++i) weave::sleep(100_us);
     expect(st->ready_ev.is_set(), "never saw the SV-side ready broadcast (xlang.sv_ready)");
@@ -165,7 +164,7 @@ WEAVE_TEST(xlang_tests) {
     expect(ready.recv(50_ms).has_value(), "the SV responder announced readiness");
 
     shuttle::Requester<XRqReq, XRqResp> client("rq.xlang.req", "rq.xlang.resp");
-    auto call = client.send(XRqReq{0, 20});
+    auto call = client.send_serial(XRqReq{0, 20});
     expect_eq(static_cast<long long>(call.publication().subscriber_count()), 1,
               "the SV responder is the only target");
     auto replies = call.wait_all(10_ms);

@@ -113,9 +113,24 @@ Subscription subscribe(std::string topic, NonBlocking<F> cb, SubOptions opts = {
 // ── Raw-byte subscription ───────────────────────────────────────────────
 // Consume the on-the-wire byte stream directly: for debugging / pass-through,
 // or for topics published from SV whose type is not registered on the C++ side.
-inline Subscription subscribe_bytes(std::string topic, ByteCallback cb,
-                                    Capability cap = Capability::blocking, SubOptions opts = {}) {
-  return detail::sub_raw(std::move(topic), std::move(cb), cap, std::move(opts));
+// Same two overloads as subscribe<T>: the entry follows the argument type, so
+// nb(cb) is the nonblocking entry and no runtime Capability is ever passed.
+template <typename F>
+Subscription subscribe_bytes(std::string topic, F&& cb, SubOptions opts = {}) {
+  static_assert(std::is_invocable_v<F&, const std::vector<std::byte>&, const Meta&>,
+                "shuttle: byte callback signature should be void(const std::vector<std::byte>&, "
+                "const shuttle::Meta&)");
+  return detail::sub_raw(std::move(topic), ByteCallback(std::forward<F>(cb)), Capability::blocking,
+                         std::move(opts));
+}
+
+template <typename F>
+Subscription subscribe_bytes(std::string topic, NonBlocking<F> cb, SubOptions opts = {}) {
+  static_assert(std::is_invocable_v<F&, const std::vector<std::byte>&, const Meta&>,
+                "shuttle: byte callback signature should be void(const std::vector<std::byte>&, "
+                "const shuttle::Meta&)");
+  return detail::sub_raw(std::move(topic), ByteCallback(std::move(cb.fn)), Capability::nonblocking,
+                         std::move(opts));
 }
 
 }  // namespace shuttle

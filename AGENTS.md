@@ -28,7 +28,8 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
    投递必须走 `shuttle_sv_dispatch_nb`（function），不接受任何例外。
 4. **一次注册 = 一个订阅者 = 一个入口**：入口由**注册时调用的函数**决定——C++ `subscribe(fn)`
    / SV `shuttle_subscribe` = blocking 入口（SV 侧 export task）；C++ `subscribe(nb(fn))` /
-   SV `shuttle_subscribe_nb` = nonblocking 入口（SV 侧 export function）。
+   SV `shuttle_subscribe_nb` = nonblocking 入口（SV 侧 export function）。`serve(...)` 同理（裸 handler = blocking、`nb(handler)` = nonblocking），
+   **不提供运行时 `Capability` 参数**——否则入口变成运行时属性，调用处也看不出来。
    **不要**用 `$cast` 探测类实现了哪些 interface class 自动登记两个入口：那会把
    能力变成类级属性，与 C++ 的注册级属性错位（会让 `subscriber_count()` 与 `publish_now` 的行为在两种
    语言里不一致）。两入口都要 = 注册两次。三种方式的目标集合都是"全部匹配订阅者"；`publish_now`
