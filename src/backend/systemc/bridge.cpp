@@ -33,12 +33,12 @@ bool available() {
 }
 
 void dispatch(int, const std::string&, const std::string&, std::uint64_t, std::int64_t,
-              const std::vector<std::byte>&) {
+              std::uint32_t, const std::vector<std::byte>&) {
   throw std::logic_error("shuttle: the systemc backend has no SV subscriber channel");
 }
 
 void dispatch_nb(int, const std::string&, const std::string&, std::uint64_t, std::int64_t,
-                 const std::vector<std::byte>&) {
+                 std::uint32_t, const std::vector<std::byte>&) {
   throw std::logic_error("shuttle: the systemc backend has no SV subscriber channel");
 }
 

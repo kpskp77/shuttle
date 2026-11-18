@@ -25,16 +25,14 @@ using shuttle_test::run_case;
 
 // ── Test message types (SHUTTLE_REFLECT can only be used at global scope) ──
 struct MbxReq {
-  std::uint32_t req_id = 0;
   std::uint32_t op = 0;
 };
-SHUTTLE_REFLECT(MbxReq, req_id, op)
+SHUTTLE_REFLECT(MbxReq, op)
 
 struct MbxResp {
-  std::uint32_t req_id = 0;
   std::uint32_t data = 0;
 };
-SHUTTLE_REFLECT(MbxResp, req_id, data)
+SHUTTLE_REFLECT(MbxResp, data)
 
 WEAVE_TEST(mailbox_tests) {
   // case1: a mailbox is a nonblocking subscriber, so publish_now fills it synchronously on the
@@ -44,7 +42,7 @@ WEAVE_TEST(mailbox_tests) {
     shuttle::Publisher<MbxResp> pub("mbx.now");
     expect_eq(static_cast<long long>(box.size()), 0, "a fresh mailbox is empty");
 
-    auto h = pub.publish_now(MbxResp{1, 0xAA});
+    auto h = pub.publish_now(MbxResp{0xAA});
     expect(h.done(), "zero blocking targets: the frame completes synchronously");
     expect_eq(static_cast<long long>(box.size()), 1,
               "publish_now filled the mailbox before returning");
@@ -62,14 +60,14 @@ WEAVE_TEST(mailbox_tests) {
     auto box = shuttle::mailbox<MbxResp>("mbx.serial");
     shuttle::Publisher<MbxResp> pub("mbx.serial");
 
-    auto hs = pub.publish_serial(MbxResp{1, 11});
+    auto hs = pub.publish_serial(MbxResp{11});
     expect_eq(static_cast<long long>(hs.subscriber_count()), 1,
               "a mailbox is an ordinary target subscriber");
     hs.wait();
     auto first = box.try_recv();
     expect(first.has_value() && first->value.data == 11, "serial filled the mailbox");
 
-    auto hc = pub.publish_concurrent(MbxResp{2, 22});
+    auto hc = pub.publish_concurrent(MbxResp{22});
     hc.wait();
     expect(box.try_recv().has_value(), "concurrent filled the mailbox too");
   });
@@ -80,7 +78,7 @@ WEAVE_TEST(mailbox_tests) {
     shuttle::Publisher<MbxResp> pub("mbx.order");
     std::vector<std::uint32_t> got;
 
-    for (std::uint32_t i = 1; i <= 3; ++i) pub.publish_serial(MbxResp{i, i}).wait();
+    for (std::uint32_t i = 1; i <= 3; ++i) pub.publish_serial(MbxResp{i}).wait();
     while (auto item = box.try_recv()) got.push_back(item->value.data);
     expect_eq(static_cast<long long>(got.size()), 3, "three frames queued");
     expect(got[0] == 1 && got[1] == 2 && got[2] == 3, "serial keeps publish/join order");
@@ -95,7 +93,7 @@ WEAVE_TEST(mailbox_tests) {
     expect(!box.recv(50_us).has_value(), "nothing published: the wait times out");
     expect_eq(static_cast<long long>(box.size()), 0, "a timeout consumes nothing");
 
-    pub.publish_serial(MbxResp{1, 7}).wait();
+    pub.publish_serial(MbxResp{7}).wait();
     auto late = box.recv(1_ms);
     expect(late.has_value(), "a frame published after the timeout is still received");
     expect_eq(static_cast<long long>(late->value.data), 7, "and it is the expected frame");
@@ -125,7 +123,7 @@ WEAVE_TEST(mailbox_tests) {
     auto box = shuttle::mailbox<MbxResp>("mbx.dropold", opts);
     shuttle::Publisher<MbxResp> pub("mbx.dropold");
 
-    for (std::uint32_t i = 1; i <= 4; ++i) pub.publish_now(MbxResp{i, i});
+    for (std::uint32_t i = 1; i <= 4; ++i) pub.publish_now(MbxResp{i});
     expect_eq(static_cast<long long>(box.size()), 2, "the queue is bounded");
     expect_eq(static_cast<long long>(box.received()), 4, "all four frames reached the mailbox");
     expect_eq(static_cast<long long>(box.overflowed()), 2, "two were dropped");
@@ -143,8 +141,8 @@ WEAVE_TEST(mailbox_tests) {
     auto box = shuttle::mailbox<MbxResp>("mbx.reject", opts);
     shuttle::Publisher<MbxResp> pub("mbx.reject");
 
-    pub.publish_serial(MbxResp{1, 1}).wait();
-    auto bad = pub.publish_serial(MbxResp{2, 2});
+    pub.publish_serial(MbxResp{1}).wait();
+    auto bad = pub.publish_serial(MbxResp{2});
     bad.wait();
     expect_eq(static_cast<long long>(bad.failures().size()), 1,
               "the overflowing delivery is recorded as a subscriber failure");
@@ -157,7 +155,7 @@ WEAVE_TEST(mailbox_tests) {
   run_case(__func__, "case8", [] {
     auto box = shuttle::mailbox<MbxResp>("mbx.close");
     shuttle::Publisher<MbxResp> pub("mbx.close");
-    pub.publish_serial(MbxResp{1, 5}).wait();
+    pub.publish_serial(MbxResp{5}).wait();
 
     bool closed_threw = false;
     auto waiter = weave::create_task("mbx-waiter", [&] {
@@ -198,7 +196,7 @@ WEAVE_TEST(mailbox_tests) {
   run_case(__func__, "case10", [] {
     shuttle::Publisher<MbxResp> pub("mbx.retained");
     pub.set_retained(true);
-    pub.publish_now(MbxResp{1, 42});
+    pub.publish_now(MbxResp{42});
 
     auto box = shuttle::mailbox<MbxResp>("mbx.retained");
     auto item = box.try_recv();
@@ -212,8 +210,8 @@ WEAVE_TEST(mailbox_tests) {
     auto box = shuttle::mailbox<MbxResp>("mbx.wild.>");
     shuttle::Publisher<MbxResp> a("mbx.wild.a");
     shuttle::Publisher<MbxResp> b("mbx.wild.b");
-    a.publish_now(MbxResp{1, 1});
-    b.publish_now(MbxResp{1, 2});
+    a.publish_now(MbxResp{1});
+    b.publish_now(MbxResp{2});
 
     auto first = box.try_recv();
     auto second = box.try_recv();
@@ -228,39 +226,39 @@ WEAVE_TEST(mailbox_tests) {
     auto box = shuttle::mailbox_bytes("mbx.bytes");
     auto alias = box;  // shared semantics
     shuttle::Publisher<MbxResp> pub("mbx.bytes");
-    pub.publish_now(MbxResp{1, 0x01020304});
+    pub.publish_now(MbxResp{0x01020304});
 
     expect_eq(static_cast<long long>(alias.size()), 1, "copies share the queue");
     auto item = alias.try_recv();
     expect(item.has_value(), "the byte mailbox received the frame");
-    // MbxResp is two uint32 fields: 8 bytes, big-endian
-    expect_eq(static_cast<long long>(item->value.size()), 8, "wire length of MbxResp");
-    expect(static_cast<unsigned char>(item->value[4]) == 0x01 &&
-               static_cast<unsigned char>(item->value[7]) == 0x04,
+    // MbxResp is one uint32 field: 4 bytes, big-endian
+    expect_eq(static_cast<long long>(item->value.size()), 4, "wire length of MbxResp");
+    expect(static_cast<unsigned char>(item->value[0]) == 0x01 &&
+               static_cast<unsigned char>(item->value[3]) == 0x04,
            "big-endian wire bytes, no decoding");
     expect_eq(static_cast<long long>(box.size()), 0, "both handles see the same drained queue");
   });
 
-  // case13: request/response round trip — the responder resps on a second topic and echoes
-  // meta.topic_seq as the correlation id; the requester waits for its own frame, then for the resp
+  // case13: request/response round trip over mailboxes — one request in flight needs no correlation
+  // at all; only Requester/serve allocate a corr_id, and a plain publish leaves it 0
   run_case(__func__, "case13", [] {
     auto resps = shuttle::mailbox<MbxResp>("mbx.rr.resp");
     shuttle::Publisher<MbxResp> responder_pub("mbx.rr.resp");
-    auto sub = shuttle::subscribe<MbxReq>("mbx.rr.req", [&](const MbxReq& req,
-                                                            const shuttle::Meta& meta) {
-      responder_pub.publish_serial(MbxResp{static_cast<std::uint32_t>(meta.topic_seq), req.op * 2});
-    });
+    auto sub =
+        shuttle::subscribe<MbxReq>("mbx.rr.req", [&](const MbxReq& req, const shuttle::Meta&) {
+          responder_pub.publish_serial(MbxResp{req.op * 2});
+        });
 
     shuttle::Publisher<MbxReq> req_pub("mbx.rr.req");
-    auto req = req_pub.publish_serial(MbxReq{0, 21});
+    auto req = req_pub.publish_serial(MbxReq{21});
     req.wait();  // the responder's callback has returned => the resp is published
     expect(req.done() && req.failures().empty(), "request delivered without failures");
 
     auto resp = resps.recv(1_ms);
-    expect(resp.has_value(), "the reply arrived");
+    expect(resp.has_value(), "the resp arrived");
     expect(resp.has_value() && resp->value.data == 42, "the responder's answer is visible");
-    expect(resp.has_value() && resp->value.req_id == 1,
-           "the correlation id (echoed request seq) pairs the reply");
+    expect(resp.has_value() && resp->meta.corr_id == 0,
+           "a plain publish leaves corr_id 0 (only Requester/serve allocate one)");
   });
 
   report(__func__);

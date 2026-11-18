@@ -160,6 +160,12 @@ SV 侧 export function），blocking 目标根本不在这个循环里。同步�
 `first_error` 后继续，`defer` 段照常入链，最后才把第一个异常抛给调用者；SV 侧
 `shuttle_c_publish_now` 把异常转成返回码与 `shuttle_c_last_error()`。
 
+**重入深度上限**：因为回调在发布者栈上跑，一个订阅者在回调里再 `publish_now` 不会挂起而是递归；
+若两者互相发布（A 的订阅者发 B、B 的订阅者发回 A）就会变成栈溢出且**没有任何诊断**。
+`dispatch_now` 用一个 `thread_local` 深度计数器（`kMaxNowDepth = 8`）把这种环变成
+`PublishError`（"nested deeper than 8 frames"）。它是诊断上界不是策略：合法的嵌套是
+"请求帧 → 响应者 handler → 回执帧"（§17），深度 2~3。
+
 ### 5.2 `publish_serial`
 
 ```
@@ -761,46 +767,60 @@ box.close();                                   // 幂等：退订 + 唤醒等待
 
 `include/shuttle/requester.hpp` 与 §16 的邮箱是**兄弟**而非上下层：它不 include `mailbox.hpp`，
 而是复用同一套订阅原语（`detail::sub_typed` + nonblocking 入口），再加上一个请求 topic + 一个回执
-topic + 载荷里的关联字段。同样是**纯头文件**，不新增 broker 状态与导出符号。
+topic + 帧头里的关联号（`Meta::corr_id`）。同样是**纯头文件**，不新增 broker 状态与导出符号。
 
 ```cpp
 // 响应者（可以有多个，C++ 或 SV）
 shuttle::serve<Req, Resp>("dev.req", "dev.resp",
-                          [](const Req& r, const shuttle::Meta&) { return Resp{0, business(r)}; });
+                          [](const Req& r, const shuttle::Meta&) { return Resp{business(r)}; });
 
 // 请求者：三种发送方式与 `Publisher` 同名同参（send_serial / send_concurrent / send_now）
 shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
-auto call = client.send_serial(Req{0, 21});
+auto call = client.send_serial(Req{21});
 for (const auto& resp : call.wait_all(1_ms)) use(resp);
 ```
 
-**关联 id 为什么放在载荷里**：先明确名字——`req_id` 是**请求-响应关联号**（请求方分配、响应者
-原样回显、用来把回执路由回对应的 `Call`），**不是** PCIe 的 Requester ID（那是 bus/device/function）。
-`Meta.topic_seq` 由 broker 分配且对发布方不可见
-（`Publication` 只有计数与失败，拿不到本帧的 `topic_seq`），所以请求方无法得知自己请求的序号。
-于是 req_id 由 `Requester` 分配、写进请求载荷，`serve` 在回执里原样回填——两端同一个值，
-不需要 broker 支持，跨语言也不变（SV 响应者按同样的字段布局回显即可，见
-`tests/sv/shuttle_tests.sv` 的 `SvRqSink`）。默认约定两个载荷都有 `req_id` 字段
-（`shuttle::ReqIdField`），第三个模板参数可换成自定义 traits。
+**关联号是帧头字段，不是载荷字段**：先明确名字——`corr_id` 是**请求-响应关联号**（请求方分配、
+响应者原样回填、用来把回执路由回对应的 `Call`），**不是** PCIe 的 Requester ID（那是
+bus/device/function）。它由发布方在 `publish_*` 的最后一个参数给出，broker 原样抄进
+`Meta::corr_id` 并跨语言透传（`shuttle_sv_dispatch` 的 `int unsigned corr_id`），`0` 表示
+"不是一次关联请求"。**公开的发布三件套不暴露这个参数**——`Publisher::publish_now` /
+`publish_serial` / `publish_concurrent` 的参数与以前完全相同（也因此总是发出 `corr_id = 0` 的
+非关联帧）：关联是请求-响应概念，只有 `Requester::send_*`、`serve` 与 SV 的
+`shuttle_pub::reply` 写它（它们走内部发布通道 `detail::pub_*` 的尾部实参）。`serve` 自动回填请求的
+号，用户代码从头到尾看不到它——因此**载荷类型不需要任何握手字段**，
+第三方类型（不是你的结构体、不能改）也能直接当请求/回执载荷，编码布局就是用户声明的那几个字段。
 
-**没有 req_id 会怎样（逐条）**：一个 `Requester` 只有**一条回执订阅**（一个 topic、一条入口、
+不放进载荷的三个理由：
+- **收件人拿不到自己的序号**：`Meta.topic_seq` 由 broker 分配且对发布方不可见
+  （`Publication` 只有计数与失败），放在载荷里就没法在发布前把号写进去；
+- **顺序要求"发布前就有号"**：`send_impl` 必须**先**把 `corr_id` 入表**再**发布——`send_now` +
+  nonblocking 入口时响应者就在发布者栈上同步回执，晚一步就丢（`stale_responses()` 会涨）。
+  让号来自 `topic_seq` 只能"发布后读回"，正好踩中这个洞；要修就得给 broker 加"预约序号"API，
+  等于新增 DPI 入口，只为一个糖组件；
+- **`topic_seq` 是 per-topic 内部记账**：`a.req` 与 `b.req` 都从 1 开始，`serve` 又支持通配符请求
+  topic，一公开就撞号，还会把诊断字段变成 ABI 契约。
+
+计数器是**进程级**的普通 `static`（单活跃进程模型，无需原子；见 AGENTS.md 不变 1），因此两个
+`Requester` 实例共用同一个回执 topic 也不会串号。
+
+**没有关联号会怎样（逐条）**：一个 `Requester` 只有**一条回执订阅**（一个 topic、一条入口、
 一个回调 `ResponseTable::deliver`），所有请求的回执都从这一个回调进来。帧里只有 `{TResp, Meta{}}`，
-而 `Meta.topic_seq` 是**回执 topic 自己的**发布序号、与请求帧的序号无关，请求方也拿不到自己请求帧的
-序号（`Publication` 只回计数）。于是没有 req_id 时：
+而 `Meta.topic_seq` 是**回执 topic 自己的**发布序号、与请求帧的序号无关。于是没有关联号时：
 
 - **乱序即错配**：A(op=1)、B(op=2) 两个在途请求，答案 101/102，若 B 的回执先到，FIFO 会把 101
   分给 B（`requester_tests::case2` 钉的就是这条：`rb.at(0).data == 102` 会失败）。两次问同一地址
   时值相同，交换后**完全无法察觉**；
 - **多响应者无法计数**：一个请求命中 3 个目标产生 3 条回执，`wait_for(n)` / `wait_all` 依赖
   "这条属于哪个 Call" 才能判断"还差几条"；
-- **迟到的回执污染下一次请求**：请求 A 超时（或 `cancel()`）后被丢弃，5ms 后它的回执到达——无 req_id
-  时正好落进下一个请求 B 的队列，B 拿到 A 的答案（类型/取值都合法，静默错）。有 req_id 时
-  `ResponseTable::deliver` 的 `inflight.find(req_id)` 找不到，记 `stale_responses()`（不是黑洞，可数）；
+- **迟到的回执污染下一次请求**：请求 A 超时（或 `cancel()`）后被丢弃，5ms 后它的回执到达——没有
+  关联号时正好落进下一个请求 B 的队列，B 拿到 A 的答案（类型/取值都合法，静默错）。有关联号时
+  `ResponseTable::deliver` 的 `inflight.find(corr_id)` 找不到，记 `stale_responses()`（不是黑洞，可数）；
 - **跨语言无法对齐**：SV 响应者必须把同一个整数抄回来，C++ 侧才能认领。
 
-req_id 因此由**请求方**生成（它要建表，必须自己知道这个号），broker 无法代劳：它能给的只有
-"帧在本 topic 上的序号"，既不指向调用、也不回传发布方；要新增"回执指向哪个请求"的元数据就得改
-DPI 线上格式与两侧解析。放在载荷里则是零协议成本（两侧本来就在编解码，SV 侧同布局回显即可）。
+关联号因此由**请求方**生成（它要建表，必须自己知道这个号），broker 只负责透传；它是
+`Meta` 里唯一的"业务可写"字段（其余四个由 broker 填），两侧 `Meta` 结构同名同序，
+线上位置在 `topic_seq` / `time_fs` 之后。
 
 **回执计数是显式的**：框架不知道"该有几个回执"。`wait_for(n, timeout)` 等最多 n 条；
 `wait_all(timeout)` 采用默认约定"请求帧的每个目标订阅者恰好回一条"（n =
@@ -814,10 +834,27 @@ topic 开了 retained"不会毒化后续请求（仍不推荐）。
 "发布它的那个回调"之后——`Requester`/`serve` 构造时直接抛 `std::invalid_argument`。
 
 **入口选择**：和 `subscribe` 完全一致——裸 handler 注册 blocking 入口（响应者通常要消耗
-仿真时间），`nb(handler)` 注册 nonblocking 入口，此时可与 `send_now()`（`publish_now`）配合
-得到零 RTT 的同步请求-响应。**刻意不提供运行时 `Capability` 参数**：一次注册 = 一个入口，
-入口必须写在调用处（不变 4）。SV 侧同一区分由函数名承担（`shuttle_subscribe` /
-`shuttle_subscribe_nb`），C++ 侧由参数类型承担，两者都不靠"运行时枚举"。
+仿真时间），`nb(handler)` 注册 nonblocking 入口。**刻意不提供运行时 `Capability` 参数**：
+一次注册 = 一个入口，入口必须写在调用处（不变 4）。SV 侧同一区分由函数名承担
+（`shuttle_subscribe` / `shuttle_subscribe_nb`），C++ 侧由参数类型承担，两者都不靠"运行时枚举"。
+
+**回执走 `publish_now`，不是 `publish_serial`**：响应者用 `detail::pub_now(..., NowPolicy::defer) 
++ meta.corr_id` 发布回执（SV 的 `shuttle_pub::reply` 同样走 `shuttle_c_publish_now`）。
+由此得到一条可测的性质：**响应者用 `nb(handler)` 时，整条往返在请求方栈上跑完**——
+`send_now()` 返回时回执已经在 `Call` 里（`call.queued() == 1`），中间不切任务、不消耗仿真时间
+（`requester_tests::case11` 用 `now_fs()` 前后相等钉住）。`defer` 只是兜底：万一回执 topic 上
+还残留 blocking 订阅者（在标记之前就注册了），那一份交给串行链，nonblocking 目标（包括请求方）
+仍然就地完成。也正因如此，回执不再排在 topic 链尾后面：**旁观者的慢回调咬不动请求方**。
+
+**回执 topic 是"响应通道"**：`Requester` 构造时与 `serve` 注册时都会调用
+`detail::topic_mark_responses(resp_topic)`，把该 topic 标成响应通道（`Topic::carries_responses`）。
+此后任何 **blocking 入口**在该 topic 上注册都会被 `Broker::check_response_topic` 当场拒绝
+（`CapabilityError`），通配符 pattern 按**匹配**判定——`serve("dev.*.req", ...)` 的响应者想用
+`dev.>` 挂一个 blocking 旁观者会直接失败。理由：blocking 旁观者持有该 topic 的串行链，
+会让后续每一帧回执排队，而请求方无法区分"响应者死了"与"回执排在别人后面"——超时会说谎。
+在注册处报错 = 早失败（不变 4 的口径）。**名字本身仍然公开**：`resp_topic()` 照旧返回它，
+手工往回执 topic 发布仍然合法（外部工具/VIP），要看回执就用 `nb()` 注册；
+标记前就已注册的 blocking 订阅者不会被追溯拒绝（也不危险：见上面的 `publish_now` 路径）。
 
 ## 18. 构建
 

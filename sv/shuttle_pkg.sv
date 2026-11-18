@@ -62,11 +62,13 @@ package shuttle_pkg;
   // All are context imports: the implementations may call back into the
   // exports below (dispatch / time).
   import "DPI-C" context function int shuttle_c_publish_now(
-      string topic, string type_tag, byte payload[], int now_policy);
+      string topic, string type_tag, byte payload[], int now_policy, int unsigned corr_id = 0);
   import "DPI-C" context function int shuttle_c_publish_serial(
-      string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg);
+      string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg,
+      int unsigned corr_id = 0);
   import "DPI-C" context function int shuttle_c_publish_concurrent(
-      string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg);
+      string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg,
+      int unsigned corr_id = 0);
   import "DPI-C" context task shuttle_c_wait_pub(
       int pub_id, longint timeout_fs, output int status);
   import "DPI-C" context function int shuttle_c_pub_done(int pub_id);
@@ -135,11 +137,16 @@ package shuttle_pkg;
     string  type_tag;
     longint topic_seq;
     longint time_fs;
-    function new(string topic_name, string type_tag, longint topic_seq, longint time_fs);
+    // Correlation id of this frame, assigned by the publisher (0 = uncorrelated).
+    // Echo it when publishing a response to a request (see `shuttle_pub::publish_*`).
+    int unsigned corr_id;
+    function new(string topic_name, string type_tag, longint topic_seq, longint time_fs,
+                 int unsigned corr_id = 0);
       this.topic_name = topic_name;
       this.type_tag   = type_tag;
       this.topic_seq  = topic_seq;
       this.time_fs    = time_fs;
+      this.corr_id    = corr_id;
     endfunction
   endclass
 
@@ -683,7 +690,7 @@ package shuttle_pkg;
     function shuttle_handle publish_now(T msg, int policy = SHUTTLE_NOW_DEFER);
       byte payload[];
       pack_payload(msg, payload);
-      return wrap(shuttle_c_publish_now(topic_, T::type_tag, payload, policy), "now", 1'b0);
+      return wrap(shuttle_c_publish_now(topic_, T::type_tag, payload, policy, 0), "now", 1'b0);
     endfunction
 
     // `publish_serial`: background single-chain, in-order callbacks
@@ -694,7 +701,8 @@ package shuttle_pkg;
       longint arg;
       trig_scalars(trig, kind, arg);
       pack_payload(msg, payload);
-      return wrap(shuttle_c_publish_serial(topic_, T::type_tag, payload, kind, arg), "serial", 1'b1);
+      return wrap(shuttle_c_publish_serial(topic_, T::type_tag, payload, kind, arg, 0),
+                  "serial", 1'b1);
     endfunction
 
     // `publish_concurrent`: background, one task per subscriber, concurrent
@@ -705,8 +713,25 @@ package shuttle_pkg;
       longint arg;
       trig_scalars(trig, kind, arg);
       pack_payload(msg, payload);
-      return wrap(shuttle_c_publish_concurrent(topic_, T::type_tag, payload, kind, arg),
+      return wrap(shuttle_c_publish_concurrent(topic_, T::type_tag, payload, kind, arg, 0),
                   "concurrent", 1'b1);
+    endfunction
+
+    // Responder shorthand: publish `msg` as the answer to `request`. The frame inherits
+    // request.corr_id, which is what lets the C++ side route it to its Call. This is the SV
+    // counterpart of serve() and the *only* place correlation is visible; publish_now /
+    // publish_serial / publish_concurrent stay unaware of it (they leave corr_id 0), so a
+    // publisher never has to think about correlation.
+    //
+    // It goes out through publish_now so that a nonblocking C++ requester has the answer on
+    // its stack before this call returns (no task switch). `defer` keeps it correct even if
+    // a blocking subscriber slipped onto the response topic before it was marked.
+    function shuttle_handle reply(T msg, shuttle_meta request);
+      byte payload[];
+      pack_payload(msg, payload);
+      return wrap(
+          shuttle_c_publish_now(topic_, T::type_tag, payload, SHUTTLE_NOW_DEFER, request.corr_id),
+          "reply", 1'b1);
     endfunction
 
     // retained (latched): once enabled, the broker caches the latest frame
@@ -724,8 +749,8 @@ package shuttle_pkg;
   // the header of this file).
   task automatic shuttle_sv_dispatch(input int sub_id, input string topic_name,
                                      input string type_tag, input longint topic_seq,
-                                     input longint time_fs);
-    shuttle_meta m = new(topic_name, type_tag, topic_seq, time_fs);
+                                     input longint time_fs, input int unsigned corr_id);
+    shuttle_meta m = new(topic_name, type_tag, topic_seq, time_fs, corr_id);
     byte payload[];
     shuttle_frame_bytes(payload);
     shuttle_registry::dispatch(sub_id, payload, m);
@@ -736,8 +761,9 @@ package shuttle_pkg;
   // payload is obtained via the frame-pull protocol.
   function automatic void shuttle_sv_dispatch_nb(input int sub_id, input string topic_name,
                                                  input string type_tag, input longint topic_seq,
-                                                 input longint time_fs);
-    shuttle_meta m = new(topic_name, type_tag, topic_seq, time_fs);
+                                                 input longint time_fs,
+                                                 input int unsigned corr_id);
+    shuttle_meta m = new(topic_name, type_tag, topic_seq, time_fs, corr_id);
     byte payload[];
     shuttle_frame_bytes(payload);
     shuttle_registry::dispatch_nb(sub_id, payload, m);

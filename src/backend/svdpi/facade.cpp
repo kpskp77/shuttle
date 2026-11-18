@@ -62,28 +62,31 @@ const std::string& last_error() {
 // ── External entry facade (errors reported via set_last_error + return code/exception) ──
 
 Publication ext_pub_now(const std::string& topic, const std::string& tag,
-                        const std::vector<std::byte>& frame, NowPolicy policy) {
+                        const std::vector<std::byte>& frame, NowPolicy policy,
+                        std::uint32_t corr_id) {
   Broker& b = Broker::get();
   b.now_preflight(
       topic, tag,
       policy);  // decide before building the frame: reject consumes no seq / refreshes no retained
-  auto env = b.make_envelope_bytes(topic, tag, frame);
+  auto env = b.make_envelope_bytes(topic, tag, frame, corr_id);
   return detail_pub_access::make(dispatch_now(b, std::move(env), policy));
 }
 
 Publication ext_pub_serial(const std::string& topic, const std::string& tag,
-                           const std::vector<std::byte>& frame, Trigger trig) {
+                           const std::vector<std::byte>& frame, Trigger trig,
+                           std::uint32_t corr_id) {
   Broker& b = Broker::get();
-  auto env = b.make_envelope_bytes(topic, tag, frame);
+  auto env = b.make_envelope_bytes(topic, tag, frame, corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(
       b.start_serial(topic, std::move(env), std::move(trig), std::move(targets)));
 }
 
 Publication ext_pub_concurrent(const std::string& topic, const std::string& tag,
-                               const std::vector<std::byte>& frame, Trigger trig) {
+                               const std::vector<std::byte>& frame, Trigger trig,
+                               std::uint32_t corr_id) {
   Broker& b = Broker::get();
-  auto env = b.make_envelope_bytes(topic, tag, frame);
+  auto env = b.make_envelope_bytes(topic, tag, frame, corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(
       b.start_concurrent(topic, std::move(env), std::move(trig), std::move(targets)));

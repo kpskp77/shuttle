@@ -212,8 +212,36 @@ std::shared_ptr<PubState> Broker::start_concurrent(
 // ── publish_now: synchronous nonblocking section; blocking targets handled
 //    per policy ────────────────────────────────────────────────────────────
 
+namespace {
+
+// publish_now runs every nonblocking subscriber on the caller's stack, so a
+// subscriber that publishes back would recurse instead of suspending. A cycle
+// (A's subscriber publishes to B, B's subscriber publishes back to A) then ends
+// in a stack overflow with no diagnostic at all. The bound is a diagnostic, not
+// a policy: legitimate nesting is the responder chain (request frame → handler →
+// response frame), i.e. two or three levels.
+constexpr int kMaxNowDepth = 8;
+thread_local int now_depth = 0;
+
+struct NowDepthGuard {
+  NowDepthGuard() {
+    if (++now_depth > kMaxNowDepth) {
+      --now_depth;
+      throw PublishError("shuttle: publish_now nested deeper than " + std::to_string(kMaxNowDepth) +
+                         " frames — a subscriber is publishing back into a topic that is still "
+                         "being dispatched (a publish_now cycle)");
+    }
+  }
+  ~NowDepthGuard() { --now_depth; }
+  NowDepthGuard(const NowDepthGuard&) = delete;
+  NowDepthGuard& operator=(const NowDepthGuard&) = delete;
+};
+
+}  // namespace
+
 std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope> env,
                                        NowPolicy policy) {
+  const NowDepthGuard depth_guard;
   const std::string_view topic = env->meta.topic_name;
   Topic& t = b.topic_for(topic);
   const auto matched = b.match_subs(topic, env->meta.type_tag);

@@ -465,5 +465,33 @@ WEAVE_TEST(publish_tests) {
     expect_eq(static_cast<long long>(hits), 0, "no callback was invoked at all");
   });
 
+  // case17: a publish_now cycle is stopped by the reentrancy bound instead of blowing the stack
+  // (A's nonblocking subscriber publishes to B, B's publishes back to A)
+  run_case(__func__, "case17", [] {
+    shuttle::Publisher<PubMsg> pa("pub.cycle.a");
+    shuttle::Publisher<PubMsg> pb("pub.cycle.b");
+    std::size_t a_hits = 0;
+    std::size_t b_hits = 0;
+    auto sa = shuttle::subscribe<PubMsg>("pub.cycle.a",
+                                         shuttle::nb([&](const PubMsg& m, const shuttle::Meta&) {
+                                           ++a_hits;
+                                           pb.publish_now(PubMsg{m.v});
+                                         }));
+    auto sb = shuttle::subscribe<PubMsg>("pub.cycle.b",
+                                         shuttle::nb([&](const PubMsg& m, const shuttle::Meta&) {
+                                           ++b_hits;
+                                           pa.publish_now(PubMsg{m.v});
+                                         }));
+
+    bool threw = false;
+    try {
+      pa.publish_now(PubMsg{1});
+    } catch (const shuttle::PublishError& e) {
+      threw = std::string(e.what()).find("nested deeper than") != std::string::npos;
+    }
+    expect(threw, "a publish_now cycle is refused with PublishError");
+    expect(a_hits > 1 && b_hits > 1, "the cycle really ran before the bound stopped it");
+  });
+
   report(__func__);
 }

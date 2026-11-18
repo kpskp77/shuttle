@@ -52,27 +52,31 @@ void topic_declare(const std::string& topic, const TypeOps* ops) {
   // different DSOs have different addresses but identical semantics.
 }
 
+void topic_mark_responses(const std::string& topic) {
+  Broker::get().mark_response_topic(topic);
+}
+
 Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, const TypeOps* ops,
-                    NowPolicy policy) {
+                    NowPolicy policy, std::uint32_t corr_id) {
   Broker& b = Broker::get();
   b.now_preflight(topic, ops->tag, policy);
-  auto env = b.make_envelope(topic, std::move(msg), ops);
+  auto env = b.make_envelope(topic, std::move(msg), ops, corr_id);
   return detail_pub_access::make(dispatch_now(b, std::move(env), policy));
 }
 
 Publication pub_serial(const std::string& topic, std::shared_ptr<const void> msg,
-                       const TypeOps* ops, Trigger trig) {
+                       const TypeOps* ops, Trigger trig, std::uint32_t corr_id) {
   Broker& b = Broker::get();
-  auto env = b.make_envelope(topic, std::move(msg), ops);
+  auto env = b.make_envelope(topic, std::move(msg), ops, corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(
       b.start_serial(topic, std::move(env), std::move(trig), std::move(targets)));
 }
 
 Publication pub_concurrent(const std::string& topic, std::shared_ptr<const void> msg,
-                           const TypeOps* ops, Trigger trig) {
+                           const TypeOps* ops, Trigger trig, std::uint32_t corr_id) {
   Broker& b = Broker::get();
-  auto env = b.make_envelope(topic, std::move(msg), ops);
+  auto env = b.make_envelope(topic, std::move(msg), ops, corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(
       b.start_concurrent(topic, std::move(env), std::move(trig), std::move(targets)));

@@ -16,7 +16,15 @@ struct Meta {
                             // 1, assigned by the broker, identical across languages. (topic_name,
                             // topic_seq) identifies a frame -- neither field does on its own
   std::int64_t time_fs;     // simulation time at publish (femtoseconds), from now_fs()
+  std::uint32_t corr_id = 0;  // correlation id of this frame, assigned by the *publisher* (the
+                              // broker neither interprets nor validates it); 0 = not part of a
+                              // correlated exchange. It rides in the frame header, so the payload
+                              // type needs no extra field and any encodable type works, third-party
+                              // ones included. `Requester` allocates it, `serve` echoes it
 };
+
+// `corr_id` is the AMQP `correlation_id` idea, scoped to one simulation process (see
+// requester.hpp for the allocation rule).
 
 // Current simulation time (femtoseconds).
 // svdpi backend: provided over DPI by the SV-side shuttle_sv_time_fs() (converted from $realtime);

@@ -19,9 +19,9 @@
 // ── C prototypes of the SV-side exports (defined in shuttle_pkg.sv) ──────
 extern "C" {
 void shuttle_sv_dispatch(int sv_sid, const char* topic_name, const char* type_tag,
-                         long long topic_seq, long long time_fs);
+                         long long topic_seq, long long time_fs, unsigned int corr_id);
 void shuttle_sv_dispatch_nb(int sv_sid, const char* topic_name, const char* type_tag,
-                            long long topic_seq, long long time_fs);
+                            long long topic_seq, long long time_fs, unsigned int corr_id);
 long long shuttle_sv_time_fs();
 }
 
@@ -42,23 +42,24 @@ bool available() {
 }
 
 void dispatch(int handle, const std::string& topic_name, const std::string& type_tag,
-              std::uint64_t topic_seq, std::int64_t time_fs,
+              std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
               const std::vector<std::byte>& payload) {
   SvScopeGuard scope;
   FrameContext ctx(payload);
   g_retired_hit = false;
   shuttle_sv_dispatch(handle, topic_name.c_str(), type_tag.c_str(),
-                      static_cast<long long>(topic_seq), static_cast<long long>(time_fs));
+                      static_cast<long long>(topic_seq), static_cast<long long>(time_fs), corr_id);
 }
 
 void dispatch_nb(int handle, const std::string& topic_name, const std::string& type_tag,
-                 std::uint64_t topic_seq, std::int64_t time_fs,
+                 std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
                  const std::vector<std::byte>& payload) {
   SvScopeGuard scope;
   FrameContext ctx(payload);
   g_retired_hit = false;
   shuttle_sv_dispatch_nb(handle, topic_name.c_str(), type_tag.c_str(),
-                         static_cast<long long>(topic_seq), static_cast<long long>(time_fs));
+                         static_cast<long long>(topic_seq), static_cast<long long>(time_fs),
+                         corr_id);
 }
 
 void note_retired_delivery() {

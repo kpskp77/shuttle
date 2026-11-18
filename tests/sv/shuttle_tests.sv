@@ -59,40 +59,38 @@ module shuttle_tests;
   endclass
 
   // ── Cross-language request/response payloads (mirror XRqReq/XRqResp in tests/cpp/xlang_tests.cpp) ──
-  // Two uint32 fields each; type_tag must equal the C++ SHUTTLE_REFLECT name so that type-matched
-  // delivery works across languages.
+  // One uint32 field each; type_tag must equal the C++ SHUTTLE_REFLECT name so that type-matched
+  // delivery works across languages. The correlation id is NOT part of the payload: it travels in
+  // the frame header (shuttle_meta::corr_id), so these classes hold only domain data.
   class SvRqReq;
-    int unsigned req_id;
     int unsigned op;
     localparam string type_tag = "XRqReq";
 
     static function automatic SvRqReq unpack(byte b[]);
       SvRqReq r = new();
-      {>>{r.req_id, r.op}} = b;
+      {>>{r.op}} = b;
       return r;
     endfunction
   endclass
 
   class SvRqResp;
-    int unsigned req_id;
     int unsigned data;
     localparam string type_tag = "XRqResp";
 
     function automatic void pack(output byte q[$]);
-      q = {>>{req_id, data}};
+      q = {>>{data}};
     endfunction
   endclass
 
-  // Responder: echoes the request's req_id (the correlation id the C++ Requester allocated) and answers
-  // op*2+1, publishing the reply from inside the request callback.
+  // Responder: answers op*2+1 and hands the request's frame header to `pub.reply`, which echoes
+  // meta.corr_id for us — the response never mentions the id itself.
   class SvRqSink implements shuttle_sink;
     virtual task invoke(input byte payload[], input shuttle_meta meta);
-      SvRqReq            req  = SvRqReq::unpack(payload);
-      SvRqResp           resp = new();
+      SvRqReq                 req  = SvRqReq::unpack(payload);
+      SvRqResp                resp = new();
       shuttle_pub #(SvRqResp) pub = new("rq.xlang.resp");
-      resp.req_id  = req.req_id;
       resp.data = req.op * 2 + 1;
-      pub.publish_serial(resp);
+      pub.reply(resp, meta);
     endtask
   endclass
 

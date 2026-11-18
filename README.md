@@ -135,29 +135,37 @@ resps.recv(ok, payload, meta, 1us);
 
 ## 请求-响应
 
-在邮箱之上再包一层：`Requester`（请求方）+ `serve`（响应方），关联 id 放在载荷的 `req_id` 字段里。
+与邮箱**兄弟**的一层糖：`Requester`（请求方）+ `serve`（响应方）。关联号走**帧头**
+（`Meta::corr_id`），载荷里不需要任何握手字段——第三方类型可以直接当请求/回执载荷。
 
 ```cpp
-// 响应方：handler 返回回执，req_id 由框架从请求里回填
+// 响应方：handler 返回回执，框架自动把请求的 corr_id 回填进回执帧头
 shuttle::serve<Req, Resp>("dev.req", "dev.resp",
-                          [](const Req& r, const shuttle::Meta&) { return Resp{0, business(r)}; });
+                          [](const Req& r, const shuttle::Meta&) { return Resp{business(r)}; });
 
 // 请求方
 shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
-auto call = client.send_serial(Req{0, 21});          // req_id 自动分配并写进请求载荷
-auto resps = call.wait_all(1_ms);            // 每个目标订阅者回一条
+auto call = client.send_serial(Req{21});      // corr_id 自动分配，随帧头发布
+auto resps = call.wait_all(1_ms);             // 每个目标订阅者回一条
 if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 ```
 
 - 发送方式与 `Publisher` 一一对应、同名同参：`send_serial(msg, trig)`（默认，保序）、
   `send_concurrent(msg, trig)`、`send_now(msg, NowPolicy)`；
-- 多个未完成请求互不干扰：回执按 req_id 分发到各自的 `Call`；
+- 多个未完成请求互不干扰：回执按 `corr_id` 分发到各自的 `Call`；计数器是进程级的，多个
+  `Requester` 共用回执 topic 也不会串号；
 - 超时给空结果、帧不丢；`cancel()` 或丢掉句柄会释放槽位，迟到的回执记 `stale_responses()`；
 - `wait_for(n, timeout)` 显式指定期望条数，`wait_all()` 用"每个请求目标回一条"的默认约定；
-- 自定义关联字段：第三个模板参数传自己的 traits（默认 `shuttle::ReqIdField` 用 `.req_id`）；
-- 入口和 `subscribe` 一样按参数类型选：裸 handler = blocking，`shuttle::nb(handler)` = nonblocking
-  （配 `send_now()` 得零 RTT）；
-- 跨语言可用：SV 侧订阅请求 topic、在回执里回显 req_id 即可（见 `tests/sv/shuttle_tests.sv`）。
+- 入口和 `subscribe` 一样按参数类型选：裸 handler = blocking，`shuttle::nb(handler)` = nonblocking；
+- **回执走 `publish_now`**：响应者用 `nb(handler)` 时整条往返在请求方栈上跑完——`send_now()`
+  返回时回执已经在 `Call` 里（`call.queued() == 1`），不切任务、不耗仿真时间；
+- **回执 topic 是响应通道**：在它上面用 blocking 入口注册会被当场拒绝（`CapabilityError`，通配符
+  按匹配判定），因为 blocking 旁观者会拖慢每一帧回执、让超时说谎；看回执请用 `nb()`。名字本身
+  仍然公开（`resp_topic()`），手工往回执 topic 发布依旧合法；
+- 跨语言可用：SV 侧订阅请求 topic，回执用 `pub.reply(resp, meta)` 发——它把请求帧头里的
+  `corr_id` 原样抄进回执（见 `tests/sv/shuttle_tests.sv` 的 `SvRqSink`）；
+- 关联号对用户不可见：`publish_now` / `publish_serial` / `publish_concurrent` 不带这个参数
+  （也不该带，普通发布恒为 `corr_id = 0`），写它的只有 `send_*`、`serve` 与 SV 的 `reply`。
 
 ## 完成句柄与计数
 
@@ -271,7 +279,7 @@ just test-all   # 两者都跑
 | `tests/cpp/codec_tests.cpp` | 线格式黄金字节、各宽度大端与补码、IEEE754、长度前缀、enum 底层类型、嵌套 struct、越界抛 `DecodeError`、类型标签与 `has_codec_v` |
 | `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、类型不相交的帧不入目标集（含绑定时的通配符豁免）、topic 名与订阅模式的语法校验（`TopicPatternError`，被拒时不留 topic 条目） |
 | `tests/cpp/publish_tests.cpp` | `NowPolicy` 三策略、`wait/wait(timeout)/done/result/failures`、计数契约、失败聚合不影响其余目标、零目标立即完成、类型不相交即零目标、入口选择、`defer` 与 `serial` 共享 FIFO |
-| `tests/cpp/requester_tests.cpp` | 请求-响应：单/多响应者、req_id 分发、`wait_all` / `wait_for` / `recv` 超时、`cancel` 与迟到回执、响应者抛异常计入失败、非阻塞响应者 + `send_now`、自定义 traits、同 topic 拒绝 |
+| `tests/cpp/requester_tests.cpp` | 请求-响应：单/多响应者、`corr_id` 分发、`wait_all` / `wait_for` / `recv` 超时、`cancel` 与迟到回执、响应者抛异常计入失败、非阻塞响应者 + `send_now`、帧头关联号（载荷无握手字段）、进程级计数器、同 topic 拒绝 |
 | `tests/cpp/mailbox_tests.cpp` | 邮箱：`now` 同步填充、`serial`/`concurrent` 后台填充、超时不丢帧、三种溢出策略、`close` 唤醒、retained 回放、通配符、字节口味、请求-响应往返 |
 | `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发等待期间退订（在途帧记 retired）、延迟帧不阻塞后续同 topic 帧、触发器由后续帧回调放行 |
 | `tests/cpp/xlang_tests.cpp` | 跨语言往返（仅 svdpi 后端）：就绪握手、双向各三帧、类型标签与 seq 单调 |

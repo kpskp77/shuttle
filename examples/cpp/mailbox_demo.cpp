@@ -169,8 +169,8 @@ WEAVE_TEST(mailbox_demo) {
   // The pattern from mailbox.hpp's header comment: one request topic, one resp
   // topic, one responder, one request outstanding at a time. This is enough for a
   // fixed pair of components — reach for shuttle::Requester (requester.hpp) once
-  // several requests can be in flight, because then the resps need a req_id to be
-  // told apart.
+  // several requests can be in flight, because the responses then need a
+  // correlation id to be told apart (Requester puts it in the frame header for you).
   auto resps = shuttle::mailbox<Sample>("mb.resp");
   shuttle::Publisher<Sample> resp_pub("mb.resp");
   auto responder = shuttle::subscribe<Sample>("mb.req", [&](const Sample& s, const shuttle::Meta&) {

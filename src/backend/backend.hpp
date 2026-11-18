@@ -33,14 +33,17 @@ bool available();
 // process) context; the backend runs the user callback inside the external
 // process. `handle` is the backend-side number the subscriber received at
 // registration; the broker only passes it through without interpreting it.
+// `topic_seq` / `time_fs` / `corr_id` are the frame header's fields, forwarded
+// verbatim so that Meta is identical in both languages.
 void dispatch(int handle, const std::string& topic_name, const std::string& type_tag,
-              std::uint64_t topic_seq, std::int64_t time_fs, const std::vector<std::byte>& payload);
+              std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
+              const std::vector<std::byte>& payload);
 
 // Delivery for `publish_now`: called in the publisher's process context and
 // **must not block at all** (an import function's call chain cannot invoke an
 // export task; see AGENTS.md invariant 3).
 void dispatch_nb(int handle, const std::string& topic_name, const std::string& type_tag,
-                 std::uint64_t topic_seq, std::int64_t time_fs,
+                 std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
                  const std::vector<std::byte>& payload);
 
 // Current simulation time (femtoseconds), used as `Meta::time_fs`.

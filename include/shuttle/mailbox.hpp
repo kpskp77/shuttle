@@ -60,7 +60,7 @@
 //   · a mailbox wakes one queue, Requester wakes per call (one Event per Call),
 //     so two outstanding requests are waited for independently;
 //   · a reply that belongs to a cancelled or dropped call must still be
-//     *counted* (Requester::stale_responses()), which needs the req_id->call table;
+//     *counted* (Requester::stale_responses()), which needs the corr_id->call table;
 //   · the reply subscription must be shared by all calls of one Requester, not
 //     one queue per call and not one subscription per call.
 // Mailbox is the right tool when the responder set is fixed and one queue of

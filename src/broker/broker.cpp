@@ -130,6 +130,30 @@ Topic& Broker::topic_for(std::string_view name) {
   return it != topics.end() ? it->second : topics.try_emplace(std::string(name)).first->second;
 }
 
+// ── Response channels ────────────────────────────────────────────────────
+
+void Broker::mark_response_topic(std::string_view name) {
+  check_topic_name(name);
+  topic_for(name).carries_responses = true;
+}
+
+// The only enforcement point of the response-channel contract. Refusing at
+// registration keeps the failure loud and early (invariant 4 style) instead of
+// turning into a reply that arrives late enough to be mistaken for a dead
+// responder. Patterns are matched, not compared: a wildcard blocker
+// ("dev.>") would otherwise slip through and swallow the topic later.
+void Broker::check_response_topic(const std::string& pattern) const {
+  for (const auto& [name, topic] : topics) {
+    if (!topic.carries_responses) continue;
+    if (!match(pattern, name)) continue;
+    throw CapabilityError(std::string("shuttle: subscription ") + pattern +
+                          " matches the response topic " + name +
+                          "; register it with a nonblocking entry (nb() / "
+                          "shuttle_subscribe_nb) — a blocking subscriber there holds the "
+                          "topic's chain and delays every reply on it");
+  }
+}
+
 void Broker::check_filter_early(const Subscriber& sub) {
   if (sub.filter_tag.empty()) return;
   const auto it = topics.find(sub.pattern);
@@ -194,10 +218,11 @@ Delivery Broker::deliver(const std::shared_ptr<Subscriber>& sub, const Envelope&
       // has already partitioned by cap, so here we only follow the registered entry.
       if (use_nb)
         backend::dispatch_nb(sub->handle, env.meta.topic_name, env.meta.type_tag,
-                             env.meta.topic_seq, env.meta.time_fs, envelope_bytes(env));
+                             env.meta.topic_seq, env.meta.time_fs, env.meta.corr_id,
+                             envelope_bytes(env));
       else
         backend::dispatch(sub->handle, env.meta.topic_name, env.meta.type_tag, env.meta.topic_seq,
-                          env.meta.time_fs, envelope_bytes(env));
+                          env.meta.time_fs, env.meta.corr_id, envelope_bytes(env));
       // The SV registry has already dropped this sink: this in-flight
       // delivery is retired, not delivered.
       if (backend::take_retired_delivery()) {
@@ -243,7 +268,7 @@ void Broker::count_failed(Topic& topic, const std::shared_ptr<Subscriber>& sub) 
 
 std::shared_ptr<const Envelope> Broker::make_envelope(std::string_view topic,
                                                       std::shared_ptr<const void> payload,
-                                                      const TypeOps* ops) {
+                                                      const TypeOps* ops, std::uint32_t corr_id) {
   check_topic_name(topic);
   Topic& t = topic_for(topic);
   if (!t.binding) {
@@ -261,6 +286,7 @@ std::shared_ptr<const Envelope> Broker::make_envelope(std::string_view topic,
   env->meta.type_tag = t.binding->tag;
   env->meta.topic_seq = ++t.seq;
   env->meta.time_fs = backend::now_fs();
+  env->meta.corr_id = corr_id;
   ++t.published;
   if (t.retained_on) t.retained_env = env;
   return env;
@@ -268,7 +294,8 @@ std::shared_ptr<const Envelope> Broker::make_envelope(std::string_view topic,
 
 std::shared_ptr<const Envelope> Broker::make_envelope_bytes(std::string_view topic,
                                                             std::string_view tag,
-                                                            const std::vector<std::byte>& bytes) {
+                                                            const std::vector<std::byte>& bytes,
+                                                            std::uint32_t corr_id) {
   check_topic_name(topic);
   Topic& t = topic_for(topic);
   if (!t.binding) {
@@ -296,6 +323,7 @@ std::shared_ptr<const Envelope> Broker::make_envelope_bytes(std::string_view top
     env->meta.type_tag = t.binding->tag;
     env->meta.topic_seq = ++t.seq;
     env->meta.time_fs = backend::now_fs();
+    env->meta.corr_id = corr_id;
     ++t.published;
     if (t.retained_on) t.retained_env = env;
     return env;
@@ -303,7 +331,7 @@ std::shared_ptr<const Envelope> Broker::make_envelope_bytes(std::string_view top
   if (!t.binding->ops->decode)
     throw TypeMismatchError(std::string("shuttle: type bound to topic ") + std::string(topic) +
                             " does not support materialization from a byte stream");
-  return make_envelope(topic, t.binding->ops->decode(bytes), t.binding->ops);
+  return make_envelope(topic, t.binding->ops->decode(bytes), t.binding->ops, corr_id);
 }
 
 // ── Retained and subscription lifecycle ──────────────────────────────────
@@ -331,6 +359,9 @@ std::shared_ptr<Subscriber> Broker::register_sub(std::string pattern, SubKind ki
                                                  ErasedCallback cb, ByteCallback cb_bytes,
                                                  int handle) {
   check_pattern(pattern);
+  // A response topic may only be watched by nonblocking entries (no-op for
+  // topics that are not response channels).
+  if (cap == Capability::blocking) check_response_topic(pattern);
   auto sub = std::make_shared<Subscriber>();
   sub->id = next_sub_id++;
   sub->pattern = std::move(pattern);

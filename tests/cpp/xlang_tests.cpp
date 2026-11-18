@@ -38,18 +38,17 @@ using shuttle_test::run_case;
 
 // Request/response payloads for the Requester ↔ SV-responder case (the SV mirror is
 // SvRqReq/SvRqResp in tests/sv/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT
-// names).
+// names). Only domain data here: the correlation id rides in the frame header, so neither side
+// needs a handshake field in its payload.
 struct XRqReq {
-  std::uint32_t req_id = 0;
   std::uint32_t op = 0;
 };
-SHUTTLE_REFLECT(XRqReq, req_id, op)
+SHUTTLE_REFLECT(XRqReq, op)
 
 struct XRqResp {
-  std::uint32_t req_id = 0;
   std::uint32_t data = 0;
 };
-SHUTTLE_REFLECT(XRqResp, req_id, data)
+SHUTTLE_REFLECT(XRqResp, data)
 
 // Message type (SHUTTLE_REFLECT must be used at global scope).
 // Byte-for-byte counterpart of `class XMsg` in tests/sv/shuttle_tests.sv:
@@ -158,20 +157,21 @@ WEAVE_TEST(xlang_tests) {
 
   // case5: cross-language request/response — a C++ Requester calls the SV responder registered by
   // case_rq_xlang in tests/sv/shuttle_tests.sv (it registers first and broadcasts readiness as a
-  // retained frame). The resp echoes the req_id, so correlation works across the language boundary.
+  // retained frame). The SV side copies meta.corr_id into its response frame, so the C++ reply
+  // table can match the answer across the language boundary.
   run_case(__func__, "case5", [] {
     auto ready = shuttle::mailbox_bytes("rq.xlang.ready");
     expect(ready.recv(50_ms).has_value(), "the SV responder announced readiness");
 
     shuttle::Requester<XRqReq, XRqResp> client("rq.xlang.req", "rq.xlang.resp");
-    auto call = client.send_serial(XRqReq{0, 20});
+    auto call = client.send_serial(XRqReq{20});
     expect_eq(static_cast<long long>(call.publication().subscriber_count()), 1,
               "the SV responder is the only target");
     auto resps = call.wait_all(10_ms);
     expect_eq(static_cast<long long>(resps.size()), 1, "the SV responder answered");
     expect_eq(static_cast<long long>(resps.at(0).data), 41, "answer computed on the SV side");
-    expect_eq(static_cast<long long>(resps.at(0).req_id), static_cast<long long>(call.req_id()),
-              "the req_id survived the cross-language hop");
+    expect_eq(static_cast<long long>(client.stale_responses()), 0,
+              "the corr_id matched the live call, nothing landed as stale");
   });
 
   report(__func__);

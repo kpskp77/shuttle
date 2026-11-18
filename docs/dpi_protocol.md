@@ -16,9 +16,9 @@
 
 | 函数 | 签名 | 阻塞性 | 说明 |
 |---|---|---|---|
-| `shuttle_c_publish_now` | `(string topic, string type_tag, byte payload[], int now_policy) → int` | 不阻塞（但同步执行回调） | `publish_now` 发布：在**调用该函数的 SV 进程**内同步回调入口为 nonblocking 的订阅者；入口为 blocking 的订阅者按 `now_policy`（`SHUTTLE_NOW_*`，默认 `defer`）处置。返回 `pub_id`（>0），失败返回 0（原因见 `shuttle_c_last_error`）。SV 侧据此构造 `shuttle_handle`，因此 `publish_now` 与 `serial` / `concurrent` 一样可 `wait_done()`、可查询 `skipped()` / `deferred()` / `retired()`。`topic` 必须是不含通配符的具体名，否则返回 0 并置 `shuttle_c_last_error` |
-| `shuttle_c_publish_serial` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg) → int` | 不阻塞，立即返回 | `publish_serial` 发布：后台单链顺序回调（topic 级 FIFO）。返回 `pub_id`（>0 成功，≤0 失败）。`trig_kind` / `trig_arg` 见常量表。调用瞬间锁定目标集合与消息拷贝（快照语义）。`topic` 含通配符或空段时返回 0 并置 last_error |
-| `shuttle_c_publish_concurrent` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg) → int` | 不阻塞，立即返回 | `publish_concurrent` 发布：后台每订阅者一个任务并发回调，无顺序承诺。其余同上（含 topic 名校验） |
+| `shuttle_c_publish_now` | `(string topic, string type_tag, byte payload[], int now_policy, int unsigned corr_id) → int` | 不阻塞（但同步执行回调） | `publish_now` 发布：在**调用该函数的 SV 进程**内同步回调入口为 nonblocking 的订阅者；入口为 blocking 的订阅者按 `now_policy`（`SHUTTLE_NOW_*`，默认 `defer`）处置。返回 `pub_id`（>0），失败返回 0（原因见 `shuttle_c_last_error`）。SV 侧据此构造 `shuttle_handle`，因此 `publish_now` 与 `serial` / `concurrent` 一样可 `wait_done()`、可查询 `skipped()` / `deferred()` / `retired()`。`topic` 必须是不含通配符的具体名，否则返回 0 并置 `shuttle_c_last_error` |
+| `shuttle_c_publish_serial` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg, int unsigned corr_id) → int` | 不阻塞，立即返回 | `publish_serial` 发布：后台单链顺序回调（topic 级 FIFO）。返回 `pub_id`（>0 成功，≤0 失败）。`trig_kind` / `trig_arg` 见常量表。调用瞬间锁定目标集合与消息拷贝（快照语义）。`topic` 含通配符或空段时返回 0 并置 last_error |
+| `shuttle_c_publish_concurrent` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg, int unsigned corr_id) → int` | 不阻塞，立即返回 | `publish_concurrent` 发布：后台每订阅者一个任务并发回调，无顺序承诺。其余同上（含 topic 名校验） |
 | `shuttle_c_wait_pub` | `(int pub_id, longint timeout_fs, output int status)` | **阻塞**（task） | 阻塞当前 SV 进程直至该发布的全部订阅者回调结束。`timeout_fs` = 0 表示无限等待。`status` 见常量表。实现复用 weave 的挂起机制（`weave_sv_wait`），可挂起任意调用它的 SV 进程 |
 | `shuttle_c_pub_done` | `(int pub_id) → int` | 不阻塞 | 轮询：非 0 表示全部订阅者回调已结束（含失败） |
 | `shuttle_c_pub_error` | `(int pub_id) → string` | 不阻塞 | 第一个失败订阅者的错误信息；空串表示无失败 |
@@ -38,14 +38,20 @@
 
 | 函数 | 签名 | 阻塞性 | 说明 |
 |---|---|---|---|
-| `shuttle_sv_dispatch` | `task (int sub_id, string topic_name, string type_tag, longint topic_seq, longint time_fs)` | **可阻塞** | `serial` / `concurrent` 的投递入口：由 C++ broker 的 weave task 调用，在承载该 task 的 SV 进程中执行，用户回调（`shuttle_sink.invoke`）可消耗仿真时间 |
+| `shuttle_sv_dispatch` | `task (int sub_id, string topic_name, string type_tag, longint topic_seq, longint time_fs, int unsigned corr_id)` | **可阻塞** | `serial` / `concurrent` 的投递入口：由 C++ broker 的 weave task 调用，在承载该 task 的 SV 进程中执行，用户回调（`shuttle_sink.invoke`）可消耗仿真时间 |
 | `shuttle_sv_dispatch_nb` | `function void (同参)` | **不可阻塞** | `publish_now` 同步段的投递入口：在**发布者进程上下文**中执行，function 语义由编译器强制零延时；回调为 `shuttle_sink_nb.invoke_nb` |
 | `shuttle_sv_time_fs` | `function longint ()` | 不阻塞 | 仿真时间源，C++ `shuttle::now_fs()` 的 svdpi 实现；返回当前仿真时间的飞秒数 |
 
 两个 dispatch export 都**没有 payload 形参**：负载由 export 体内调用
 `shuttle_c_frame_len` / `shuttle_c_frame_qword` 从 C++ 侧的 `FrameContext` 拉取（§1）。
 `sub_id` 即 `shuttle_c_subscribe` 传入的 `sv_sid`；`topic_seq` 是 topic 内单调递增序号
-（broker 分配，跨语言一致）；`time_fs` 是发布时刻的仿真时间。
+（broker 分配，跨语言一致）；`time_fs` 是发布时刻的仿真时间；`corr_id` 是**发布方给出**的
+请求-响应关联号（`0` = 不是一次关联请求），broker 原样透传、不做任何解释，SV 侧落在
+`shuttle_meta::corr_id`，与 C++ `Meta::corr_id` 同名同序。SV 侧 `shuttle_pub::publish_*` 固定传
+`0`，只有 `shuttle_pub::reply(msg, meta)` 传 `meta.corr_id`（且它走 `publish_now`，与 C++
+`serve` 同路）；C++ 侧同理——公开
+`Publisher::publish_*` 不带该参数（恒 `0`），只有 `Requester::send_*` / `serve` 经内部
+detail 通道写入。
 
 ## 3. 常量表
 
@@ -145,12 +151,26 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    因此 `shuttle_pkg` 需要 `import weave_pkg::*`，编译顺序必须 `weave_pkg.sv` 在前。邮箱的容量
    溢出策略只有 `SHUTTLE_OVERFLOW_DROP_OLDEST` / `_DROP_NEWEST`（`block` / `reject` 在 SV 无
    对应物：投递回调不能阻塞，SV 也没有异常可抛）。
-10. **请求-响应的跨语言约定**：C++ 侧的 `Requester`/`serve`（`include/shuttle/requester.hpp`）
-   把关联 id 放在载荷字段里（默认 `.req_id`），SV 侧按同样字段布局**回显**即可参与，无需任何新
-   DPI 入口。参考实现：`tests/sv/shuttle_tests.sv` 的 `SvRqSink`（`shuttle_subscribe` 注册
-   blocking 响应者，回调里 `shuttle_pub#(T)::publish_serial` 发回执）。request/response topic 必须
-   不同：响应者是在请求回调里发布回执的，同 topic 会形成串行链自环。
-11. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
+10. **请求-响应的跨语言约定**：关联号走**帧头**（`corr_id` 形参 → `shuttle_meta::corr_id`），
+   不是载荷字段，因此 C++ `Requester`/`serve`（`include/shuttle/requester.hpp`）与 SV 响应者之间
+   不需要任何字段约定：SV 侧把收到的 `shuttle_meta` 直接交给 `shuttle_pub#(T)::reply(msg, meta)`，
+   后者把 `request.corr_id` 写进回执帧（无需新 DPI 入口）。**`publish_now` / `publish_serial` /
+   `publish_concurrent` 不带这个参数**（它们恒发 `corr_id = 0`），关联号只在 `reply` 和内部发布
+   通道上出现。`reply` 走 `shuttle_c_publish_now`（`SHUTTLE_NOW_DEFER` + `corr_id`）：回执与
+   C++ 侧的 `serve` 一致地走同步段，nonblocking 的 C++ 请求方在 `reply` 返回前就拿到回执
+   （import 链里只会调用 export **function** `shuttle_sv_dispatch_nb`，不违反约束 3；
+   blocking 目标按 `defer` 入链，不在 import 链里被调用）。参考实现：
+   `tests/sv/shuttle_tests.sv` 的 `SvRqSink`（`shuttle_subscribe` 注册 blocking 响应者，
+   回调里 `pub.reply(resp, meta)` 发回执）。request/response topic 必须不同：响应者是在请求
+   回调里发布回执的，同 topic 会形成串行链自环。
+11. **回执 topic 是响应通道**：C++ 的 `Requester` / `serve` 会对自己的回执 topic 调用
+   `detail::topic_mark_responses`；此后在该 topic 上用 **blocking 入口**注册（C++
+   `subscribe`/`subscribe_bytes`，SV `shuttle_subscribe`）会被拒绝：`shuttle_c_subscribe`
+   返回非 0，SV 侧 `shuttle_register` 报 `$error` 并返回 `null`。通配符按**匹配**判定
+   （`dev.>` 会命中 `dev.*.req` 的回执 topic）。`shuttle_subscribe_nb` 不受影响——那正是观察
+   回执的合法方式。标记只约束之后的注册；已存在的 blocking 订阅者不会被追溯拒绝（它们也不再
+   拖慢请求方，因为回执走 `publish_now`，见上一条）。
+12. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
    快照的投递仍可能到达 SV 侧（C++ 侧靠 `Subscriber::removed` 拦住同一类投递，两侧口径
    一致：记 `retired`）。SV 注册表把这些已退订 id 记为 retired，静默丢弃并经
    `shuttle_c_sub_retired` 回告；未登记过的 id 才报 `$error`，以保留真实缺陷的可见性。

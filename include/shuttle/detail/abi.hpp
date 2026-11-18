@@ -75,6 +75,13 @@ using ErasedCallback = std::function<void(const void* p, const Meta&)>;
 // Declare the topic's type binding; throws TypeMismatchError on conflict with an existing binding.
 void topic_declare(const std::string& topic, const TypeOps* ops);
 
+// Mark the topic as a response channel. Requester and serve call this for the
+// topic they listen on; afterwards a blocking-entry subscription on it is
+// refused with CapabilityError (a blocking subscriber would hold the topic's
+// serial chain and delay every reply). Marking is idempotent and only affects
+// later registrations; the topic name itself stays public.
+void topic_mark_responses(const std::string& topic);
+
 // pub_now (= the public API's publish_now): synchronously invokes all subscribers
 // with a nonblocking entry on the publisher's stack. The message has already
 // been copied at the call site (snapshot semantics). See NowPolicy for policy.
@@ -84,7 +91,7 @@ void topic_declare(const std::string& topic, const TypeOps* ops);
 // only in `skipped()` and the `skipped` component of `dropped()`; `reject`
 // throws CapabilityError directly and yields no return value.
 Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, const TypeOps* ops,
-                    NowPolicy policy);
+                    NowPolicy policy, std::uint32_t corr_id = 0);
 
 // pub_serial (= publish_serial): background single-chain, in-order callbacks;
 // pub_concurrent (= publish_concurrent): background, one task per subscriber,
@@ -92,9 +99,9 @@ Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, c
 // subscriber is invoked once, on the one entry it registered). With an empty
 // trigger they start immediately; both return the completion handle right away.
 Publication pub_serial(const std::string& topic, std::shared_ptr<const void> msg,
-                       const TypeOps* ops, Trigger trig);
+                       const TypeOps* ops, Trigger trig, std::uint32_t corr_id = 0);
 Publication pub_concurrent(const std::string& topic, std::shared_ptr<const void> msg,
-                           const TypeOps* ops, Trigger trig);
+                           const TypeOps* ops, Trigger trig, std::uint32_t corr_id = 0);
 
 // Subscribe: topic_pattern supports wildcards ("*" matches one level, ">"
 // matches at least one further level).

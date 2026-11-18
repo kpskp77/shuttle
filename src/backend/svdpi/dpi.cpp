@@ -107,7 +107,7 @@ shuttle::Trigger build_trigger(int trig_kind, long long trig_arg) {
 // scheduling → pub_id. The two flavors differ only in which broker entry they
 // call; the rest (frame read, trigger, error reporting) is identical.
 int publish_frame_bg(const char* topic, const char* type_tag, const svOpenArrayHandle payload,
-                     int trig_kind, long long trig_arg, bool concurrent) {
+                     int trig_kind, long long trig_arg, unsigned int corr_id, bool concurrent) {
   const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
     const std::vector<std::byte> frame = read_payload(payload);
@@ -115,8 +115,8 @@ int publish_frame_bg(const char* topic, const char* type_tag, const svOpenArrayH
     const std::string tag = type_tag ? type_tag : "";
     shuttle::Trigger trig = build_trigger(trig_kind, trig_arg);
     const shuttle::Publication pub =
-        concurrent ? shuttle::detail::ext_pub_concurrent(t, tag, frame, std::move(trig))
-                   : shuttle::detail::ext_pub_serial(t, tag, frame, std::move(trig));
+        concurrent ? shuttle::detail::ext_pub_concurrent(t, tag, frame, std::move(trig), corr_id)
+                   : shuttle::detail::ext_pub_serial(t, tag, frame, std::move(trig), corr_id);
     return shuttle::detail::pub_id(pub);
   } catch (const std::exception& e) {
     set_last_error(e.what());
@@ -146,7 +146,7 @@ void shuttle_c_sub_retired(int /*sv_sid*/) {
 // the deferred subscribers are still on the background serial chain, and the
 // SV side can pass the pub_id to shuttle_c_wait_pub to wait for them.
 int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenArrayHandle payload,
-                          int now_policy) {
+                          int now_policy, unsigned int corr_id) {
   // These imports may indirectly drive weave (creating tasks/events/suspending
   // waits); weave's exports are defined in weave_pkg, so switch the scope to
   // weave_pkg at the entry, otherwise VCS reports Error-[DPI-DXFNF]
@@ -155,7 +155,7 @@ int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenA
   try {
     const shuttle::Publication pub =
         shuttle::detail::ext_pub_now(topic ? topic : "", type_tag ? type_tag : "",
-                                     read_payload(payload), now_policy_of(now_policy));
+                                     read_payload(payload), now_policy_of(now_policy), corr_id);
     return shuttle::detail::pub_id(pub);
   } catch (const std::exception& e) {
     set_last_error(e.what());
@@ -169,16 +169,17 @@ int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenA
 // `publish_serial`: background single-chain, in-order callbacks. Returns pub_id (>0), or 0 on
 // failure.
 int shuttle_c_publish_serial(const char* topic, const char* type_tag,
-                             const svOpenArrayHandle payload, int trig_kind, long long trig_arg) {
-  return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, false);
+                             const svOpenArrayHandle payload, int trig_kind, long long trig_arg,
+                             unsigned int corr_id) {
+  return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, corr_id, false);
 }
 
 // `publish_concurrent`: background, one task per subscriber, concurrent callbacks. Returns pub_id
 // (>0), or 0 on failure.
 int shuttle_c_publish_concurrent(const char* topic, const char* type_tag,
-                                 const svOpenArrayHandle payload, int trig_kind,
-                                 long long trig_arg) {
-  return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, true);
+                                 const svOpenArrayHandle payload, int trig_kind, long long trig_arg,
+                                 unsigned int corr_id) {
+  return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, corr_id, true);
 }
 
 // DPI task: block until one publication completes.

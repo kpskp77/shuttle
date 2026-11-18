@@ -97,6 +97,21 @@ just test-all       # 测试套件：systemc（46 用例）+ VCS（49 用例 + 7
     丢掉"），`reject` 则复用正常的 `Failure` 通道，别发明新记账。SV 侧同样实现（纯 SV，
     `shuttle_subscribe_nb` + `weave_pkg` 事件原语），**不要为它加 DPI 入口**。
 
+14. **回执 topic 是响应通道，回执照走同步段**：`Requester` 与 `serve` 注册时会调
+    `detail::topic_mark_responses` 把回执 topic 标成响应通道（`Topic::carries_responses`），
+    此后该 topic 上**任何 blocking 入口的注册都被 `Broker::check_response_topic` 拒绝**
+    （`CapabilityError`，通配符按匹配判定，`dev.>` 也算命中）。理由：blocking 旁观者会持有该
+    topic 的串行链，后续每一帧回执都排在它后面，而请求方**无法区分"响应者死了"与"回执排在后
+    面"**——超时会说谎。别把它放宽成警告：这是注册期早失败，和不变 4 同一口径；也别改成投递
+    时检查（那时已经晚了）。名字本身仍然公开（`resp_topic()`、跨语言硬编码都合法），手工往回执
+    topic 发布也合法，只有"blocking 旁观"被禁。
+    回执必须用 `detail::pub_now` 发（`serve` 与 SV `shuttle_pub::reply` 都是），因为：
+    (a) `nb(handler)` 响应者 + `send_now()` 因此能给出"返回即可用"的零 RTT（`send_now` 返回时
+    `call.queued() == 1`，仿真时间不推进）；(b) 回执不占链尾，旁观者再慢也咬不动请求方。
+    `NowPolicy::defer` 只是兜底（标记之前就注册的 blocking 订阅者）。由此 `publish_now` 有递归
+    风险：回调在发布者栈上跑，A↔B 互相发布就是无诊断的栈溢出，所以 `dispatch_now` 必须有
+    重入深度上限（`kMaxNowDepth`，抛 `PublishError`）——删它等于把环变成崩溃。
+
 ## 运行环境的坑（已踩）
 
 - 用 `xmake run` 跑 VCS：它会为 simv 准备库搜索路径。**不要**自己 export

@@ -52,6 +52,9 @@ public:
   std::vector<std::shared_ptr<Subscriber>> match_subs(std::string_view topic, std::string_view tag);
   std::size_t name_matched_count(std::string_view topic) const;
   Topic& topic_for(std::string_view name);
+  // Response-channel marking and its enforcement at registration.
+  void mark_response_topic(std::string_view name);
+  void check_response_topic(const std::string& pattern) const;
   void check_filter_early(const Subscriber& sub);
   void check_bind_compat(std::string_view topic, std::string_view tag);
   void now_preflight(std::string_view topic, std::string_view tag, NowPolicy policy);
@@ -71,12 +74,14 @@ public:
   static void count_failed(Topic& topic, const std::shared_ptr<Subscriber>& sub);
 
   // Build the immutable frame: bind the type, assign seq, read the backend
-  // time, and update the retained snapshot.
+  // time, and update the retained snapshot. `corr_id` is publisher-supplied and
+  // stored as-is (0 = uncorrelated).
   std::shared_ptr<const Envelope> make_envelope(std::string_view topic,
                                                 std::shared_ptr<const void> payload,
-                                                const TypeOps* ops);
+                                                const TypeOps* ops, std::uint32_t corr_id = 0);
   std::shared_ptr<const Envelope> make_envelope_bytes(std::string_view topic, std::string_view tag,
-                                                      const std::vector<std::byte>& bytes);
+                                                      const std::vector<std::byte>& bytes,
+                                                      std::uint32_t corr_id = 0);
 
   // Background scheduling. start_serial performs the per-topic chain-tail
   // handoff before returning only when the trigger is already satisfied; a
