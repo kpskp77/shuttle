@@ -19,6 +19,7 @@
 // User types gain codec support via SHUTTLE_REFLECT(Type, field1, field2, ...); unregistered types
 // still work on pure-C++ topics (zero-copy path).
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -36,27 +37,32 @@ namespace shuttle {
 class Writer {
 public:
   void u8(std::uint8_t v) { buf_.push_back(static_cast<std::byte>(v)); }
-  void u16(std::uint16_t v) {
-    u8(static_cast<std::uint8_t>(v >> 8));
-    u8(static_cast<std::uint8_t>(v));
-  }
-  void u32(std::uint32_t v) {
-    u16(static_cast<std::uint16_t>(v >> 16));
-    u16(static_cast<std::uint16_t>(v));
-  }
-  void u64(std::uint64_t v) {
-    u32(static_cast<std::uint32_t>(v >> 32));
-    u32(static_cast<std::uint32_t>(v));
-  }
+  // Wider integers are written with a single size()/resize() pair: one capacity
+  // check and one tail update instead of the recursive chain of push_backs.
+  void u16(std::uint16_t v) { put_be(v, 2); }
+  void u32(std::uint32_t v) { put_be(v, 4); }
+  void u64(std::uint64_t v) { put_be(v, 8); }
   void raw(const void* p, std::size_t n) {  // append verbatim (string bytes)
     const auto* b = static_cast<const std::byte*>(p);
     buf_.insert(buf_.end(), b, b + n);
   }
 
+  // Pre-size the buffer when the encoded length is known up front (strings,
+  // arithmetic vectors): avoids repeated growth for large payloads.
+  void reserve(std::size_t n) { buf_.reserve(n); }
+  [[nodiscard]] std::size_t size() const noexcept { return buf_.size(); }
+
   [[nodiscard]] const std::vector<std::byte>& buf() const { return buf_; }
   std::vector<std::byte> take() { return std::move(buf_); }
 
 private:
+  void put_be(std::uint64_t v, std::size_t n) {
+    const std::size_t at = buf_.size();
+    buf_.resize(at + n);
+    for (std::size_t i = 0; i < n; ++i)
+      buf_[at + i] = static_cast<std::byte>(v >> (8 * (n - 1 - i)));
+  }
+
   std::vector<std::byte> buf_;
 };
 
@@ -67,18 +73,34 @@ public:
   explicit Reader(const std::vector<std::byte>& buf) : p_(buf.data()), n_(buf.size()) {}
   Reader(const std::byte* p, std::size_t n) : p_(p), n_(n) {}
 
-  std::uint8_t u8() { return static_cast<std::uint8_t>(take(1)[0]); }
+  // One take() per integer (one bounds check) instead of one per byte.
+  std::uint8_t u8() { return std::to_integer<std::uint8_t>(*take(1)); }
   std::uint16_t u16() {
-    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(u8()) << 8) | u8());
+    const std::byte* b = take(2);
+    return static_cast<std::uint16_t>((std::to_integer<std::uint16_t>(b[0]) << 8) |
+                                      std::to_integer<std::uint16_t>(b[1]));
   }
-  std::uint32_t u32() { return (static_cast<std::uint32_t>(u16()) << 16) | u16(); }
-  std::uint64_t u64() { return (static_cast<std::uint64_t>(u32()) << 32) | u32(); }
+  std::uint32_t u32() {
+    const std::byte* b = take(4);
+    return (std::to_integer<std::uint32_t>(b[0]) << 24) |
+           (std::to_integer<std::uint32_t>(b[1]) << 16) |
+           (std::to_integer<std::uint32_t>(b[2]) << 8) | std::to_integer<std::uint32_t>(b[3]);
+  }
+  std::uint64_t u64() {
+    const std::byte* b = take(8);
+    std::uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v = (v << 8) | std::to_integer<std::uint64_t>(b[i]);
+    return v;
+  }
   void raw(void* out, std::size_t n) {
     const std::byte* b = take(n);
     std::memcpy(out, b, n);
   }
 
   [[nodiscard]] bool eof() const { return pos_ == n_; }
+  // Bytes left — lets length-prefixed decoders reject an impossible length before
+  // allocating anything for it.
+  [[nodiscard]] std::size_t remaining() const noexcept { return n_ - pos_; }
 
 private:
   const std::byte* take(std::size_t n) {
@@ -180,11 +202,16 @@ struct Codec<std::string> {
   static constexpr bool available = true;
   static void encode(Writer& w, const std::string& v) {
     if (v.size() > UINT32_MAX) throw PublishError("shuttle: string exceeds uint32 length limit");
+    w.reserve(w.size() + 4 + v.size());  // length prefix + payload in one growth step
     w.u32(static_cast<std::uint32_t>(v.size()));
     w.raw(v.data(), v.size());
   }
   static std::string decode(Reader& r) {
     const std::uint32_t n = r.u32();
+    // A corrupt length must not trigger a huge allocation before the bounds
+    // check: every string byte is exactly one byte on the wire.
+    if (n > r.remaining())
+      throw DecodeError("shuttle: decode out of bounds (string length exceeds remaining bytes)");
     std::string v(n, '\0');
     r.raw(v.data(), n);
     return v;
@@ -208,13 +235,17 @@ struct Codec<std::vector<T, Alloc>> {
     static_assert(Codec<T>::available, "shuttle: vector element type is not encodable");
     if (v.size() > UINT32_MAX)
       throw PublishError("shuttle: vector exceeds uint32 element-count limit");
+    // Fixed-width elements have a known wire size: grow the buffer once.
+    if constexpr (std::is_arithmetic_v<T>) w.reserve(w.size() + 4 + v.size() * sizeof(T));
     w.u32(static_cast<std::uint32_t>(v.size()));
     for (const T& e : v) Codec<T>::encode(w, e);
   }
   static std::vector<T, Alloc> decode(Reader& r) {
     const std::uint32_t n = r.u32();
     std::vector<T, Alloc> v;
-    v.reserve(n);
+    // Cap the reservation by the bytes actually available: a corrupt count cannot
+    // demand a multi-gigabyte allocation (the per-element read still bounds-checks).
+    v.reserve(std::min<std::size_t>(n, r.remaining()));
     for (std::uint32_t i = 0; i < n; ++i) v.push_back(Codec<T>::decode(r));
     return v;
   }

@@ -5,13 +5,22 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace shuttle {
 
+// `topic_name` / `type_tag` are views into storage the broker owns for the
+// whole process (the topic-table key and the type binding's tag), so a Meta --
+// or a MailboxItem holding one -- may outlive the frame it arrived with. The
+// broker never hands out a view of a caller's temporary; user code treats them
+// as ordinary strings (`meta.topic_name == "dev.tx"`,
+// `std::string s{meta.topic_name};`, `s = meta.topic_name;`). They are not
+// guaranteed NUL-terminated: anything that needs a `const char*` (the DPI
+// export table) materializes a std::string first.
 struct Meta {
-  std::string topic_name;   // the concrete topic the frame was published to (never a wildcard
-                            // pattern: a wildcard subscription is told the real name here)
-  std::string type_tag;     // message type tag (SHUTTLE_REFLECT name / typeid name)
+  std::string_view topic_name;  // the concrete topic the frame was published to (never a wildcard
+                                // pattern: a wildcard subscription is told the real name here)
+  std::string_view type_tag;    // message type tag (SHUTTLE_REFLECT name / typeid name)
   std::uint64_t topic_seq;  // index of this frame within its topic: a per-topic counter starting at
                             // 1, assigned by the broker, identical across languages. (topic_name,
                             // topic_seq) identifies a frame -- neither field does on its own

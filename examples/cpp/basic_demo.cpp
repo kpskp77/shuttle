@@ -94,7 +94,9 @@ WEAVE_TEST(basic_demo) {
   // debugging / pass-through, or for consuming messages published from SV.
   auto raw_tap = shuttle::subscribe_bytes(
       "uart0.>", [](const std::vector<std::byte>& bytes, const shuttle::Meta& m) {
-        std::printf("[raw] topic=%s payload=%zu bytes\n", m.topic_name.c_str(), bytes.size());
+        // Meta strings are views, not necessarily NUL-terminated: materialize before c_str().
+        const std::string name{m.topic_name};
+        std::printf("[raw] topic=%s payload=%zu bytes\n", name.c_str(), bytes.size());
       });
   pub.publish_now(UartTx{0x14, 0x44}, shuttle::NowPolicy::skip);
 

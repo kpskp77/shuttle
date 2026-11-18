@@ -36,6 +36,7 @@
 #include <shuttle/trigger.hpp>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include <weave/event.hpp>
@@ -50,6 +51,17 @@ namespace {
 // Per-process most-recent error message (data source for shuttle_c_last_error;
 // the single-active-process guarantee makes locking unnecessary).
 std::string g_last_error;
+
+// Only external publications are addressable by pub_id (the SV side keeps the
+// handle as an int), so only they enter the id → PubState registry. C++
+// publications retain their state through the returned Publication handle;
+// registering those too would grow this map for the whole simulation with no
+// reader. The insertion happens before the handle is returned to SV, so
+// pub_wait/pub_on_complete never observe a gap.
+Publication track_pub(Publication pub) {
+  if (auto state = detail_pub_access::state(pub)) Broker::get().pubs[state->id] = std::move(state);
+  return pub;
+}
 }  // namespace
 
 void set_last_error(std::string msg) {
@@ -61,35 +73,36 @@ const std::string& last_error() {
 
 // ── External entry facade (errors reported via set_last_error + return code/exception) ──
 
-Publication ext_pub_now(const std::string& topic, const std::string& tag,
-                        const std::vector<std::byte>& frame, NowPolicy policy,
-                        std::uint32_t corr_id) {
+// Frames arrive as a byte buffer owned by the caller (dpi.cpp's read_payload).
+// Taking it by value lets the raw path move the buffer into the immutable
+// envelope payload instead of copying it a second time; the typed path decodes
+// from it before it is consumed.
+Publication ext_pub_now(std::string_view topic, std::string_view tag, std::vector<std::byte> frame,
+                        NowPolicy policy, std::uint32_t corr_id) {
   Broker& b = Broker::get();
   b.now_preflight(
       topic, tag,
       policy);  // decide before building the frame: reject consumes no seq / refreshes no retained
-  auto env = b.make_envelope_bytes(topic, tag, frame, corr_id);
-  return detail_pub_access::make(dispatch_now(b, std::move(env), policy));
+  auto env = b.make_envelope_bytes(topic, tag, std::move(frame), corr_id);
+  return track_pub(detail_pub_access::make(dispatch_now(b, std::move(env), policy)));
 }
 
-Publication ext_pub_serial(const std::string& topic, const std::string& tag,
-                           const std::vector<std::byte>& frame, Trigger trig,
-                           std::uint32_t corr_id) {
+Publication ext_pub_serial(std::string_view topic, std::string_view tag,
+                           std::vector<std::byte> frame, Trigger trig, std::uint32_t corr_id) {
   Broker& b = Broker::get();
-  auto env = b.make_envelope_bytes(topic, tag, frame, corr_id);
+  auto env = b.make_envelope_bytes(topic, tag, std::move(frame), corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
-  return detail_pub_access::make(
-      b.start_serial(topic, std::move(env), std::move(trig), std::move(targets)));
+  return track_pub(detail_pub_access::make(
+      b.start_serial(topic, std::move(env), std::move(trig), std::move(targets))));
 }
 
-Publication ext_pub_concurrent(const std::string& topic, const std::string& tag,
-                               const std::vector<std::byte>& frame, Trigger trig,
-                               std::uint32_t corr_id) {
+Publication ext_pub_concurrent(std::string_view topic, std::string_view tag,
+                               std::vector<std::byte> frame, Trigger trig, std::uint32_t corr_id) {
   Broker& b = Broker::get();
-  auto env = b.make_envelope_bytes(topic, tag, frame, corr_id);
+  auto env = b.make_envelope_bytes(topic, tag, std::move(frame), corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
-  return detail_pub_access::make(
-      b.start_concurrent(topic, std::move(env), std::move(trig), std::move(targets)));
+  return track_pub(detail_pub_access::make(
+      b.start_concurrent(topic, std::move(env), std::move(trig), std::move(targets))));
 }
 
 int pub_id(const Publication& p) {

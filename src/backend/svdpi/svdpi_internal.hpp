@@ -25,6 +25,7 @@
 #include <shuttle/trigger.hpp>
 #include <shuttle/types.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // The package names can be overridden with -DSHUTTLE_SV_PACKAGE= /
@@ -117,15 +118,17 @@ const std::string& last_error();
 // external-subscriber registration; errors propagate as exceptions and are
 // converted by the DPI wrapper layer into set_last_error + a return code).
 // `pub_*` (first parameter is pub_id) = handle queries/waits by publication id.
-Publication ext_pub_now(const std::string& topic, const std::string& tag,
-                        const std::vector<std::byte>& frame, NowPolicy policy,
-                        std::uint32_t corr_id);
-Publication ext_pub_serial(const std::string& topic, const std::string& tag,
-                           const std::vector<std::byte>& frame, Trigger trig,
-                           std::uint32_t corr_id);
-Publication ext_pub_concurrent(const std::string& topic, const std::string& tag,
-                               const std::vector<std::byte>& frame, Trigger trig,
-                               std::uint32_t corr_id);
+//
+// The name parameters are string_views: DPI hands us `const char*`, and the
+// broker copies what it keeps, so there is no reason to materialize a
+// std::string per frame here. `frame` is by value so the raw path can move the
+// caller's buffer into the envelope instead of copying it.
+Publication ext_pub_now(std::string_view topic, std::string_view tag, std::vector<std::byte> frame,
+                        NowPolicy policy, std::uint32_t corr_id);
+Publication ext_pub_serial(std::string_view topic, std::string_view tag,
+                           std::vector<std::byte> frame, Trigger trig, std::uint32_t corr_id);
+Publication ext_pub_concurrent(std::string_view topic, std::string_view tag,
+                               std::vector<std::byte> frame, Trigger trig, std::uint32_t corr_id);
 
 // Look up the pub_id for a handle (0 for an invalid handle) — the DPI layer
 // uses it to convert a Publication into an int.

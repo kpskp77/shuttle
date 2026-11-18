@@ -3,8 +3,10 @@
 // Frame creation, target matching, and deliver itself live in broker.cpp in
 // the same directory; this file does not distinguish C++/SV frame origins.
 
+#include <algorithm>
 #include <cstddef>
 #include <exception>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <shuttle/trigger.hpp>
@@ -71,14 +73,6 @@ std::string Broker::describe(const std::shared_ptr<Subscriber>& sub) {
   return "cpp sub " + std::to_string(sub->id);
 }
 
-std::vector<std::shared_ptr<Subscriber>> Broker::select(
-    const std::vector<std::shared_ptr<Subscriber>>& matched, Capability want) {
-  std::vector<std::shared_ptr<Subscriber>> out;
-  for (const auto& sub : matched)
-    if (sub->cap == want) out.push_back(sub);
-  return out;
-}
-
 // ── publish_serial: one delivery unit per frame, per-topic serial chain
 //    keeps publication-order FIFO ─────────────────────────────────────────
 
@@ -88,13 +82,16 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   auto pub = std::make_shared<PubState>();
   pub->id = next_pub_id++;
   pub->target_count = targets.size();
-  pubs[pub->id] = pub;
   if (targets.empty()) {
     // Zero targets complete immediately: no task, no chain-tail installed.
     pub_complete(pub);
     return pub;
   }
 
+  // The frame's topic outlives every task: `topics` is append-only, so keeping a
+  // Topic* avoids re-doing the name lookup in the task body (and again when a
+  // deferred frame joins the chain).
+  Topic& frame_topic = topic_for(topic);
   // `mine` — the chain-tail event this frame must release — is always created
   // here and never re-read from the topic later (invariant 5).
   auto mine = std::make_shared<weave::Event>();
@@ -107,14 +104,16 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   const bool queued = trig.immediate();
   std::shared_ptr<weave::Event> prev;
   if (queued) {
-    prev = std::make_shared<weave::Event>(topic_for(topic).chain);
-    topic_for(topic).chain = *mine;
+    prev = std::make_shared<weave::Event>(frame_topic.chain);
+    frame_topic.chain = *mine;
   }
+  Topic* const topic_state = &frame_topic;
   weave::create_task(
       std::string("shuttle-seq-") + std::string(topic),
-      [this, pub, env, trig = std::move(trig), targets = std::move(targets), prev, mine]() mutable {
+      [this, pub, env, trig = std::move(trig), targets = std::move(targets), prev, mine,
+       topic_state]() mutable {
         std::optional<Publication::Failure> failure;
-        Topic& t = topic_for(env->meta.topic_name);
+        Topic& t = *topic_state;
         std::size_t idx =
             0;  // targets already in a terminal state; used to backfill on unit-level failure
         try {
@@ -124,14 +123,14 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
             // installing ours is a single step: no suspension point lies
             // between them (single-active-process invariant), so no other
             // frame can interleave and steal the tail.
-            prev = std::make_shared<weave::Event>(topic_for(env->meta.topic_name).chain);
-            topic_for(env->meta.topic_name).chain = *mine;
+            prev = std::make_shared<weave::Event>(t.chain);
+            t.chain = *mine;
           }
           prev->wait();
           for (; idx < targets.size(); ++idx) {
             const auto& sub = targets[idx];
             try {
-              if (deliver(sub, *env) == Delivery::delivered)
+              if (deliver(sub, *env, t) == Delivery::delivered)
                 ++t.delivered;
               else
                 ++pub->retired;
@@ -177,19 +176,19 @@ std::shared_ptr<PubState> Broker::start_concurrent(
   auto pub = std::make_shared<PubState>();
   pub->id = next_pub_id++;
   pub->target_count = targets.size();
-  pubs[pub->id] = pub;
   if (targets.empty()) {
     pub_complete(pub);
     return pub;
   }
+  Topic* const topic_state = &topic_for(topic);
   for (const auto& sub : targets) {
     weave::create_task(std::string("shuttle-par-") + std::string(topic),
-                       [this, pub, env, trig, sub]() mutable {
+                       [this, pub, env, trig, sub, topic_state]() mutable {
                          std::optional<Publication::Failure> failure;
-                         Topic& t = topic_for(env->meta.topic_name);
+                         Topic& t = *topic_state;
                          try {
                            wait_trigger(trig);
-                           if (deliver(sub, *env) == Delivery::delivered)
+                           if (deliver(sub, *env, t) == Delivery::delivered)
                              ++t.delivered;
                            else
                              ++pub->retired;
@@ -244,30 +243,35 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
   const NowDepthGuard depth_guard;
   const std::string_view topic = env->meta.topic_name;
   Topic& t = b.topic_for(topic);
-  const auto matched = b.match_subs(topic, env->meta.type_tag);
-  // Each registration has exactly one cap; the synchronous section of `now`
-  // only touches nonblocking entries, structurally satisfying the DPI timing
-  // constraints.
-  auto nb_subs = Broker::select(matched, Capability::nonblocking);
-  auto blocking_targets = Broker::select(matched, Capability::blocking);
+  auto matched = b.match_subs(topic, env->meta.type_tag);
+  // Partition in place instead of materializing two filtered copies: no extra
+  // allocation for the blocking set, and the snapshot's shared_ptrs are never
+  // re-incremented. Each registration has exactly one cap; the synchronous
+  // section of `now` only touches nonblocking entries, structurally satisfying
+  // the DPI timing constraints.
+  const auto nb_end = std::partition(matched.begin(), matched.end(), [](const auto& sub) {
+    return sub->cap == Capability::nonblocking;
+  });
+  const std::size_t nb_count = static_cast<std::size_t>(nb_end - matched.begin());
   // reject was preflighted before frame creation, so no blocking-target error
   // can occur here.
+  const std::size_t blocking_count = matched.size() - nb_count;
 
   auto pub = std::make_shared<PubState>();
   pub->id = b.next_pub_id++;
-  const bool defer = (policy == NowPolicy::defer) && !blocking_targets.empty();
-  pub->target_count = nb_subs.size() + (defer ? blocking_targets.size() : 0);
-  pub->deferred = defer ? blocking_targets.size() : 0;
-  pub->skipped = defer ? 0 : blocking_targets.size();
-  b.pubs[pub->id] = pub;
+  const bool defer = (policy == NowPolicy::defer) && blocking_count != 0;
+  pub->target_count = nb_count + (defer ? blocking_count : 0);
+  pub->deferred = defer ? blocking_count : 0;
+  pub->skipped = defer ? 0 : blocking_count;
 
   // A single callback failure does not interrupt the remaining targets; the
   // first exception is rethrown to the publisher only after the defer chain
   // has started.
   std::exception_ptr first_exc;
-  for (const auto& sub : nb_subs) {
+  for (auto it = matched.begin(); it != nb_end; ++it) {
+    const auto& sub = *it;
     try {
-      if (b.deliver(sub, *env) == Delivery::delivered)
+      if (b.deliver(sub, *env, t) == Delivery::delivered)
         ++t.delivered;
       else
         ++pub->retired;
@@ -287,8 +291,8 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
     b.target_finished(pub);
   }
   if (policy == NowPolicy::skip) {
-    t.skipped += blocking_targets.size();
-    for (const auto& sub : blocking_targets) ++sub->skipped;
+    t.skipped += blocking_count;
+    for (auto it = nb_end; it != matched.end(); ++it) ++(*it)->skipped;
   }
   if (!defer) {
     if (!pub->done_flag) b.pub_complete(pub);
@@ -298,8 +302,11 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
 
   // defer reuses publish_serial's chain; on completion the remaining targets
   // are merged back into this frame's handle.
-  t.deferred += blocking_targets.size();
-  auto chain = b.start_serial(topic, std::move(env), Trigger{}, std::move(blocking_targets));
+  t.deferred += blocking_count;
+  auto chain =
+      b.start_serial(topic, std::move(env), Trigger{},
+                     std::vector<std::shared_ptr<Subscriber>>(
+                         std::make_move_iterator(nb_end), std::make_move_iterator(matched.end())));
   const std::size_t n = chain->target_count;
   chain->on_complete.push_back([pub, chain, n]() {
     for (const auto& failure : chain->failures) pub->failures.push_back(failure);

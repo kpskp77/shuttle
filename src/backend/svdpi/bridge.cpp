@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "backend/backend.hpp"
@@ -41,25 +42,31 @@ bool available() {
   return true;
 }
 
-void dispatch(int handle, const std::string& topic_name, const std::string& type_tag,
+void dispatch(int handle, std::string_view topic_name, std::string_view type_tag,
               std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
               const std::vector<std::byte>& payload) {
   SvScopeGuard scope;
   FrameContext ctx(payload);
   g_retired_hit = false;
-  shuttle_sv_dispatch(handle, topic_name.c_str(), type_tag.c_str(),
-                      static_cast<long long>(topic_seq), static_cast<long long>(time_fs), corr_id);
+  // The export table takes NUL-terminated C strings, and a Meta view is not
+  // guaranteed to be one: materialize here (on the SV-delivery path only).
+  const std::string topic{topic_name};
+  const std::string tag{type_tag};
+  shuttle_sv_dispatch(handle, topic.c_str(), tag.c_str(), static_cast<long long>(topic_seq),
+                      static_cast<long long>(time_fs), corr_id);
 }
 
-void dispatch_nb(int handle, const std::string& topic_name, const std::string& type_tag,
+void dispatch_nb(int handle, std::string_view topic_name, std::string_view type_tag,
                  std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
                  const std::vector<std::byte>& payload) {
   SvScopeGuard scope;
   FrameContext ctx(payload);
   g_retired_hit = false;
-  shuttle_sv_dispatch_nb(handle, topic_name.c_str(), type_tag.c_str(),
-                         static_cast<long long>(topic_seq), static_cast<long long>(time_fs),
-                         corr_id);
+  // Same materialization as dispatch(): the view may not be NUL-terminated.
+  const std::string topic{topic_name};
+  const std::string tag{type_tag};
+  shuttle_sv_dispatch_nb(handle, topic.c_str(), tag.c_str(), static_cast<long long>(topic_seq),
+                         static_cast<long long>(time_fs), corr_id);
 }
 
 void note_retired_delivery() {

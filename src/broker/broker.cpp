@@ -112,8 +112,14 @@ bool Broker::type_matches(const Subscriber& sub, std::string_view tag) {
 std::vector<std::shared_ptr<Subscriber>> Broker::match_subs(std::string_view topic,
                                                             std::string_view tag) {
   std::vector<std::shared_ptr<Subscriber>> out;
-  for (const auto& sub : subs)
-    if (type_matches(*sub, tag) && match(sub->pattern, topic)) out.push_back(sub);
+  out.reserve(subs.size());
+  for (const auto& sub : subs) {
+    if (!type_matches(*sub, tag)) continue;
+    // Literal patterns skip the segment walk: one string comparison instead.
+    const bool hit =
+        sub->literal ? std::string_view(sub->pattern) == topic : match(sub->pattern, topic);
+    if (hit) out.push_back(sub);
+  }
   return out;
 }
 
@@ -127,7 +133,12 @@ std::size_t Broker::name_matched_count(std::string_view topic) const {
 
 Topic& Broker::topic_for(std::string_view name) {
   const auto it = topics.find(name);
-  return it != topics.end() ? it->second : topics.try_emplace(std::string(name)).first->second;
+  if (it != topics.end()) return it->second;
+  const auto [pos, inserted] = topics.try_emplace(std::string(name));
+  (void)inserted;
+  // The map node owns the key, so Meta views can point into it.
+  pos->second.name_view = pos->first;
+  return pos->second;
 }
 
 // ── Response channels ────────────────────────────────────────────────────
@@ -142,11 +153,11 @@ void Broker::mark_response_topic(std::string_view name) {
 // turning into a reply that arrives late enough to be mistaken for a dead
 // responder. Patterns are matched, not compared: a wildcard blocker
 // ("dev.>") would otherwise slip through and swallow the topic later.
-void Broker::check_response_topic(const std::string& pattern) const {
+void Broker::check_response_topic(std::string_view pattern) const {
   for (const auto& [name, topic] : topics) {
     if (!topic.carries_responses) continue;
     if (!match(pattern, name)) continue;
-    throw CapabilityError(std::string("shuttle: subscription ") + pattern +
+    throw CapabilityError(std::string("shuttle: subscription ") + std::string(pattern) +
                           " matches the response topic " + name +
                           "; register it with a nonblocking entry (nb() / "
                           "shuttle_subscribe_nb) — a blocking subscriber there holds the "
@@ -178,12 +189,19 @@ void Broker::check_bind_compat(std::string_view topic, std::string_view tag) {
 }
 
 // reject must be decided before any side effects — type binding, seq, retained;
-// syntax validation in turn precedes the policy decision.
+// syntax validation in turn precedes the policy decision. Counting in place
+// keeps the preflight allocation-free (it runs on every reject-policy publish,
+// and the frame is usually rejected or accepted immediately).
 void Broker::now_preflight(std::string_view topic, std::string_view tag, NowPolicy policy) {
   check_topic_name(topic);
   if (policy != NowPolicy::reject) return;
-  const auto matched = match_subs(topic, tag);
-  const std::size_t n = select(matched, Capability::blocking).size();
+  std::size_t n = 0;
+  for (const auto& sub : subs) {
+    if (sub->cap != Capability::blocking || !type_matches(*sub, tag)) continue;
+    const bool hit =
+        sub->literal ? std::string_view(sub->pattern) == topic : match(sub->pattern, topic);
+    if (hit) ++n;
+  }
   if (n == 0) return;
   throw CapabilityError(std::string("shuttle: publish_now met ") + std::to_string(n) +
                         " subscriber(s) with a blocking entry (topic " + std::string(topic) +
@@ -193,20 +211,21 @@ void Broker::now_preflight(std::string_view topic, std::string_view tag, NowPoli
 
 // ── Single-target delivery and failure objects ───────────────────────────
 
-Delivery Broker::deliver(const std::shared_ptr<Subscriber>& sub, const Envelope& env) {
+Delivery Broker::deliver(const std::shared_ptr<Subscriber>& sub, const Envelope& env,
+                         Topic& topic) {
   const bool use_nb = sub->cap == Capability::nonblocking;
   // The snapshot holds a shared_ptr, so the object may stay alive after
   // unsubscribing; `removed` must be checked before the kind branch.
   if (sub->removed) {
     ++sub->retired;
-    ++topic_for(env.meta.topic_name).retired;
+    ++topic.retired;
     return Delivery::retired;
   }
   switch (sub->kind) {
     case SubKind::typed:
       // A pure byte-stream frame must never be reinterpreted as T*.
       if (env.ops == &raw_ops)
-        throw PublishError(std::string("shuttle: frame of topic ") + env.meta.topic_name +
+        throw PublishError("shuttle: frame of topic " + std::string(env.meta.topic_name) +
                            " was not materialized as a C++ object (type unbound)");
       sub->cb(env.payload.get(), env.meta);
       break;
@@ -227,7 +246,7 @@ Delivery Broker::deliver(const std::shared_ptr<Subscriber>& sub, const Envelope&
       // delivery is retired, not delivered.
       if (backend::take_retired_delivery()) {
         ++sub->retired;
-        ++topic_for(env.meta.topic_name).retired;
+        ++topic.retired;
         return Delivery::retired;
       }
       break;
@@ -266,6 +285,32 @@ void Broker::count_failed(Topic& topic, const std::shared_ptr<Subscriber>& sub) 
 
 // ── Frame construction and type binding ──────────────────────────────────
 
+namespace {
+
+// Complete an already-bound frame: environment, seq, backend time, retained
+// snapshot. Shared by the typed and the raw-byte entry points so the frame
+// layout and counter updates exist in exactly one place.
+std::shared_ptr<const Envelope> finish_envelope(Topic& t, std::shared_ptr<const void> payload,
+                                                const TypeOps* ops, std::uint32_t corr_id) {
+  auto env = std::make_shared<Envelope>();
+  env->payload = std::move(payload);
+  env->ops = ops;
+  // Views into storage the broker owns: building a frame header allocates
+  // nothing, and copying a Meta copies two (pointer, size) pairs. Both sources
+  // outlive every Meta copy (topics is append-only; the binding's tag is
+  // engaged once and never reassigned).
+  env->meta.topic_name = t.name_view;
+  env->meta.type_tag = t.binding->tag;
+  env->meta.topic_seq = ++t.seq;
+  env->meta.time_fs = backend::now_fs();
+  env->meta.corr_id = corr_id;
+  ++t.published;
+  if (t.retained_on) t.retained_env = env;
+  return env;
+}
+
+}  // namespace
+
 std::shared_ptr<const Envelope> Broker::make_envelope(std::string_view topic,
                                                       std::shared_ptr<const void> payload,
                                                       const TypeOps* ops, std::uint32_t corr_id) {
@@ -279,22 +324,12 @@ std::shared_ptr<const Envelope> Broker::make_envelope(std::string_view topic,
                             " is already bound to type " + t.binding->tag +
                             " but this publication declares " + ops->tag);
   }
-  auto env = std::make_shared<Envelope>();
-  env->payload = std::move(payload);
-  env->ops = ops;
-  env->meta.topic_name = std::string(topic);
-  env->meta.type_tag = t.binding->tag;
-  env->meta.topic_seq = ++t.seq;
-  env->meta.time_fs = backend::now_fs();
-  env->meta.corr_id = corr_id;
-  ++t.published;
-  if (t.retained_on) t.retained_env = env;
-  return env;
+  return finish_envelope(t, std::move(payload), ops, corr_id);
 }
 
 std::shared_ptr<const Envelope> Broker::make_envelope_bytes(std::string_view topic,
                                                             std::string_view tag,
-                                                            const std::vector<std::byte>& bytes,
+                                                            std::vector<std::byte> bytes,
                                                             std::uint32_t corr_id) {
   check_topic_name(topic);
   Topic& t = topic_for(topic);
@@ -305,7 +340,10 @@ std::shared_ptr<const Envelope> Broker::make_envelope_bytes(std::string_view top
     t.binding = Binding{std::string(tag), &raw_ops};
     for (const auto& sub : subs) {
       if (sub->kind != SubKind::typed || !sub->ops || !sub->ops->decode) continue;
-      if (!type_matches(*sub, tag) || !match(sub->pattern, topic)) continue;
+      if (!type_matches(*sub, tag)) continue;
+      const bool hit =
+          sub->literal ? std::string_view(sub->pattern) == topic : match(sub->pattern, topic);
+      if (!hit) continue;
       t.binding->ops = sub->ops;
       break;
     }
@@ -315,23 +353,15 @@ std::shared_ptr<const Envelope> Broker::make_envelope_bytes(std::string_view top
                             " but this publication declares " + std::string(tag));
   }
   if (t.binding->ops == &raw_ops) {
-    auto payload = std::make_shared<const std::vector<std::byte>>(bytes);
-    auto env = std::make_shared<Envelope>();
-    env->payload = std::move(payload);
-    env->ops = &raw_ops;
-    env->meta.topic_name = std::string(topic);
-    env->meta.type_tag = t.binding->tag;
-    env->meta.topic_seq = ++t.seq;
-    env->meta.time_fs = backend::now_fs();
-    env->meta.corr_id = corr_id;
-    ++t.published;
-    if (t.retained_on) t.retained_env = env;
-    return env;
+    // The caller hands the frame over by value: move its buffer into the
+    // immutable payload instead of copying it a second time.
+    return finish_envelope(t, std::make_shared<const std::vector<std::byte>>(std::move(bytes)),
+                           &raw_ops, corr_id);
   }
   if (!t.binding->ops->decode)
     throw TypeMismatchError(std::string("shuttle: type bound to topic ") + std::string(topic) +
                             " does not support materialization from a byte stream");
-  return make_envelope(topic, t.binding->ops->decode(bytes), t.binding->ops, corr_id);
+  return finish_envelope(t, t.binding->ops->decode(bytes), t.binding->ops, corr_id);
 }
 
 // ── Retained and subscription lifecycle ──────────────────────────────────
@@ -344,12 +374,12 @@ void Broker::retained_catchup(const std::shared_ptr<Subscriber>& sub) {
       // The SV blocking entry is invoked via an export task and must not be
       // replayed from within a possibly-function context.
       auto env_copy = t.retained_env;
-      weave::create_task("shuttle-retained", [this, sub, env_copy]() {
-        if (deliver(sub, *env_copy) == Delivery::delivered)
-          ++topic_for(env_copy->meta.topic_name).delivered;
+      Topic* topic_state = &t;  // map nodes are stable: `topics` is append-only
+      weave::create_task("shuttle-retained", [this, sub, env_copy, topic_state]() {
+        if (deliver(sub, *env_copy, *topic_state) == Delivery::delivered) ++topic_state->delivered;
       });
     } else {
-      if (deliver(sub, *t.retained_env) == Delivery::delivered) ++t.delivered;
+      if (deliver(sub, *t.retained_env, t) == Delivery::delivered) ++t.delivered;
     }
   }
 }
@@ -365,6 +395,7 @@ std::shared_ptr<Subscriber> Broker::register_sub(std::string pattern, SubKind ki
   auto sub = std::make_shared<Subscriber>();
   sub->id = next_sub_id++;
   sub->pattern = std::move(pattern);
+  sub->literal = !has_wildcard(sub->pattern);
   sub->kind = kind;
   sub->cap = cap;
   sub->filter_tag = std::move(filter_tag);

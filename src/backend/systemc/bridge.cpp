@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "backend/backend.hpp"
@@ -32,12 +33,12 @@ bool available() {
   return false;
 }
 
-void dispatch(int, const std::string&, const std::string&, std::uint64_t, std::int64_t,
-              std::uint32_t, const std::vector<std::byte>&) {
+void dispatch(int, std::string_view, std::string_view, std::uint64_t, std::int64_t, std::uint32_t,
+              const std::vector<std::byte>&) {
   throw std::logic_error("shuttle: the systemc backend has no SV subscriber channel");
 }
 
-void dispatch_nb(int, const std::string&, const std::string&, std::uint64_t, std::int64_t,
+void dispatch_nb(int, std::string_view, std::string_view, std::uint64_t, std::int64_t,
                  std::uint32_t, const std::vector<std::byte>&) {
   throw std::logic_error("shuttle: the systemc backend has no SV subscriber channel");
 }

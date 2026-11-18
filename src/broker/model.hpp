@@ -16,6 +16,7 @@
 #include <shuttle/exception.hpp>
 #include <shuttle/publication.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <weave/event.hpp>
 
@@ -43,7 +44,7 @@ inline const TypeOps raw_ops{
 inline const std::vector<std::byte>& envelope_bytes(const Envelope& env) {
   if (!env.encoded) {
     if (!env.ops || !env.ops->encode)
-      throw PublishError(std::string("shuttle: type of topic ") + env.meta.topic_name +
+      throw PublishError("shuttle: type of topic " + std::string(env.meta.topic_name) +
                          " is not encodable; cannot deliver to SV/byte subscribers");
     env.encoded =
         std::make_shared<const std::vector<std::byte>>(env.ops->encode(env.payload.get()));
@@ -59,6 +60,10 @@ enum class SubKind { typed, bytes, external };
 struct Subscriber {
   int id = 0;
   std::string pattern;  // subscription pattern (may contain wildcards)
+  // Cached "pattern has no wildcard" fact, decided once at registration. The
+  // hottest routing step (match_subs / now_preflight) can then compare strings
+  // directly instead of re-scanning every segment of every pattern per frame.
+  bool literal = false;
   SubKind kind = SubKind::typed;
   Capability cap = Capability::blocking;
   std::string filter_tag;  // type filter ("" = any); the tag of T for typed subscriptions
@@ -114,6 +119,7 @@ struct Topic {
   std::uint64_t failed = 0;
   std::uint64_t deferred = 0;
   [[nodiscard]] std::uint64_t dropped() const { return retired + skipped + failed; }
+  std::string_view name_view;  // view of this topic's key in `topics` (never erased), for Meta
   weave::Event
       chain;  // tail of the background serial chain shared by publish_serial and publish_now(defer)
   Topic() { chain.set(); }

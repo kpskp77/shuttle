@@ -77,22 +77,27 @@ public:
   // are still attempted, the deferred section still enters the chain, and
   // only then is the first exception rethrown to the caller (no handle is
   // returned).
-  Publication publish_now(const T& msg, NowPolicy policy = NowPolicy::defer) const {
-    return detail::pub_now(topic_, std::make_shared<const T>(msg), detail::type_ops<T>(), policy);
+  // The message is taken by value on purpose: a prvalue argument (the common
+  // `publish_serial(Msg{...})` form) is guaranteed-elided into the parameter by
+  // C++17, and only the parameter is moved into the frame. Taking `const T&`
+  // forced a full payload copy on every publish.
+  Publication publish_now(T msg, NowPolicy policy = NowPolicy::defer) const {
+    return detail::pub_now(topic_, std::make_shared<const T>(std::move(msg)), detail::type_ops<T>(),
+                           policy);
   }
 
   // publish_serial: background single-chain, in-order callbacks (topic-level
   // FIFO). If trig is non-empty, starts only once the trigger condition holds.
-  Publication publish_serial(const T& msg, Trigger trig = {}) const {
-    return detail::pub_serial(topic_, std::make_shared<const T>(msg), detail::type_ops<T>(),
-                              std::move(trig));
+  Publication publish_serial(T msg, Trigger trig = {}) const {
+    return detail::pub_serial(topic_, std::make_shared<const T>(std::move(msg)),
+                              detail::type_ops<T>(), std::move(trig));
   }
 
   // publish_concurrent: background, one task per subscriber, concurrent
   // callbacks. If trig is non-empty, starts only once the trigger condition holds.
-  Publication publish_concurrent(const T& msg, Trigger trig = {}) const {
-    return detail::pub_concurrent(topic_, std::make_shared<const T>(msg), detail::type_ops<T>(),
-                                  std::move(trig));
+  Publication publish_concurrent(T msg, Trigger trig = {}) const {
+    return detail::pub_concurrent(topic_, std::make_shared<const T>(std::move(msg)),
+                                  detail::type_ops<T>(), std::move(trig));
   }
 
   // retained (latched): once enabled, the broker caches the latest frame and

@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace shuttle::detail {
@@ -35,14 +36,14 @@ bool available();
 // registration; the broker only passes it through without interpreting it.
 // `topic_seq` / `time_fs` / `corr_id` are the frame header's fields, forwarded
 // verbatim so that Meta is identical in both languages.
-void dispatch(int handle, const std::string& topic_name, const std::string& type_tag,
+void dispatch(int handle, std::string_view topic_name, std::string_view type_tag,
               std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
               const std::vector<std::byte>& payload);
 
 // Delivery for `publish_now`: called in the publisher's process context and
 // **must not block at all** (an import function's call chain cannot invoke an
 // export task; see AGENTS.md invariant 3).
-void dispatch_nb(int handle, const std::string& topic_name, const std::string& type_tag,
+void dispatch_nb(int handle, std::string_view topic_name, std::string_view type_tag,
                  std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
                  const std::vector<std::byte>& payload);
 

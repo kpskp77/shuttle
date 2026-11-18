@@ -172,6 +172,14 @@ WEAVE_TEST(publish_tests) {
     expect_eq(static_cast<long long>(first), 1, "the existing subscriber receives");
     expect_eq(static_cast<long long>(late), 0,
               "a subscriber added after the publish does not receive this frame");
+
+    // The target set of the *next* frame is computed at its publish time, so it includes the
+    // subscriber that registered in between.
+    auto h2 = pub.publish_serial(PubMsg{2});
+    expect_eq(static_cast<long long>(h2.subscriber_count()), 2,
+              "the next publish sees the subscriber registered in between");
+    h2.wait();
+    expect_eq(static_cast<long long>(late), 1, "the late subscriber receives the next frame");
   });
 
   // case7: `publish_serial` failure aggregation — one subscriber throwing does not affect the

@@ -110,13 +110,17 @@ int publish_frame_bg(const char* topic, const char* type_tag, const svOpenArrayH
                      int trig_kind, long long trig_arg, unsigned int corr_id, bool concurrent) {
   const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
-    const std::vector<std::byte> frame = read_payload(payload);
-    const std::string t = topic ? topic : "";
-    const std::string tag = type_tag ? type_tag : "";
+    std::vector<std::byte> frame = read_payload(payload);
     shuttle::Trigger trig = build_trigger(trig_kind, trig_arg);
+    // The frame buffer is moved into the broker (raw frames keep it untouched);
+    // topic/type_tag stay views into the SV strings for the duration of the call.
+    const char* const t = topic ? topic : "";
+    const char* const tag = type_tag ? type_tag : "";
     const shuttle::Publication pub =
-        concurrent ? shuttle::detail::ext_pub_concurrent(t, tag, frame, std::move(trig), corr_id)
-                   : shuttle::detail::ext_pub_serial(t, tag, frame, std::move(trig), corr_id);
+        concurrent
+            ? shuttle::detail::ext_pub_concurrent(t, tag, std::move(frame), std::move(trig),
+                                                  corr_id)
+            : shuttle::detail::ext_pub_serial(t, tag, std::move(frame), std::move(trig), corr_id);
     return shuttle::detail::pub_id(pub);
   } catch (const std::exception& e) {
     set_last_error(e.what());

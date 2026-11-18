@@ -356,29 +356,30 @@ public:
   // Same three flavors and parameter shapes as Publisher: send_serial /
   // send_concurrent / send_now map 1:1 onto publish_serial / publish_concurrent /
   // publish_now. The mode suffix is never dropped: `serial` is the default
-  // delivery, not an unnamed special case.
-  Call<TResp> send_serial(const TReq& req, Trigger trig = {}) const {
-    return send_impl(req, [trig = std::move(trig)](const std::shared_ptr<State>& st,
-                                                   const TReq& msg, std::uint32_t corr_id) {
-      return detail::pub_serial(st->pub.topic(), std::make_shared<const TReq>(msg),
+  // delivery, not an unnamed special case. The request is taken by value so a
+  // prvalue (`send_serial(Req{21})`) is elided into the frame rather than copied.
+  Call<TResp> send_serial(TReq req, Trigger trig = {}) const {
+    return send_impl(std::move(req), [trig = std::move(trig)](const std::shared_ptr<State>& st,
+                                                              TReq&& msg, std::uint32_t corr_id) {
+      return detail::pub_serial(st->pub.topic(), std::make_shared<const TReq>(std::move(msg)),
                                 detail::type_ops<TReq>(), trig, corr_id);
     });
   }
-  Call<TResp> send_concurrent(const TReq& req, Trigger trig = {}) const {
-    return send_impl(req, [trig = std::move(trig)](const std::shared_ptr<State>& st,
-                                                   const TReq& msg, std::uint32_t corr_id) {
-      return detail::pub_concurrent(st->pub.topic(), std::make_shared<const TReq>(msg),
+  Call<TResp> send_concurrent(TReq req, Trigger trig = {}) const {
+    return send_impl(std::move(req), [trig = std::move(trig)](const std::shared_ptr<State>& st,
+                                                              TReq&& msg, std::uint32_t corr_id) {
+      return detail::pub_concurrent(st->pub.topic(), std::make_shared<const TReq>(std::move(msg)),
                                     detail::type_ops<TReq>(), trig, corr_id);
     });
   }
   // Synchronous flavor: only the nonblocking-entry responders run on the
   // publisher's stack; blocking ones end up on the background chain per policy.
-  Call<TResp> send_now(const TReq& req, NowPolicy policy = NowPolicy::defer) const {
-    return send_impl(
-        req, [policy](const std::shared_ptr<State>& st, const TReq& msg, std::uint32_t corr_id) {
-          return detail::pub_now(st->pub.topic(), std::make_shared<const TReq>(msg),
-                                 detail::type_ops<TReq>(), policy, corr_id);
-        });
+  Call<TResp> send_now(TReq req, NowPolicy policy = NowPolicy::defer) const {
+    return send_impl(std::move(req), [policy](const std::shared_ptr<State>& st, TReq&& msg,
+                                              std::uint32_t corr_id) {
+      return detail::pub_now(st->pub.topic(), std::make_shared<const TReq>(std::move(msg)),
+                             detail::type_ops<TReq>(), policy, corr_id);
+    });
   }
 
 private:
@@ -407,7 +408,7 @@ private:
   };
 
   template <typename Publish>
-  Call<TResp> send_impl(const TReq& req, Publish&& publish) const {
+  Call<TResp> send_impl(TReq req, Publish&& publish) const {
     if (!state_) throw std::logic_error("shuttle: empty Requester handle");
     std::shared_ptr<State> st = state_;
     table_->prune();
@@ -417,7 +418,7 @@ private:
 
     auto call = std::make_shared<detail::CallState<TResp>>();
     table_->inflight[corr_id] = call;  // before publishing: a response may arrive inline
-    Publication pub = publish(st, req, corr_id);
+    Publication pub = publish(st, std::move(req), corr_id);
     auto table = table_;
     return detail::CallAccess::make<TResp>(
         call, [table, corr_id] { table->inflight.erase(corr_id); }, corr_id, pub);
@@ -465,7 +466,7 @@ auto serve_body(std::string resp_topic, F&& handler) {
     // blocking subscriber slipped in before the mark: it is handed to the chain,
     // while every nonblocking subscriber (in particular the requester) is served
     // inline, so the reply exists before the publisher returns.
-    detail::pub_now(resp_pub->topic(), std::make_shared<const TResp>(resp),
+    detail::pub_now(resp_pub->topic(), std::make_shared<const TResp>(std::move(resp)),
                     detail::type_ops<TResp>(), NowPolicy::defer, meta.corr_id);
   };
 }

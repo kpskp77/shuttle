@@ -54,13 +54,15 @@ public:
   Topic& topic_for(std::string_view name);
   // Response-channel marking and its enforcement at registration.
   void mark_response_topic(std::string_view name);
-  void check_response_topic(const std::string& pattern) const;
+  void check_response_topic(std::string_view pattern) const;
   void check_filter_early(const Subscriber& sub);
   void check_bind_compat(std::string_view topic, std::string_view tag);
   void now_preflight(std::string_view topic, std::string_view tag, NowPolicy policy);
 
-  // Single-target delivery with unified failure/completion accounting.
-  Delivery deliver(const std::shared_ptr<Subscriber>& sub, const Envelope& env);
+  // Single-target delivery with unified failure/completion accounting. The
+  // owning topic is passed in: every caller already holds it, so the retired
+  // path does not need a second map lookup.
+  Delivery deliver(const std::shared_ptr<Subscriber>& sub, const Envelope& env, Topic& topic);
   void record_failure(const std::shared_ptr<PubState>& pub,
                       const std::optional<Publication::Failure>& failure);
   void pub_complete(const std::shared_ptr<PubState>& pub);
@@ -80,7 +82,7 @@ public:
                                                 std::shared_ptr<const void> payload,
                                                 const TypeOps* ops, std::uint32_t corr_id = 0);
   std::shared_ptr<const Envelope> make_envelope_bytes(std::string_view topic, std::string_view tag,
-                                                      const std::vector<std::byte>& bytes,
+                                                      std::vector<std::byte> bytes,
                                                       std::uint32_t corr_id = 0);
 
   // Background scheduling. start_serial performs the per-topic chain-tail
@@ -95,8 +97,6 @@ public:
                                              std::shared_ptr<const Envelope> env, Trigger trig,
                                              std::vector<std::shared_ptr<Subscriber>> targets);
   static std::string describe(const std::shared_ptr<Subscriber>& sub);
-  [[nodiscard]] static std::vector<std::shared_ptr<Subscriber>> select(
-      const std::vector<std::shared_ptr<Subscriber>>& matched, Capability want);
 
   // Subscription registration, retained replay, and unsubscription.
   void retained_catchup(const std::shared_ptr<Subscriber>& sub);

@@ -50,7 +50,7 @@ std::shared_ptr<ByteTaps> tap(shuttle::Subscription& keep, std::string pattern) 
       std::move(pattern),
       shuttle::nb([rec](const std::vector<std::byte>& b, const shuttle::Meta& m) {
         ++rec->frames;
-        rec->topics.push_back(m.topic_name);
+        rec->topics.push_back(std::string(m.topic_name));
         rec->topics.push_back(
             std::to_string(b.size()));  // also record the wire length to verify the encoding length
       }));

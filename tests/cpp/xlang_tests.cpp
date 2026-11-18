@@ -107,7 +107,7 @@ WEAVE_TEST(xlang_tests) {
         shuttle::subscribe<XMsg>(kFromSvTopic, [st](const XMsg& m, const shuttle::Meta& meta) {
           st->got.push_back(m);
           st->seqs.push_back(meta.topic_seq);
-          st->tags.push_back(meta.type_tag);
+          st->tags.push_back(std::string(meta.type_tag));
         });
 
     shuttle::Publisher<XMsg> pub(kToSvTopic);

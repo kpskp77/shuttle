@@ -326,6 +326,7 @@ struct Topic {
   std::uint64_t published, delivered, deferred;           // deferred = 被 defer 进链的次数
   std::uint64_t retired, skipped, failed;                // 未成功投递的三分解，dropped() = 三者之和
   bool retained_on; std::shared_ptr<const Envelope> retained_env;
+  std::string_view name_view;            // Meta::topic_name 的视图：指向 topics 的 key（只增不删）
   weave::Event chain;                    // 后台链尾（serial 与 now 的 defer 共用，初始已 set）
 };
 
@@ -350,6 +351,24 @@ struct Envelope {                        // 一帧的不可变快照
 
 `Broker` 是函数内静态单例（`Broker::get()`），持有 `topics`、`subs`、`pubs` 与两个 id 计数器。
 每个进程一份；SV 侧只维护一层注册表，二者共享同一个 broker。
+
+`pubs` 只登记**外部（SV）发布**：SV 句柄里只有 `pub_id`，必须能反查 `PubState`；C++ 的
+`Publication` 自己持有状态，把每一帧都插进 `pubs` 只会让它随帧数无界增长。发布热路径上保留两处
+廉价优化：`Subscriber::literal` 缓存“模式不含通配符”（普通订阅者一次 `string_view` 比较，
+不走逐段 `match`）；`dispatch_now` 用 `std::partition` 原地分组（不再为 blocking / nonblocking
+各建一份快照）。`deliver` 直接接收 `Topic&`，退订跳过时不再二次查表；`make_envelope` 与
+`make_envelope_bytes` 共用同一个建帧函数，字节路径把调用方的缓冲 move 进 `Envelope`。
+
+`Meta.topic_name` / `Meta.type_tag` 的类型是 `std::string_view`，指向 broker 已经拥有、且永不移动的存储
+（topic 表的 key、`Binding::tag`）。建帧因此不再为帧头做堆分配，`Meta` 的拷贝也只是两个
+(指针, 长度) 对（`MailboxItem` 存 `Meta` 时同样受益）。它们**不保证 NUL 结尾**：需要
+`const char*` 的地方（svdpi 的 export 表）在 `src/backend/svdpi/bridge.cpp` 里先物化成
+`std::string` 再 `.c_str()`，所以这条开销只落在 SV 投递路径上，纯 C++ 路径不受影响。用户侧按
+普通字符串用：`meta.topic_name == "dev.tx"`、`std::string s{meta.topic_name};`、
+`s = meta.topic_name;` 都成立；但 `std::string s = meta.topic_name;`（拷贝初始化）不行——
+`string_view → string` 是 explicit 构造，需要写成 `std::string s{meta.topic_name};`。代价是
+**公开头文件的布局变化**（ABI）：`Meta` 不能再由用户用字符串聚合初始化，旧二进制要与新的
+`libshuttle.so` 一起重编；语义不变，`Meta` 仍是由 broker 生成的只读值。
 
 **`Meta.topic_name` 与 `Meta.topic_seq` 是两条正交轴，不能互相替代**：`topic_name` 回答"哪条信道"
 （同一 topic 的所有帧共享它，所以它不标识一帧），`topic_seq` 回答"该信道上第几帧"（每个 topic 从 1 起
@@ -387,7 +406,8 @@ struct PubState {
 };
 ```
 
-`pubs` 表只增不减（仅随进程结束回收），长时间高频发布需要外部周期性清理策略。
+`pubs` 只随外部（SV）发布增长且只增不减（`pub_id` 不复用，仅随进程结束回收）；C++ 发布不进表。
+长时间跑 SV 侧高频发布的回归仍需要周期性清理策略。
 
 ### 8.3 topic 名与订阅模式的语法
 
@@ -542,6 +562,10 @@ template <typename T> const TypeOps* type_ops();   // 每个 T 一份静态实�
 `Codec<T>` 及其标量/字符串/枚举/容器特化，`SHUTTLE_REFLECT(Type, 字段...)` 为聚合类型生成
 特化（`tag()` 返回 `#Type`，字段按声明序编码，上限 16 个）。线上格式见
 `dpi_protocol.md` 的线上格式一章；SV 侧必须用 `{>>{...}}`（声明序、每字段高位在前）。
+
+读写的边界检查按整型宽度一次完成（`Writer::put_be` 一次 `resize`，`Reader` 每整数一次
+`take`），不再逐字节递归；字符串/vector 解码在用长度前缀分配之前先用 `Reader::remaining()`
+校验（损坏的长度不可能触发巨额预分配），编码侧也按已知长度预留缓冲。
 
 ### 10.3 类型绑定
 
@@ -713,7 +737,8 @@ SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 过 DPI：`NONE` / `D
 
 已知限制与后续方向：
 
-- `pubs` 表只增不减，长时间运行的回归需要周期性清理策略（或按 `pub_state` 惰性回收）；
+- `pubs` 只登记外部（SV）发布且只增不减（C++ 发布由 `Publication` 句柄持有，不进表）；
+  长时间运行的 SV 高频发布回归仍需周期性清理策略（或按 `pub_state` 惰性回收）；
 - SV 侧 `$error` 不回流 C++（协议决定），需要严格错误通道时应扩展 `dispatch` 的返回值；
 - 跨语言载荷只支持值语义与声明序字段子集，没有变体、指针、引用与句柄引用；
 - 背压只对 Mailbox 生效（§16）：普通订阅在 `SubOptions` 里的 `max_pending` / `OverflowPolicy`
