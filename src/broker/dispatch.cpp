@@ -73,6 +73,42 @@ std::string Broker::describe(const std::shared_ptr<Subscriber>& sub) {
   return "cpp sub " + std::to_string(sub->id);
 }
 
+namespace {
+
+// Tail of one ordered delivery chain, identified by (topic, key):
+//   key == 0        → the topic-wide serial chain (publish_serial, publish_now(defer));
+//   key == sub->id  → that subscriber's own concurrent chain (publish_concurrent).
+// Both flavors share this one handoff so the tricky part — "release the tail and
+// become the new tail" — exists exactly once. Reading the current tail and
+// installing `mine` is a single step: no suspension point may lie between them
+// (single-active-process invariant), and it must not happen at publish time for
+// a frame whose trigger is not satisfied yet — an un-fired trigger holding the
+// tail would stall every later frame of that chain (AGENTS.md invariant 12).
+std::shared_ptr<weave::Event> chain_join(Topic& topic, int key,
+                                         const std::shared_ptr<weave::Event>& mine) {
+  if (key == 0) {
+    // The topic-wide tail is a value on Topic; a copy of it is the wait handle
+    // (already set when no frame is in flight, so waiting is a no-op).
+    auto prev = std::make_shared<weave::Event>(topic.chain);
+    topic.chain = *mine;
+    return prev;
+  }
+  // A per-subscriber tail is handed off by pointer: the waiting frame keeps its
+  // predecessor alive and one delivery unit costs one event instead of two.
+  auto& slot = topic.sub_chains[key];
+  std::shared_ptr<weave::Event> prev;
+  if (slot) {
+    prev = std::move(slot);
+  } else {
+    prev = std::make_shared<weave::Event>();
+    prev->set();  // first frame of this chain: nothing to wait for
+  }
+  slot = mine;
+  return prev;
+}
+
+}  // namespace
+
 // ── publish_serial: one delivery unit per frame, per-topic serial chain
 //    keeps publication-order FIFO ─────────────────────────────────────────
 
@@ -103,10 +139,7 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   // on one of them). It joins the chain at trigger time instead.
   const bool queued = trig.immediate();
   std::shared_ptr<weave::Event> prev;
-  if (queued) {
-    prev = std::make_shared<weave::Event>(frame_topic.chain);
-    frame_topic.chain = *mine;
-  }
+  if (queued) prev = chain_join(frame_topic, 0, mine);
   Topic* const topic_state = &frame_topic;
   weave::create_task(
       std::string("shuttle-seq-") + std::string(topic),
@@ -119,12 +152,10 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
         try {
           wait_trigger(trig);
           if (!prev) {
-            // Deferred frame joining the chain now. Reading the tail and
-            // installing ours is a single step: no suspension point lies
-            // between them (single-active-process invariant), so no other
-            // frame can interleave and steal the tail.
-            prev = std::make_shared<weave::Event>(t.chain);
-            t.chain = *mine;
+            // Deferred frame joining the chain now. chain_join reads the tail and
+            // installs ours in one step: no suspension point lies between them
+            // (single-active-process invariant), so no other frame can interleave.
+            prev = chain_join(t, 0, mine);
           }
           prev->wait();
           for (; idx < targets.size(); ++idx) {
@@ -168,7 +199,8 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   return pub;
 }
 
-// ── publish_concurrent: one independent delivery unit per subscriber ─────
+// ── publish_concurrent: one delivery unit per subscriber, parallel across
+//    subscribers, FIFO per (topic, subscriber) ───────────────────────────────
 
 std::shared_ptr<PubState> Broker::start_concurrent(
     std::string_view topic, std::shared_ptr<const Envelope> env, Trigger trig,
@@ -180,14 +212,37 @@ std::shared_ptr<PubState> Broker::start_concurrent(
     pub_complete(pub);
     return pub;
   }
-  Topic* const topic_state = &topic_for(topic);
+  Topic& frame_topic = topic_for(topic);
+  Topic* const topic_state = &frame_topic;
+  // Chains are per (topic, subscriber): two frames in flight for the same
+  // subscriber are serialized, and different subscribers still run in parallel
+  // (a slow subscriber never delays another one's callback). Each unit hands
+  // off through its own tail using the same rule as publish_serial: a frame
+  // whose trigger is already satisfied reserves its tail inside the publish
+  // call, so per-subscriber order equals publish order and does not depend on
+  // when weave first runs the task; a deferred frame joins the chain only after
+  // wait_trigger returns (invariant 12 — reserving early would let an un-fired
+  // trigger hold the tail and stall that subscriber's later frames).
+  const bool queued = trig.immediate();
   for (const auto& sub : targets) {
+    const int key = sub->id;
+    const auto mine = std::make_shared<weave::Event>();
+    std::shared_ptr<weave::Event> prev;
+    if (queued) prev = chain_join(frame_topic, key, mine);
     weave::create_task(std::string("shuttle-par-") + std::string(topic),
-                       [this, pub, env, trig, sub, topic_state]() mutable {
+                       [this, pub, env, trig, sub, topic_state, mine, prev, queued]() mutable {
                          std::optional<Publication::Failure> failure;
                          Topic& t = *topic_state;
                          try {
                            wait_trigger(trig);
+                           if (!prev && !sub->removed) {
+                             // Deferred frame joining this subscriber's chain now. A target
+                             // that unsubscribed during the trigger wait needs no ordering
+                             // (its delivery is recorded as retired anyway), and skipping the
+                             // handoff keeps a dead registration from leaving a chain behind.
+                             prev = chain_join(t, sub->id, mine);
+                           }
+                           if (prev) prev->wait();
                            if (deliver(sub, *env, t) == Delivery::delivered)
                              ++t.delivered;
                            else
@@ -202,6 +257,9 @@ std::shared_ptr<PubState> Broker::start_concurrent(
                            count_failed(t, sub);
                            failure = failure_of(describe(sub), unknown_exc());
                          }
+                         // Release the next frame of this chain regardless of outcome; an event
+                         // that was never installed is harmless.
+                         mine->set();
                          unit_finished(pub, failure);
                        });
   }
@@ -220,7 +278,7 @@ namespace {
 // a policy: legitimate nesting is the responder chain (request frame → handler →
 // response frame), i.e. two or three levels.
 constexpr int kMaxNowDepth = 8;
-thread_local int now_depth = 0;
+int now_depth = 0;
 
 struct NowDepthGuard {
   NowDepthGuard() {

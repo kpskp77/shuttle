@@ -144,7 +144,9 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    仿真器的错误报告系统。
 8. **顺序保证**：`publish_now` 严格 FIFO；`publish_serial` 经 per-topic 串行链保证 topic 级
    FIFO（按**入队**顺序：`SHUTTLE_TRIG_NONE` 的帧在发布调用内入队，因此顺序即发布顺序；
-   带触发器的帧在触发时刻才入队，未满足的触发不会占住链头）；`publish_concurrent` 不承诺任何顺序。
+   带触发器的帧在触发时刻才入队，未满足的触发不会占住链头）；`publish_concurrent` 经每个
+   (topic, 订阅者) 一条链保证**该订阅者内部** FIFO（同样按入队顺序），不同订阅者之间并行、
+   互不承诺。跨方式不保序（同一 topic 的 `serial` 帧与 `concurrent` 帧可互相超越）。
    `SHUTTLE_NOW_DEFER` 的帧进入的是与 `publish_serial` **同一条**链。
 9. **SV 侧邮箱不新增 DPI**：`shuttle_pkg::shuttle_mailbox` 通过 `shuttle_subscribe_nb` 注册，
    队列是 SV 队列，唤醒走 `weave_pkg` 的 `weave_sv_wait` / `weave_sv_trigger`（纯 SV，非 DPI）。

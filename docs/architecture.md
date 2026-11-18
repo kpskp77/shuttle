@@ -30,7 +30,8 @@ SV 内部、C++ ↔ SV）只是同一套语义的三个使用者，跨语言不�
 - **进程内，非跨进程**：broker 是进程级单例、状态无锁；该性质继承自 weave 的单活跃进程
   契约（任一时刻只有一个进程执行记账代码），也是跨语言帧传递方案成立的前提。
 - **定义投递调度，不拥有并发原语**：task / 事件 / 等待由 weave 提供；shuttle 在其上定义
-  调度语义——同步（`now`）、per-topic FIFO（`serial`）、并发（`concurrent`）与条件延迟
+  调度语义——同步（`now`）、per-topic FIFO（`serial`）、订阅者间并发 + 每个订阅者内部 FIFO
+  （`concurrent`）与条件延迟
   （`Trigger`）。
 - **不做**：跨机器通信、持久化与重放、UVM 适配层。背压只对 Mailbox（§16）生效：
   普通订阅没有队列，`SubOptions` 仍被 broker 忽略。
@@ -115,7 +116,8 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 - 一切"检查—修改"只要中间不挂起就是原子的。例如 `pub_state()` 判定与
   `pub_on_complete()` 注册之间没有挂起点，因此不会漏掉完成通知；
 - `shared_ptr` 的引用计数跨语言边界读写同样受此保护；
-- 唯一需要显式处理的是链尾捕获（§6）：并发发布的"读链尾 + 装新链尾"必须在同一同步段内完成。
+- 唯一需要显式处理的是链尾捕获（§6）：并发发布的"读链尾 + 装新链尾"必须在同一同步段内完成——
+  串行链与 `publish_concurrent` 的 per-订阅者链道理相同。
 
 进程由 weave 创建：`weave::create_task(name, fn)` 只登记不立即执行；让出控制权
 （`weave::sleep`、`Event::wait`、`Task::await`、等待 SV export task）后才轮到其他 task。
@@ -123,7 +125,8 @@ SV 的 native 进程（`initial` / `always`）在同一套调度内：阻塞在 
 交出控制权。
 
 推论：所有"后台"投递都运行在 weave task 里，因此 `publish_serial` 的 FIFO 与
-`publish_concurrent` 的并发都由 weave 调度器决定，broker 不额外引入线程。
+`publish_concurrent` 的并发（订阅者之间并行、每个订阅者内部 FIFO）都由 weave 调度器决定，
+broker 不额外引入线程。
 
 ## 5. 三条发布路径
 
@@ -198,16 +201,30 @@ publish_serial ─▶ targets 为空 ? 立即 pub_complete（不建单元、不�
 
 ```
 publish_concurrent ─▶ targets 为空 ? 立即 pub_complete
-                   : 每个订阅者 create_task("shuttle-par-<topic>")
-                          └─ wait_trigger → deliver(sub, env) → unit_finished()
-                                                （最后一个完成的 task 使
-                                                 finished == target_count 时 pub_complete()）
+                   : 每个订阅者（key = Subscriber::id）
+                          immediate ? 同步段做该订阅者的链尾交接（§6）: 不占链尾
+                          create_task("shuttle-par-<topic>")
+                          ├─ wait_trigger(trig)
+                          ├─ 延迟帧：此刻才做链尾交接（无挂起点，读-改-写原子）
+                          ├─ prev->wait()              // 该订阅者的上一帧
+                          ├─ deliver(sub, env) → unit_finished()
+                          └─ mine->set()               // 成败都放行下一帧
+                   （最后一个完成的 task 使 finished == target_count 时 pub_complete()）
 ```
 
-订阅者之间无顺序承诺；同一订阅者的不同帧之间也不保证 FIFO（需要 FIFO 时用
-`publish_serial`）。每个 task 独立捕获自己的失败：`failures()` 按完成顺序累积，
-`result()` 重抛第一个。`pub_complete()` 没有独立的汇总 task：它由最后完成的那个投递
-task 在 `unit_finished()` 内触发，因此谁先谁后取决于回调耗时，与 task 创建顺序无关。
+并行性在**订阅者之间**：每个订阅者一条自己的链（`Topic::sub_chains`，按
+`Subscriber::id` 索引），所以 A 慢不会拖住 B；而同一个订阅者收到的连续帧**严格 FIFO**，
+入队顺序与 `publish_serial` 同一套规则（immediate 帧在发布调用内、延迟帧在触发时刻）。
+这是有状态 checker 的前提：否则 `concurrent` 会让 A@t1 与 B@t2 乱序进入同一个回调，
+得出不可复现的错误结论。
+
+链是 per-(topic, 订阅者) 而不是 per-订阅者，因此跨 topic 既没有保序也没有阻塞；
+`publish_concurrent` 与 `publish_serial` 的链互相独立（一帧只进入它自己那条），
+所以跨方式的顺序**不承诺**。
+
+每个 task 独立捕获自己的失败：`failures()` 按完成顺序累积，`result()` 重抛第一个。
+`pub_complete()` 没有独立的汇总 task：它由最后完成的那个投递 task 在 `unit_finished()` 内
+触发，因此谁先谁后取决于回调耗时，与 task 创建顺序无关（顺序承诺只管**进入回调**的次序）。
 
 ### 5.4 完整投递路径
 
@@ -240,13 +257,18 @@ Publisher<T>::publish_now/serial/concurrent         shuttle_pub#(T)::publish_now
                                                   → 拉取帧 → unpack → invoke
 ```
 
-## 6. 投递顺序：per-topic 串行链
+## 6. 投递顺序：串行链与 per-订阅者链
 
 `publish_serial` 与 `publish_now(defer)` 共用每个 topic 的一条 FIFO 链，由此得到可测定律：
 **同一 topic 的后台投递顺序等于入队顺序**——immediate 触发帧的入队时刻就是发布调用，
-延迟帧的入队时刻是它的触发时刻（见 §5.2）。
+延迟帧的入队时刻是它的触发时刻（见 §5.2）。`publish_concurrent` 用的是**每个
+(topic, 订阅者)** 一条同类链（`Topic::sub_chains[id]`），因此同一订阅者收到的连续帧也按
+入队顺序进入回调，而不同订阅者之间并行。两条链互不相干：`serial` 帧不进入任何
+per-订阅者链，`concurrent` 帧也不进入 topic 链。
 
-链尾交接的顺序不可交换（immediate 帧在同步段内完成）：
+链尾交接的顺序不可交换（immediate 帧在同步段内完成），两种链共用同一个函数
+`chain_join(topic, key, mine)`（`key == 0` = topic 链，`key == Subscriber::id` = 该订阅者的链；
+没有前驱时（该订阅者的首帧）直接拿到一个已 set 的 `prev`）：
 
 ```cpp
 // 立即帧：发布调用内交接（顺序 = 发布顺序，不依赖 task 何时首跑）
@@ -265,15 +287,20 @@ topics[topic].chain = *mine;                                      // 安装新�
 延迟帧为什么不在发布瞬间入队：`after(Event)` / `after(Task)` 的延迟是无界的，占住链尾就会把
 同 topic 后续每一帧（含无触发器的帧）一起扣住，`publish_serial(...).wait()` 永久卡住；
 而若触发器本身要等"排在后面的同 topic 帧的回调"，两者相互等待即真死锁。
-`tests/cpp/trigger_tests.cpp` 的 case8/case9 分别钉住这两条。
+`tests/cpp/trigger_tests.cpp` 的 case8/case9 分别钉住这两条；`publish_concurrent` 的
+per-订阅者链复用同一规则，case10/case11 钉住它（延迟帧不阻住无触发器的后续帧、
+延迟等待期间退订不留下死链）。
 
 串行链的代价是跨订阅者的队头阻塞：前一个订阅者的回调彻底结束后才开始下一个。这是
-显式接受的取舍；需要并发时用 `publish_concurrent`。
+显式接受的取舍；需要并发时用 `publish_concurrent`（它只保留"同一订阅者内部"的 FIFO，
+所以并行与保序可以同时得到——不需要用户自己加 `weave::Queue`）。
 
-**禁止用法**：在串行回调里对同一 topic 发布串行帧并 `wait()`。内层帧必须排在本帧之后，
-而本帧又要等内层完成，任何 FIFO 链设计下都死锁（除非 weave 暴露当前任务身份，否则 `wait()`
-无法可靠检出——broker 内部的"正在投递"标记在链任务挂起期间对其他任务是陈旧的，据此报错会误报）。
-判据简单：回调里只发布不等待，或改用 `publish_concurrent` / 其他 topic。
+**禁止用法（两种链都是）**：在回调里对同一 topic 发布帧并 `wait()`。`serial` 下内层帧必须排
+在本帧之后，任何 FIFO 链设计下都死锁；`concurrent` 下同一订阅者收到的内层帧同样排在本帧之后
+（其他订阅者那一份能跑完，但只要目标里包含自己就永远等不到）。判据简单：回调里只发布不
+等待，或改用其他 topic；`Mailbox`（nonblocking 入口 + 自己的队列）也是安全形态。
+这一点无法可靠检出：除非 weave 暴露当前任务身份，否则 `wait()` 在 broker 里看到的是陈旧的
+"正在投递"标记（链任务挂起期间对其他任务不可见），据此报错会误报。
 
 ## 7. 入口模型与 NowPolicy
 
@@ -742,7 +769,8 @@ SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 过 DPI：`NONE` / `D
 - SV 侧 `$error` 不回流 C++（协议决定），需要严格错误通道时应扩展 `dispatch` 的返回值；
 - 跨语言载荷只支持值语义与声明序字段子集，没有变体、指针、引用与句柄引用；
 - 背压只对 Mailbox 生效（§16）：普通订阅在 `SubOptions` 里的 `max_pending` / `OverflowPolicy`
-  仍被忽略——broker 不为订阅者建队列，`serial` / `concurrent` 的排队由 weave 的 task 调度承担；
+  仍被忽略——broker 不存待投递帧，`serial` 的 topic 链与 `concurrent` 的 per-订阅者链只是
+  一串 `weave::Event`（"排到哪了"），排队本身由 weave 的 task 调度承担；
 - `TopicInfo::deferred`（topic 累计）与 `Publication::deferred()`（帧级）同名不同粒度，
   读取时注意区分。
 
@@ -780,7 +808,8 @@ box.close();                                   // 幂等：退订 + 唤醒等待
 `Failure`（进 `Publication::failures()` 与 `failed` 计数），不发明新的记账通道。
 
 **语义边界**：邮箱回答"帧到了"，`Publication` 回答"所有订阅者回调都结束了"。邮箱顺序 =
-回调被调用的顺序（`serial` 入队顺序、`concurrent` 完成顺序、`now` 注册顺序），跨方式不承诺。
+回调被调用的顺序（`serial` 入队顺序、`concurrent` 每个订阅者各自的链顺序（即发布顺序）、
+`now` 注册顺序），跨方式不承诺。
 
 **SV 侧是纯 SV 实现**（`shuttle_pkg::shuttle_mailbox`）：它同样通过 `shuttle_subscribe_nb`
 注册，队列是 SV 队列，唤醒用 `weave_pkg` 的 `weave_sv_wait` / `weave_sv_trigger`——

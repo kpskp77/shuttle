@@ -28,8 +28,9 @@
 //
 // ── Ordering ────────────────────────────────────────────────────────────
 // The queue order is the order in which this subscriber's callback was invoked:
-// `serial` = join order, `concurrent` = completion order, `publish_now` =
-// registration order. Ordering across flavors is not promised.
+// `serial` = join order, `concurrent` = per-subscriber chain order (also publish
+// order, since each subscriber's chain is FIFO), `publish_now` = registration
+// order. Ordering across flavors is not promised.
 //
 // ── Capacity and overflow (SubOptions) ──────────────────────────────────
 // max_pending == 0 (default) is unbounded. A bounded mailbox must choose

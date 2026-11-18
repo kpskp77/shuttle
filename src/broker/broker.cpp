@@ -414,6 +414,11 @@ void Broker::remove_sub(const std::shared_ptr<Subscriber>& sub) {
   // and are recorded as retired instead of entering the callback.
   sub->removed = true;
   subs.erase(std::remove(subs.begin(), subs.end(), sub), subs.end());
+  // Drop this subscriber's concurrent chain tails. Subscriber ids are never
+  // reused, so this is not about correctness — it keeps the tail events of a
+  // long regression with churning subscribers from accumulating in `topics`
+  // (and matches `removed` above: a dead registration owns no ordering state).
+  for (auto& [name, topic] : topics) topic.sub_chains.erase(sub->id);
 }
 
 }  // namespace shuttle::detail

@@ -183,10 +183,9 @@ WEAVE_TEST(trigger_tests) {
     shuttle::Publisher<TrigMsg> pub("trig.chain");
     weave::Event ev;  // deliberately left unset while the second frame is published
     std::string order;
-    auto s = shuttle::subscribe<TrigMsg>("trig.chain",
-                                        [&](const TrigMsg& m, const shuttle::Meta&) {
-                                          order += std::to_string(m.v);
-                                        });
+    auto s = shuttle::subscribe<TrigMsg>("trig.chain", [&](const TrigMsg& m, const shuttle::Meta&) {
+      order += std::to_string(m.v);
+    });
 
     auto deferred = pub.publish_serial(TrigMsg{1}, shuttle::after(ev));
     auto plain = pub.publish_serial(TrigMsg{2});
@@ -202,8 +201,8 @@ WEAVE_TEST(trigger_tests) {
     expect(deferred.done(), "the deferred frame reaches a terminal state");
   });
 
-  // case9: a trigger may be satisfied by the callback of a frame published later on the same topic —
-  // this is the deadlock case that reserving the chain tail at publish time used to create
+  // case9: a trigger may be satisfied by the callback of a frame published later on the same topic
+  // — this is the deadlock case that reserving the chain tail at publish time used to create
   run_case(__func__, "case9", [] {
     shuttle::Publisher<TrigMsg> pub("trig.feed");
     weave::Event gate;
@@ -218,10 +217,67 @@ WEAVE_TEST(trigger_tests) {
     // Timed waits: with a pending trigger holding the chain this case would hang forever instead of
     // failing, which is exactly the failure mode being guarded against.
     expect(second.wait(200_us), "the later frame runs first");
-    expect(first.wait(200_us), "the gate set by the later frame's callback releases the earlier one");
+    expect(first.wait(200_us),
+           "the gate set by the later frame's callback releases the earlier one");
     expect(order == "21", "the later frame runs first and releases the earlier one");
     expect(first.done() && second.done(), "both frames reach a terminal state");
     expect(first.failures().empty() && second.failures().empty(), "no failures");
+  });
+
+  // case10: a pending trigger does not hold the subscriber's concurrent chain either — the deferred
+  // frame joins its own per-(topic, subscriber) chain only when its trigger fires, so a later
+  // trigger-free frame of the same subscriber is not blocked behind it
+  run_case(__func__, "case10", [] {
+    shuttle::Publisher<TrigMsg> pub("trig.par.chain");
+    weave::Event ev;  // deliberately left unset while the second frame is published
+    std::string a_order;
+    std::string b_order;
+    auto sa = shuttle::subscribe<TrigMsg>(
+        "trig.par.chain",
+        [&](const TrigMsg& m, const shuttle::Meta&) { a_order += std::to_string(m.v); });
+    auto sb = shuttle::subscribe<TrigMsg>(
+        "trig.par.chain",
+        [&](const TrigMsg& m, const shuttle::Meta&) { b_order += std::to_string(m.v); });
+
+    auto deferred = pub.publish_concurrent(TrigMsg{1}, shuttle::after(ev));
+    auto plain = pub.publish_concurrent(TrigMsg{2});
+    expect(plain.wait(200_us), "a trigger-free frame is not held back by a pending trigger");
+    expect(a_order == "2" && b_order == "2", "only the trigger-free frame was delivered");
+    expect(!deferred.done(), "the deferred frame is still waiting for its trigger");
+
+    ev.set();
+    expect(deferred.wait(200_us), "the deferred frame delivers once its trigger fires");
+    expect(a_order == "21" && b_order == "21",
+           "the deferred frame joins each subscriber's chain at trigger time");
+    expect(deferred.done() && plain.done(), "both frames reach a terminal state");
+  });
+
+  // case11: unsubscribing during a deferred concurrent wait — the retired target skips the chain
+  // handoff (no stale chain entry) and the surviving subscriber is unaffected
+  run_case(__func__, "case11", [] {
+    shuttle::Publisher<TrigMsg> pub("trig.par.unsub");
+    weave::Event ev;
+    std::size_t gone = 0;
+    std::size_t left = 0;
+    shuttle::Publication h;
+    {
+      auto s = shuttle::subscribe<TrigMsg>("trig.par.unsub",
+                                           [&](const TrigMsg&, const shuttle::Meta&) { ++gone; });
+      auto keep = shuttle::subscribe<TrigMsg>(
+          "trig.par.unsub", [&](const TrigMsg&, const shuttle::Meta&) { ++left; });
+      h = pub.publish_concurrent(TrigMsg{1}, shuttle::after(ev));
+      s.unsubscribe();  // the frame is snapshotted, but this target has unsubscribed
+      ev.set();
+      h.wait();
+      expect_eq(static_cast<long long>(gone), 0,
+                "an unsubscribed concurrent target never enters its callback");
+      expect_eq(static_cast<long long>(left), 1, "the surviving subscriber receives");
+      expect_eq(static_cast<long long>(h.retired()), 1, "the retired target is counted");
+      expect(h.done(), "still reaches a terminal state");
+      pub.publish_concurrent(TrigMsg{2}).wait();
+      expect_eq(static_cast<long long>(left), 2, "later frames still reach the survivor");
+    }
+    expect_eq(static_cast<long long>(gone), 0, "no phantom deliveries");
   });
 
   report(__func__);

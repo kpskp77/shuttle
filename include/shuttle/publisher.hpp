@@ -34,10 +34,18 @@
 //     Publisher instance) are invoked in publish-call order;
 //   · the deferred part of `publish_now` enters the same chain, so
 //     "background delivery order per topic == publish call order";
-//   · `publish_concurrent` promises no ordering at all (not even the order in
-//     which one subscriber receives two consecutive frames); subscribers that
-//     must process frames one at a time should insert a weave::Queue
-//     themselves or use `publish_serial`.
+//   · every `publish_concurrent` publication is queued on one chain per
+//     (topic, subscriber): each subscriber therefore receives consecutive
+//     frames in publish-call order, while different subscribers still run in
+//     parallel (a slow subscriber never delays another one). Ordering across
+//     flavors is not promised: a `concurrent` frame and a `serial` frame of the
+//     same topic may overtake each other.
+//
+// What a chain does NOT solve: a callback that publishes to the same topic and
+// `wait()`s for it. Under `serial` that deadlocks by construction, and under
+// `concurrent` the inner frame queues behind the very frame that waits for it
+// (per subscriber), so the same rule applies: publish without waiting, or use a
+// different topic.
 //
 // Event source: Meta.topic_seq increases monotonically per topic,
 // assigned by the broker (continuous across Publisher instances), so
@@ -93,8 +101,9 @@ public:
                               detail::type_ops<T>(), std::move(trig));
   }
 
-  // publish_concurrent: background, one task per subscriber, concurrent
-  // callbacks. If trig is non-empty, starts only once the trigger condition holds.
+  // publish_concurrent: background, one task per subscriber, callbacks run in
+  // parallel across subscribers but FIFO per (topic, subscriber). If trig is
+  // non-empty, starts only once the trigger condition holds.
   Publication publish_concurrent(T msg, Trigger trig = {}) const {
     return detail::pub_concurrent(topic_, std::make_shared<const T>(std::move(msg)),
                                   detail::type_ops<T>(), std::move(trig));

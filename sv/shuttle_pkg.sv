@@ -321,7 +321,8 @@ package shuttle_pkg;
   // so a mailbox needs no DPI entry point at all.
   //
   // Ordering: queue order = callback invocation order (serial = join order,
-  // concurrent = completion order, now = registration order).
+  // concurrent = this subscriber's chain order, i.e. publish order, now =
+  // registration order).
   // Capacity: capacity == 0 is unbounded; a bounded mailbox drops the oldest or
   // the newest item and counts it in overflowed() (no blocking, no exceptions).
   class shuttle_mb_item;

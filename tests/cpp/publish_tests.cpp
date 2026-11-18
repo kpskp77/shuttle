@@ -2,7 +2,7 @@
 //   `publish_now()`         — synchronous callbacks to nonblocking entries on the publisher's
 //   stack; never suspends `publish_serial()`      — one background weave task per topic, in-order
 //   callbacks, per-topic FIFO `publish_concurrent()`  — one background weave task per subscriber,
-//   concurrent callbacks, no ordering promised
+//   parallel across subscribers, FIFO per (topic, subscriber)
 // plus their waiting semantics (wait / wait(timeout) / done / result / failures).
 
 #include <cstdint>
@@ -499,6 +499,59 @@ WEAVE_TEST(publish_tests) {
     }
     expect(threw, "a publish_now cycle is refused with PublishError");
     expect(a_hits > 1 && b_hits > 1, "the cycle really ran before the bound stopped it");
+  });
+
+  // case18: `publish_concurrent` is FIFO per (topic, subscriber) — under the old "no ordering at
+  // all" contract a slow frame could be overtaken by the next frame inside the same subscriber
+  run_case(__func__, "case18", [] {
+    shuttle::Publisher<PubMsg> pub("pub.par.fifo");
+    std::string slow_order;
+    std::string fast_order;
+    auto slow =
+        shuttle::subscribe<PubMsg>("pub.par.fifo", [&](const PubMsg& m, const shuttle::Meta&) {
+          if (m.v == 1)
+            weave::sleep(50_us);  // frame 1 stalls: without a per-subscriber chain the
+                                  // later frames run straight past it
+          slow_order += std::to_string(m.v);
+        });
+    auto fast = shuttle::subscribe<PubMsg>(
+        "pub.par.fifo",
+        [&](const PubMsg& m, const shuttle::Meta&) { fast_order += std::to_string(m.v); });
+
+    std::vector<shuttle::Publication> hs;
+    for (std::uint32_t v = 1; v <= 6; ++v) hs.push_back(pub.publish_concurrent(PubMsg{v}));
+    for (auto& h : hs) h.wait();
+
+    expect(slow_order == "123456", "a subscriber sees its own frames in publish order");
+    expect(fast_order == "123456", "the other subscriber sees publish order too");
+    expect(hs.back().done(), "every frame reaches a terminal state");
+  });
+
+  // case19: the per-subscriber chain serializes only that subscriber — a slow subscriber does not
+  // delay another subscriber's callbacks (parallel across subscribers is preserved)
+  run_case(__func__, "case19", [] {
+    shuttle::Publisher<PubMsg> pub("pub.par.indep");
+    std::size_t slow_done = 0;
+    std::size_t fast_done = 0;
+    auto slow =
+        shuttle::subscribe<PubMsg>("pub.par.indep", [&](const PubMsg&, const shuttle::Meta&) {
+          weave::sleep(100_us);
+          ++slow_done;
+        });
+    auto fast = shuttle::subscribe<PubMsg>(
+        "pub.par.indep", [&](const PubMsg&, const shuttle::Meta&) { ++fast_done; });
+
+    auto h1 = pub.publish_concurrent(PubMsg{1});
+    auto h2 = pub.publish_concurrent(PubMsg{2});
+    // Frame 1 sleeps 100us, frame 2 is queued behind it for the slow subscriber, while the fast
+    // subscriber already finished both.
+    weave::sleep(20_us);
+    expect_eq(static_cast<long long>(fast_done), 2, "the fast subscriber is not held back");
+    expect_eq(static_cast<long long>(slow_done), 0, "the slow subscriber is still on frame 1");
+    h1.wait();
+    h2.wait();
+    expect_eq(static_cast<long long>(slow_done), 2, "the queued frame runs after the first");
+    expect_eq(static_cast<long long>(fast_done), 2, "no duplicate deliveries");
   });
 
   report(__func__);

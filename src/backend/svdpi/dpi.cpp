@@ -178,8 +178,8 @@ int shuttle_c_publish_serial(const char* topic, const char* type_tag,
   return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, corr_id, false);
 }
 
-// `publish_concurrent`: background, one task per subscriber, concurrent callbacks. Returns pub_id
-// (>0), or 0 on failure.
+// `publish_concurrent`: background, one task per subscriber, parallel across subscribers and FIFO
+// per (topic, subscriber). Returns pub_id (>0), or 0 on failure.
 int shuttle_c_publish_concurrent(const char* topic, const char* type_tag,
                                  const svOpenArrayHandle payload, int trig_kind, long long trig_arg,
                                  unsigned int corr_id) {

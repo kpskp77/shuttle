@@ -67,13 +67,15 @@ h.wait_done();                                                    // 挂起当�
 | --- | --- | --- | --- | --- | --- |
 | `now` | `publish_now(msg, policy)` | `publish_now(msg, SHUTTLE_NOW_*)` | 发布者进程内同步，全程不出让调度权 | 按注册顺序 | 入口为 nonblocking 的目标已执行完；入口为 blocking 的目标按策略处置（默认转后台链） |
 | `serial` | `publish_serial(msg, trig)` | `publish_serial(msg, trig)` | 后台**一个** weave task（topic 级） | 严格 FIFO（按入队顺序；延迟帧在触发时刻入队） | 立即返回句柄，回调尚未开始 |
-| `concurrent` | `publish_concurrent(msg, trig)` | `publish_concurrent(msg, trig)` | 后台**每订阅者一个** weave task | 无承诺 | 立即返回句柄，回调尚未开始 |
+| `concurrent` | `publish_concurrent(msg, trig)` | `publish_concurrent(msg, trig)` | 后台**每订阅者一个** weave task | 每个订阅者内部 FIFO（按入队顺序）；订阅者之间并行、无相互顺序 | 立即返回句柄，回调尚未开始 |
 
 选型：
 
 - 默认用 `serial`。同 topic 的后台投递顺序等于入队顺序（即时帧即发布顺序），排查问题时最容易复现。
 - 要求当帧生效、且回调不消耗仿真时间（例如配置下发、握手应答）用 `now`。
-- 订阅者之间互不依赖、单个回调耗时可观时用 `concurrent`，由 weave 调度器并发推进。
+- 订阅者之间互不依赖、单个回调耗时可观时用 `concurrent`：订阅者之间由 weave 调度器并发推进，
+  而同一个订阅者收到的连续多帧仍按发布顺序串行进入回调（每个订阅者一条链），所以有状态的
+  checker 不必再自己加队列。
 
 `serial` / `concurrent` 支持**延迟触发**：发布后不立即回调，条件满足才启动（`Trigger` /
 `shuttle_trigger`，支持延时、事件、另一个发布完成、all/any 组合）。三种方式都遵循**快照

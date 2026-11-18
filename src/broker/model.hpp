@@ -17,6 +17,7 @@
 #include <shuttle/publication.hpp>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 #include <weave/event.hpp>
 
@@ -122,6 +123,14 @@ struct Topic {
   std::string_view name_view;  // view of this topic's key in `topics` (never erased), for Meta
   weave::Event
       chain;  // tail of the background serial chain shared by publish_serial and publish_now(defer)
+  // Tail of each subscriber's concurrent chain, keyed by Subscriber::id (ids
+  // are never reused). publish_concurrent hands off through one chain per
+  // (topic, subscriber), so a subscriber sees its own frames in publish order
+  // while different subscribers still run in parallel. Not used by
+  // publish_serial: the two flavors keep independent order and must not
+  // overtake each other's promises. Erased when the subscriber is removed
+  // (Broker::remove_sub) — a dead registration must not leave its chain behind.
+  std::unordered_map<int, std::shared_ptr<weave::Event>> sub_chains;
   Topic() { chain.set(); }
 };
 
