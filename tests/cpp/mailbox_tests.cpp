@@ -25,16 +25,16 @@ using shuttle_test::run_case;
 
 // ── Test message types (SHUTTLE_REFLECT can only be used at global scope) ──
 struct MbxReq {
-  std::uint32_t rid = 0;
+  std::uint32_t req_id = 0;
   std::uint32_t op = 0;
 };
-SHUTTLE_REFLECT(MbxReq, rid, op)
+SHUTTLE_REFLECT(MbxReq, req_id, op)
 
 struct MbxResp {
-  std::uint32_t rid = 0;
+  std::uint32_t req_id = 0;
   std::uint32_t data = 0;
 };
-SHUTTLE_REFLECT(MbxResp, rid, data)
+SHUTTLE_REFLECT(MbxResp, req_id, data)
 
 WEAVE_TEST(mailbox_tests) {
   // case1: a mailbox is a nonblocking subscriber, so publish_now fills it synchronously on the
@@ -206,7 +206,8 @@ WEAVE_TEST(mailbox_tests) {
     expect(item.has_value() && item->value.data == 42, "retained payload delivered");
   });
 
-  // case11: wildcard pattern — one mailbox collects several topics, meta.topic_name tells them apart
+  // case11: wildcard pattern — one mailbox collects several topics, meta.topic_name tells them
+  // apart
   run_case(__func__, "case11", [] {
     auto box = shuttle::mailbox<MbxResp>("mbx.wild.>");
     shuttle::Publisher<MbxResp> a("mbx.wild.a");
@@ -240,25 +241,25 @@ WEAVE_TEST(mailbox_tests) {
     expect_eq(static_cast<long long>(box.size()), 0, "both handles see the same drained queue");
   });
 
-  // case13: request/response round trip — the responder replies on a second topic and echoes
-  // meta.topic_seq as the correlation id; the requester waits for its own frame, then for the reply
+  // case13: request/response round trip — the responder resps on a second topic and echoes
+  // meta.topic_seq as the correlation id; the requester waits for its own frame, then for the resp
   run_case(__func__, "case13", [] {
-    auto replies = shuttle::mailbox<MbxResp>("mbx.rr.resp");
+    auto resps = shuttle::mailbox<MbxResp>("mbx.rr.resp");
     shuttle::Publisher<MbxResp> responder_pub("mbx.rr.resp");
     auto sub = shuttle::subscribe<MbxReq>("mbx.rr.req", [&](const MbxReq& req,
-                                                           const shuttle::Meta& meta) {
+                                                            const shuttle::Meta& meta) {
       responder_pub.publish_serial(MbxResp{static_cast<std::uint32_t>(meta.topic_seq), req.op * 2});
     });
 
-    shuttle::Publisher<MbxReq> requester("mbx.rr.req");
-    auto req = requester.publish_serial(MbxReq{0, 21});
-    req.wait();  // the responder's callback has returned => the reply is published
+    shuttle::Publisher<MbxReq> req_pub("mbx.rr.req");
+    auto req = req_pub.publish_serial(MbxReq{0, 21});
+    req.wait();  // the responder's callback has returned => the resp is published
     expect(req.done() && req.failures().empty(), "request delivered without failures");
 
-    auto reply = replies.recv(1_ms);
-    expect(reply.has_value(), "the reply arrived");
-    expect(reply.has_value() && reply->value.data == 42, "the responder's answer is visible");
-    expect(reply.has_value() && reply->value.rid == 1,
+    auto resp = resps.recv(1_ms);
+    expect(resp.has_value(), "the reply arrived");
+    expect(resp.has_value() && resp->value.data == 42, "the responder's answer is visible");
+    expect(resp.has_value() && resp->value.req_id == 1,
            "the correlation id (echoed request seq) pairs the reply");
   });
 

@@ -40,16 +40,16 @@ using shuttle_test::run_case;
 // SvRqReq/SvRqResp in tests/sv/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT
 // names).
 struct XRqReq {
-  std::uint32_t rid = 0;
+  std::uint32_t req_id = 0;
   std::uint32_t op = 0;
 };
-SHUTTLE_REFLECT(XRqReq, rid, op)
+SHUTTLE_REFLECT(XRqReq, req_id, op)
 
 struct XRqResp {
-  std::uint32_t rid = 0;
+  std::uint32_t req_id = 0;
   std::uint32_t data = 0;
 };
-SHUTTLE_REFLECT(XRqResp, rid, data)
+SHUTTLE_REFLECT(XRqResp, req_id, data)
 
 // Message type (SHUTTLE_REFLECT must be used at global scope).
 // Byte-for-byte counterpart of `class XMsg` in tests/sv/shuttle_tests.sv:
@@ -158,7 +158,7 @@ WEAVE_TEST(xlang_tests) {
 
   // case5: cross-language request/response — a C++ Requester calls the SV responder registered by
   // case_rq_xlang in tests/sv/shuttle_tests.sv (it registers first and broadcasts readiness as a
-  // retained frame). The reply echoes the rid, so correlation works across the language boundary.
+  // retained frame). The resp echoes the req_id, so correlation works across the language boundary.
   run_case(__func__, "case5", [] {
     auto ready = shuttle::mailbox_bytes("rq.xlang.ready");
     expect(ready.recv(50_ms).has_value(), "the SV responder announced readiness");
@@ -167,11 +167,11 @@ WEAVE_TEST(xlang_tests) {
     auto call = client.send_serial(XRqReq{0, 20});
     expect_eq(static_cast<long long>(call.publication().subscriber_count()), 1,
               "the SV responder is the only target");
-    auto replies = call.wait_all(10_ms);
-    expect_eq(static_cast<long long>(replies.size()), 1, "the SV responder answered");
-    expect_eq(static_cast<long long>(replies.at(0).data), 41, "answer computed on the SV side");
-    expect_eq(static_cast<long long>(replies.at(0).rid), static_cast<long long>(call.rid()),
-              "the rid survived the cross-language hop");
+    auto resps = call.wait_all(10_ms);
+    expect_eq(static_cast<long long>(resps.size()), 1, "the SV responder answered");
+    expect_eq(static_cast<long long>(resps.at(0).data), 41, "answer computed on the SV side");
+    expect_eq(static_cast<long long>(resps.at(0).req_id), static_cast<long long>(call.req_id()),
+              "the req_id survived the cross-language hop");
   });
 
   report(__func__);

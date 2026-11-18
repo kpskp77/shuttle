@@ -62,35 +62,35 @@ module shuttle_tests;
   // Two uint32 fields each; type_tag must equal the C++ SHUTTLE_REFLECT name so that type-matched
   // delivery works across languages.
   class SvRqReq;
-    int unsigned rid;
+    int unsigned req_id;
     int unsigned op;
     localparam string type_tag = "XRqReq";
 
     static function automatic SvRqReq unpack(byte b[]);
       SvRqReq r = new();
-      {>>{r.rid, r.op}} = b;
+      {>>{r.req_id, r.op}} = b;
       return r;
     endfunction
   endclass
 
   class SvRqResp;
-    int unsigned rid;
+    int unsigned req_id;
     int unsigned data;
     localparam string type_tag = "XRqResp";
 
     function automatic void pack(output byte q[$]);
-      q = {>>{rid, data}};
+      q = {>>{req_id, data}};
     endfunction
   endclass
 
-  // Responder: echoes the request's rid (the correlation id the C++ Requester allocated) and answers
+  // Responder: echoes the request's req_id (the correlation id the C++ Requester allocated) and answers
   // op*2+1, publishing the reply from inside the request callback.
   class SvRqSink implements shuttle_sink;
     virtual task invoke(input byte payload[], input shuttle_meta meta);
       SvRqReq            req  = SvRqReq::unpack(payload);
       SvRqResp           resp = new();
       shuttle_pub #(SvRqResp) pub = new("rq.xlang.resp");
-      resp.rid  = req.rid;
+      resp.req_id  = req.req_id;
       resp.data = req.op * 2 + 1;
       pub.publish_serial(resp);
     endtask

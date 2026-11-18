@@ -107,23 +107,24 @@ h.wait_done();                                                    // 挂起当�
 
 ## 邮箱：等下一帧
 
-`Mailbox<T>`（C++）/ `shuttle_mailbox`（SV）把"等下一帧"做成可等待对象，是**请求-响应**
-的基元：它就是一个 nonblocking 订阅者 + 一个队列，因此照样进目标集、照样出现在
-`subscriber_count()`、照样收 retained 回放。
+`Mailbox<T>`（C++）/ `shuttle_mailbox`（SV）把“等下一帧”做成可等待对象：它就是一个
+nonblocking 订阅者 + 一个队列，因此照样进目标集、照样出现在 `subscriber_count()`、照样收 retained
+回放。单响应者、无需关联 id 的问答用它就够了（下面是最小用法）；多响应者或并发在途请求需要关联号
+时用 `Requester`——两者是兄弟，不是上下层。
 
 ```cpp
 // C++（纯头文件，零 DPI、零 broker 改动）
-shuttle::Mailbox<Resp> replies("dev.resp");
+shuttle::Mailbox<Resp> resps("dev.resp");
 auto req = shuttle::Publisher<Req>("dev.req").publish_serial(Req{...});
 req.wait();                                  // 响应者回调都已返回
-if (auto got = replies.recv(1_ms)) use(got->value, got->meta);   // 超时给 nullopt，帧不丢
+if (auto got = resps.recv(1_ms)) use(got->value, got->meta);   // 超时给 nullopt，帧不丢
 ```
 
 ```systemverilog
 // SV（纯 SV 实现，用 weave_pkg 的事件原语，不新增 DPI）
-shuttle_mailbox replies = new("dev.resp");
+shuttle_mailbox resps = new("dev.resp");
 byte payload[]; shuttle_meta meta; bit ok;
-replies.recv(ok, payload, meta, 1us);
+resps.recv(ok, payload, meta, 1us);
 ```
 
 - 入口固定为 **nonblocking**（回调只做入队），所以 `publish_now` 也能**同步**填邮箱；
@@ -134,29 +135,29 @@ replies.recv(ok, payload, meta, 1us);
 
 ## 请求-响应
 
-在邮箱之上再包一层：`Requester`（请求方）+ `serve`（响应方），关联 id 放在载荷的 `rid` 字段里。
+在邮箱之上再包一层：`Requester`（请求方）+ `serve`（响应方），关联 id 放在载荷的 `req_id` 字段里。
 
 ```cpp
-// 响应方：handler 返回回执，rid 由框架从请求里回填
+// 响应方：handler 返回回执，req_id 由框架从请求里回填
 shuttle::serve<Req, Resp>("dev.req", "dev.resp",
                           [](const Req& r, const shuttle::Meta&) { return Resp{0, business(r)}; });
 
 // 请求方
 shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
-auto call = client.send_serial(Req{0, 21});          // rid 自动分配并写进请求载荷
-auto replies = call.wait_all(1_ms);            // 每个目标订阅者回一条
+auto call = client.send_serial(Req{0, 21});          // req_id 自动分配并写进请求载荷
+auto resps = call.wait_all(1_ms);            // 每个目标订阅者回一条
 if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 ```
 
 - 发送方式与 `Publisher` 一一对应、同名同参：`send_serial(msg, trig)`（默认，保序）、
   `send_concurrent(msg, trig)`、`send_now(msg, NowPolicy)`；
-- 多个未完成请求互不干扰：回执按 rid 分发到各自的 `Call`；
-- 超时给空结果、帧不丢；`cancel()` 或丢掉句柄会释放槽位，迟到的回执记 `stale_replies()`；
+- 多个未完成请求互不干扰：回执按 req_id 分发到各自的 `Call`；
+- 超时给空结果、帧不丢；`cancel()` 或丢掉句柄会释放槽位，迟到的回执记 `stale_responses()`；
 - `wait_for(n, timeout)` 显式指定期望条数，`wait_all()` 用"每个请求目标回一条"的默认约定；
-- 自定义关联字段：第三个模板参数传自己的 traits（默认 `shuttle::RidField` 用 `.rid`）；
+- 自定义关联字段：第三个模板参数传自己的 traits（默认 `shuttle::ReqIdField` 用 `.req_id`）；
 - 入口和 `subscribe` 一样按参数类型选：裸 handler = blocking，`shuttle::nb(handler)` = nonblocking
   （配 `send_now()` 得零 RTT）；
-- 跨语言可用：SV 侧订阅请求 topic、在回执里回显 rid 即可（见 `tests/sv/shuttle_tests.sv`）。
+- 跨语言可用：SV 侧订阅请求 topic、在回执里回显 req_id 即可（见 `tests/sv/shuttle_tests.sv`）。
 
 ## 完成句柄与计数
 
@@ -270,7 +271,7 @@ just test-all   # 两者都跑
 | `tests/cpp/codec_tests.cpp` | 线格式黄金字节、各宽度大端与补码、IEEE754、长度前缀、enum 底层类型、嵌套 struct、越界抛 `DecodeError`、类型标签与 `has_codec_v` |
 | `tests/cpp/broker_tests.cpp` | 通配符 `*` / `>`、retained、退订幂等、句柄共享自动退订、`topic_info`、多发布者 seq 单调、类型绑定冲突、类型不相交的帧不入目标集（含绑定时的通配符豁免）、topic 名与订阅模式的语法校验（`TopicPatternError`，被拒时不留 topic 条目） |
 | `tests/cpp/publish_tests.cpp` | `NowPolicy` 三策略、`wait/wait(timeout)/done/result/failures`、计数契约、失败聚合不影响其余目标、零目标立即完成、类型不相交即零目标、入口选择、`defer` 与 `serial` 共享 FIFO |
-| `tests/cpp/requester_tests.cpp` | 请求-响应：单/多响应者、rid 分发、`wait_all` / `wait_for` / `recv` 超时、`cancel` 与迟到回执、响应者抛异常计入失败、非阻塞响应者 + `send_now`、自定义 traits、同 topic 拒绝 |
+| `tests/cpp/requester_tests.cpp` | 请求-响应：单/多响应者、req_id 分发、`wait_all` / `wait_for` / `recv` 超时、`cancel` 与迟到回执、响应者抛异常计入失败、非阻塞响应者 + `send_now`、自定义 traits、同 topic 拒绝 |
 | `tests/cpp/mailbox_tests.cpp` | 邮箱：`now` 同步填充、`serial`/`concurrent` 后台填充、超时不丢帧、三种溢出策略、`close` 唤醒、retained 回放、通配符、字节口味、请求-响应往返 |
 | `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发等待期间退订（在途帧记 retired）、延迟帧不阻塞后续同 topic 帧、触发器由后续帧回调放行 |
 | `tests/cpp/xlang_tests.cpp` | 跨语言往返（仅 svdpi 后端）：就绪握手、双向各三帧、类型标签与 seq 单调 |

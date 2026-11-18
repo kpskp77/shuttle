@@ -39,11 +39,11 @@ WEAVE_TEST(mailbox_demo) {
   // broker-side mailbox state and no third entry kind.
   auto box = shuttle::mailbox<Sample>("mb.demo");
   shuttle::Publisher<Sample> pub("mb.demo");
-  for (std::uint32_t v = 1; v <= 3; ++v)
-    pub.publish_now(Sample{0, v}, shuttle::NowPolicy::skip);
+  for (std::uint32_t v = 1; v <= 3; ++v) pub.publish_now(Sample{0, v}, shuttle::NowPolicy::skip);
   std::printf("[mailbox] publish_now filled it synchronously: size=%zu received=%llu\n", box.size(),
               static_cast<unsigned long long>(box.received()));
-  if (box.size() != 3) throw std::logic_error("mailbox_demo: publish_now must fill the queue inline");
+  if (box.size() != 3)
+    throw std::logic_error("mailbox_demo: publish_now must fill the queue inline");
 
   // ── The pull side: drain in your own process line ──────────────────────
   // recv(timeout) returns nullopt when nothing arrives in time and never loses a
@@ -74,7 +74,8 @@ WEAVE_TEST(mailbox_demo) {
   auto capped = shuttle::mailbox<Sample>(
       "mb.cap", shuttle::SubOptions{2, shuttle::OverflowPolicy::drop_oldest});
   shuttle::Publisher<Sample> cap_pub("mb.cap");
-  for (std::uint32_t v = 1; v <= 5; ++v) cap_pub.publish_now(Sample{0, v}, shuttle::NowPolicy::skip);
+  for (std::uint32_t v = 1; v <= 5; ++v)
+    cap_pub.publish_now(Sample{0, v}, shuttle::NowPolicy::skip);
   auto kept_first = capped.try_recv();
   auto kept_second = capped.try_recv();
   // received() counts frames *accepted into the queue*, so under drop_oldest it
@@ -94,7 +95,8 @@ WEAVE_TEST(mailbox_demo) {
   auto newest = shuttle::mailbox<Sample>(
       "mb.cap2", shuttle::SubOptions{2, shuttle::OverflowPolicy::drop_newest});
   shuttle::Publisher<Sample> cap2_pub("mb.cap2");
-  for (std::uint32_t v = 1; v <= 5; ++v) cap2_pub.publish_now(Sample{0, v}, shuttle::NowPolicy::skip);
+  for (std::uint32_t v = 1; v <= 5; ++v)
+    cap2_pub.publish_now(Sample{0, v}, shuttle::NowPolicy::skip);
   auto newest_first = newest.try_recv();
   auto newest_second = newest.try_recv();
   std::printf("[capped] drop_newest: capacity=2 received=%llu overflowed=%llu survivors=%u,%u\n",
@@ -108,8 +110,8 @@ WEAVE_TEST(mailbox_demo) {
   // ── OverflowPolicy::reject: the overflow becomes a normal delivery Failure ──
   // No new accounting channel: the frame did not reach this subscriber, so it is
   // reported like any other callback failure.
-  auto strict = shuttle::mailbox<Sample>(
-      "mb.reject", shuttle::SubOptions{1, shuttle::OverflowPolicy::reject});
+  auto strict = shuttle::mailbox<Sample>("mb.reject",
+                                         shuttle::SubOptions{1, shuttle::OverflowPolicy::reject});
   shuttle::Publisher<Sample> strict_pub("mb.reject");
   strict_pub.publish_serial(Sample{0, 1}).wait();  // fills the only slot
   auto rejected_pub = strict_pub.publish_serial(Sample{0, 2});
@@ -131,8 +133,8 @@ WEAVE_TEST(mailbox_demo) {
   // The callback may run inside publish_now; blocking the deliverer there would
   // deadlock the publisher. Rejected at construction, not at delivery time.
   try {
-    auto bad = shuttle::mailbox<Sample>(
-        "mb.block", shuttle::SubOptions{1, shuttle::OverflowPolicy::block});
+    auto bad = shuttle::mailbox<Sample>("mb.block",
+                                        shuttle::SubOptions{1, shuttle::OverflowPolicy::block});
     (void)bad;
     throw std::logic_error("mailbox_demo: a bounded mailbox accepted OverflowPolicy::block");
   } catch (const std::invalid_argument& e) {
@@ -164,20 +166,20 @@ WEAVE_TEST(mailbox_demo) {
     throw std::logic_error("mailbox_demo: close() must keep queued frames readable");
 
   // ── Minimal request/response without a correlation id ──────────────────
-  // The pattern from mailbox.hpp's header comment: one request topic, one reply
+  // The pattern from mailbox.hpp's header comment: one request topic, one resp
   // topic, one responder, one request outstanding at a time. This is enough for a
   // fixed pair of components — reach for shuttle::Requester (requester.hpp) once
-  // several requests can be in flight, because then the replies need a rid to be
+  // several requests can be in flight, because then the resps need a req_id to be
   // told apart.
-  auto replies = shuttle::mailbox<Sample>("mb.resp");
+  auto resps = shuttle::mailbox<Sample>("mb.resp");
   shuttle::Publisher<Sample> resp_pub("mb.resp");
   auto responder = shuttle::subscribe<Sample>("mb.req", [&](const Sample& s, const shuttle::Meta&) {
     resp_pub.publish_serial(Sample{s.ch, s.data * 2});
   });
   shuttle::Publisher<Sample> req_pub("mb.req");
   req_pub.publish_serial(Sample{3, 21}).wait();  // the responder's callback has returned
-  auto reply = replies.recv(1_ms);
-  if (!reply) throw std::logic_error("mailbox_demo: no reply arrived");
-  std::printf("[rpc] request data=21 -> reply ch=%u data=%u\n", reply->value.ch, reply->value.data);
-  if (reply->value.data != 42) throw std::logic_error("mailbox_demo: wrong reply");
+  auto resp = resps.recv(1_ms);
+  if (!resp) throw std::logic_error("mailbox_demo: no reply arrived");
+  std::printf("[rpc] request data=21 -> reply ch=%u data=%u\n", resp->value.ch, resp->value.data);
+  if (resp->value.data != 42) throw std::logic_error("mailbox_demo: wrong reply");
 }

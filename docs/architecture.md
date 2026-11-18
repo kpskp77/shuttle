@@ -717,8 +717,10 @@ SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 过 DPI：`NONE` / `D
 
 ## 16. 邮箱（Mailbox）：订阅者 + 队列
 
-`include/shuttle/mailbox.hpp` 的 `Mailbox<T>` 把"等下一帧"变成一个可等待的对象，
-是请求-响应的基元。它**不是新的投递机制**，而是两层现成能力拼起来的东西：
+`include/shuttle/mailbox.hpp` 的 `Mailbox<T>` 把"等下一帧"变成一个可等待的对象——它是**计时基元**
+（timing primitive），不是请求-响应的基元：单响应者、无需关联 id 时它足以拼出一次问答（本节末尾就是
+这个用法），但 §17 的 `Requester` 并不建立在它之上，两者是**兄弟**（见 `mailbox.hpp` 头部注释）。
+它**不是新的投递机制**，而是两层现成能力拼起来的东西：
 
 | 组成 | 复用 | 说明 |
 | --- | --- | --- |
@@ -757,8 +759,9 @@ box.close();                                   // 幂等：退订 + 唤醒等待
 
 ## 17. 请求-响应糖（Requester / Call / serve）
 
-`include/shuttle/requester.hpp` 在 §16 的邮箱之上再包一层：一个请求 topic + 一个回执 topic +
-载荷里的关联字段。同样是**纯头文件**，不新增 broker 状态与导出符号。
+`include/shuttle/requester.hpp` 与 §16 的邮箱是**兄弟**而非上下层：它不 include `mailbox.hpp`，
+而是复用同一套订阅原语（`detail::sub_typed` + nonblocking 入口），再加上一个请求 topic + 一个回执
+topic + 载荷里的关联字段。同样是**纯头文件**，不新增 broker 状态与导出符号。
 
 ```cpp
 // 响应者（可以有多个，C++ 或 SV）
@@ -768,32 +771,34 @@ shuttle::serve<Req, Resp>("dev.req", "dev.resp",
 // 请求者：三种发送方式与 `Publisher` 同名同参（send_serial / send_concurrent / send_now）
 shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
 auto call = client.send_serial(Req{0, 21});
-for (const auto& reply : call.wait_all(1_ms)) use(reply);
+for (const auto& resp : call.wait_all(1_ms)) use(resp);
 ```
 
-**关联 id 为什么放在载荷里**：`Meta.topic_seq` 由 broker 分配且对发布方不可见
+**关联 id 为什么放在载荷里**：先明确名字——`req_id` 是**请求-响应关联号**（请求方分配、响应者
+原样回显、用来把回执路由回对应的 `Call`），**不是** PCIe 的 Requester ID（那是 bus/device/function）。
+`Meta.topic_seq` 由 broker 分配且对发布方不可见
 （`Publication` 只有计数与失败，拿不到本帧的 `topic_seq`），所以请求方无法得知自己请求的序号。
-于是 rid 由 `Requester` 分配、写进请求载荷，`serve` 在回执里原样回填——两端同一个值，
+于是 req_id 由 `Requester` 分配、写进请求载荷，`serve` 在回执里原样回填——两端同一个值，
 不需要 broker 支持，跨语言也不变（SV 响应者按同样的字段布局回显即可，见
-`tests/sv/shuttle_tests.sv` 的 `SvRqSink`）。默认约定两个载荷都有 `rid` 字段
-（`shuttle::RidField`），第三个模板参数可换成自定义 traits。
+`tests/sv/shuttle_tests.sv` 的 `SvRqSink`）。默认约定两个载荷都有 `req_id` 字段
+（`shuttle::ReqIdField`），第三个模板参数可换成自定义 traits。
 
-**没有 rid 会怎样（逐条）**：一个 `Requester` 只有**一条回执订阅**（一个 topic、一条入口、
-一个回调 `ReplyTable::deliver`），所有请求的回执都从这一个回调进来。帧里只有 `{TResp, Meta{}}`，
+**没有 req_id 会怎样（逐条）**：一个 `Requester` 只有**一条回执订阅**（一个 topic、一条入口、
+一个回调 `ResponseTable::deliver`），所有请求的回执都从这一个回调进来。帧里只有 `{TResp, Meta{}}`，
 而 `Meta.topic_seq` 是**回执 topic 自己的**发布序号、与请求帧的序号无关，请求方也拿不到自己请求帧的
-序号（`Publication` 只回计数）。于是没有 rid 时：
+序号（`Publication` 只回计数）。于是没有 req_id 时：
 
 - **乱序即错配**：A(op=1)、B(op=2) 两个在途请求，答案 101/102，若 B 的回执先到，FIFO 会把 101
   分给 B（`requester_tests::case2` 钉的就是这条：`rb.at(0).data == 102` 会失败）。两次问同一地址
   时值相同，交换后**完全无法察觉**；
 - **多响应者无法计数**：一个请求命中 3 个目标产生 3 条回执，`wait_for(n)` / `wait_all` 依赖
   "这条属于哪个 Call" 才能判断"还差几条"；
-- **迟到的回执污染下一次请求**：请求 A 超时（或 `cancel()`）后被丢弃，5ms 后它的回执到达——无 rid
-  时正好落进下一个请求 B 的队列，B 拿到 A 的答案（类型/取值都合法，静默错）。有 rid 时
-  `ReplyTable::deliver` 的 `inflight.find(rid)` 找不到，记 `stale_replies()`（不是黑洞，可数）；
+- **迟到的回执污染下一次请求**：请求 A 超时（或 `cancel()`）后被丢弃，5ms 后它的回执到达——无 req_id
+  时正好落进下一个请求 B 的队列，B 拿到 A 的答案（类型/取值都合法，静默错）。有 req_id 时
+  `ResponseTable::deliver` 的 `inflight.find(req_id)` 找不到，记 `stale_responses()`（不是黑洞，可数）；
 - **跨语言无法对齐**：SV 响应者必须把同一个整数抄回来，C++ 侧才能认领。
 
-rid 因此由**请求方**生成（它要建表，必须自己知道这个号），broker 无法代劳：它能给的只有
+req_id 因此由**请求方**生成（它要建表，必须自己知道这个号），broker 无法代劳：它能给的只有
 "帧在本 topic 上的序号"，既不指向调用、也不回传发布方；要新增"回执指向哪个请求"的元数据就得改
 DPI 线上格式与两侧解析。放在载荷里则是零协议成本（两侧本来就在编解码，SV 侧同布局回显即可）。
 
@@ -802,10 +807,10 @@ DPI 线上格式与两侧解析。放在载荷里则是零协议成本（两侧�
 `publication().subscriber_count()`）。有只看不回的旁观订阅者时用 `wait_for`/`recv`。
 
 **slot 生命周期**：`Requester` 的回执表存 **weak_ptr**，`Call` 持有唯一强引用——丢掉句柄
-（或 `cancel()`）即释放 slot，此后到达的回执计入 `stale_replies()` 并被丢弃。这也让"回执
+（或 `cancel()`）即释放 slot，此后到达的回执计入 `stale_responses()` 并被丢弃。这也让"回执
 topic 开了 retained"不会毒化后续请求（仍不推荐）。
 
-**request/reply topic 必须不同**：响应者是在请求回调里发布回执的，同 topic 会让回执排在
+**request/response topic 必须不同**：响应者是在请求回调里发布回执的，同 topic 会让回执排在
 "发布它的那个回调"之后——`Requester`/`serve` 构造时直接抛 `std::invalid_argument`。
 
 **入口选择**：和 `subscribe` 完全一致——裸 handler 注册 blocking 入口（响应者通常要消耗

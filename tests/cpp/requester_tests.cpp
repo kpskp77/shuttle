@@ -1,6 +1,6 @@
 // Request/response sugar self-checks: Requester/Call on the caller side, serve()
-// on the responder side — correlation over a payload field, rid demultiplexing,
-// reply counting, timeouts, cancellation and stale replies.
+// on the responder side — correlation over a payload field, req_id demultiplexing,
+// resp counting, timeouts, cancellation and stale resps.
 //
 // Independent namespace (rq.*), shared broker singleton.
 #include <cstdint>
@@ -23,18 +23,18 @@ using shuttle_test::run_case;
 
 // ── Test message types (SHUTTLE_REFLECT can only be used at global scope) ──
 struct RqReq {
-  std::uint32_t rid = 0;
+  std::uint32_t req_id = 0;
   std::uint32_t op = 0;
 };
-SHUTTLE_REFLECT(RqReq, rid, op)
+SHUTTLE_REFLECT(RqReq, req_id, op)
 
 struct RqResp {
-  std::uint32_t rid = 0;
+  std::uint32_t req_id = 0;
   std::uint32_t data = 0;
 };
-SHUTTLE_REFLECT(RqResp, rid, data)
+SHUTTLE_REFLECT(RqResp, req_id, data)
 
-// Custom correlation traits (correlate on `corr` instead of `rid`)
+// Custom correlation traits (correlate on `corr` instead of `req_id`)
 struct CorrReq {
   std::uint32_t corr = 0;
   std::uint32_t op = 0;
@@ -48,15 +48,15 @@ struct CorrResp {
 SHUTTLE_REFLECT(CorrResp, corr, data)
 
 struct CorrTraits {
-  static std::uint32_t get_rid(const CorrReq& m) { return m.corr; }
-  static void set_rid(CorrReq& m, std::uint32_t v) { m.corr = v; }
-  static std::uint32_t get_rid(const CorrResp& m) { return m.corr; }
-  static void set_rid(CorrResp& m, std::uint32_t v) { m.corr = v; }
+  static std::uint32_t get_req_id(const CorrReq& m) { return m.corr; }
+  static void set_req_id(CorrReq& m, std::uint32_t v) { m.corr = v; }
+  static std::uint32_t get_req_id(const CorrResp& m) { return m.corr; }
+  static void set_req_id(CorrResp& m, std::uint32_t v) { m.corr = v; }
 };
 
 WEAVE_TEST(requester_tests) {
-  // case1: one responder round trip. The requester allocates the rid, serve() echoes it, and
-  // wait_all() expects one reply per request target subscriber
+  // case1: one responder round trip. The requester allocates the req_id, serve() echoes it, and
+  // wait_all() expects one resp per request target subscriber
   run_case(__func__, "case1", [] {
     auto server = shuttle::serve<RqReq, RqResp>(
         "rq.basic.req", "rq.basic.resp",
@@ -66,12 +66,12 @@ WEAVE_TEST(requester_tests) {
     auto call = client.send_serial(RqReq{0, 21});
     expect_eq(static_cast<long long>(call.publication().subscriber_count()), 1,
               "the request targets the single responder");
-    expect_eq(static_cast<long long>(call.rid()), 1, "the requester allocates rid 1");
+    expect_eq(static_cast<long long>(call.req_id()), 1, "the requester allocates req_id 1");
 
-    auto replies = call.wait_all(1_ms);
-    expect_eq(static_cast<long long>(replies.size()), 1, "one reply");
-    expect_eq(static_cast<long long>(replies.at(0).data), 42, "the responder's answer");
-    expect_eq(static_cast<long long>(replies.at(0).rid), 1, "serve echoed the rid");
+    auto resps = call.wait_all(1_ms);
+    expect_eq(static_cast<long long>(resps.size()), 1, "one reply");
+    expect_eq(static_cast<long long>(resps.at(0).data), 42, "the responder's answer");
+    expect_eq(static_cast<long long>(resps.at(0).req_id), 1, "serve echoed the req_id");
     expect(call.publication().done(), "the request frame completed");
     expect_eq(static_cast<long long>(call.queued()), 0, "the reply was taken out of the slot");
 
@@ -87,8 +87,8 @@ WEAVE_TEST(requester_tests) {
               "dropping the handle releases the slot");
   });
 
-  // case2: several requests on one Requester — distinct rids, replies demultiplexed to their own
-  // Call handles even though both travel on the same reply topic
+  // case2: several requests on one Requester — distinct req_ids, resps demultiplexed to their own
+  // Call handles even though both travel on the same resp topic
   run_case(__func__, "case2", [] {
     auto server = shuttle::serve<RqReq, RqResp>(
         "rq.demux.req", "rq.demux.resp",
@@ -97,20 +97,20 @@ WEAVE_TEST(requester_tests) {
     shuttle::Requester<RqReq, RqResp> client("rq.demux.req", "rq.demux.resp");
     auto a = client.send_serial(RqReq{0, 1});
     auto b = client.send_serial(RqReq{0, 2});
-    expect(a.rid() != b.rid(), "each request gets its own rid");
+    expect(a.req_id() != b.req_id(), "each request gets its own req_id");
 
-    // Take them out of order on purpose: each handle only ever sees its own rid.
+    // Take them out of order on purpose: each handle only ever sees its own req_id.
     auto rb = b.wait_all(1_ms);
     auto ra = a.wait_all(1_ms);
     expect_eq(static_cast<long long>(rb.size()), 1, "second call got exactly one reply");
     expect_eq(static_cast<long long>(ra.size()), 1, "first call got exactly one reply");
     expect_eq(static_cast<long long>(rb.at(0).data), 102, "b's reply belongs to b");
     expect_eq(static_cast<long long>(ra.at(0).data), 101, "a's reply belongs to a");
-    expect_eq(static_cast<long long>(ra.at(0).rid), a.rid(), "a's rid came back");
-    expect_eq(static_cast<long long>(rb.at(0).rid), b.rid(), "b's rid came back");
+    expect_eq(static_cast<long long>(ra.at(0).req_id), a.req_id(), "a's req_id came back");
+    expect_eq(static_cast<long long>(rb.at(0).req_id), b.req_id(), "b's req_id came back");
   });
 
-  // case3: two responders — wait_for(2) collects both, in completion order (concurrent replies)
+  // case3: two responders — wait_for(2) collects both, in completion order (concurrent resps)
   run_case(__func__, "case3", [] {
     auto first = shuttle::serve<RqReq, RqResp>(
         "rq.multi.req", "rq.multi.resp",
@@ -123,10 +123,10 @@ WEAVE_TEST(requester_tests) {
     auto call = client.send_serial(RqReq{0, 3});
     expect_eq(static_cast<long long>(call.publication().subscriber_count()), 2,
               "two responders are targets");
-    auto replies = call.wait_all(1_ms);  // n = subscriber_count() = 2
-    expect_eq(static_cast<long long>(replies.size()), 2, "both responders answered");
+    auto resps = call.wait_all(1_ms);  // n = subscriber_count() = 2
+    expect_eq(static_cast<long long>(resps.size()), 2, "both responders answered");
     std::uint32_t sum = 0;
-    for (const auto& r : replies) sum += r.data;
+    for (const auto& r : resps) sum += r.data;
     expect_eq(static_cast<long long>(sum), 61, "both answers arrived (30 + 31)");
   });
 
@@ -140,7 +140,7 @@ WEAVE_TEST(requester_tests) {
               "zero targets: the request frame completes immediately");
   });
 
-  // case5: cancel() frees the slot; a reply arriving afterwards is counted as stale and never
+  // case5: cancel() frees the slot; a resp arriving afterwards is counted as stale and never
   // reaches the handle
   run_case(__func__, "case5", [] {
     weave::Event gate;
@@ -158,11 +158,11 @@ WEAVE_TEST(requester_tests) {
     expect_eq(static_cast<long long>(client.inflight()), 0, "the slot is released");
     expect(!call.recv(100_us).has_value(), "a cancelled handle never receives");
 
-    gate.set();  // the responder answers now: the reply has no live call
-    auto req_pub = call.publication();
-    req_pub.wait();
-    for (int i = 0; i < 50 && client.stale_replies() == 0; ++i) weave::sleep(100_us);
-    expect_eq(static_cast<long long>(client.stale_replies()), 1,
+    gate.set();  // the responder answers now: the resp has no live call
+    auto pub = call.publication();
+    pub.wait();
+    for (int i = 0; i < 50 && client.stale_responses() == 0; ++i) weave::sleep(100_us);
+    expect_eq(static_cast<long long>(client.stale_responses()), 1,
               "the reply for the cancelled call is counted as stale");
     (void)server;
   });
@@ -183,7 +183,7 @@ WEAVE_TEST(requester_tests) {
     (void)bad;
   });
 
-  // case7: a nonblocking responder works with the synchronous flavor (send_now): the reply is
+  // case7: a nonblocking responder works with the synchronous flavor (send_now): the resp is
   // queued by the time send_now returns, because the nonblocking entry runs on the publisher's
   // stack
   run_case(__func__, "case7", [] {
@@ -193,12 +193,12 @@ WEAVE_TEST(requester_tests) {
 
     shuttle::Requester<RqReq, RqResp> client("rq.now.req", "rq.now.resp");
     auto call = client.send_now(RqReq{0, 41}, shuttle::NowPolicy::skip);
-    auto reply = call.recv(1_ms);
-    expect(reply.has_value(), "the nonblocking responder answered");
-    expect(reply.has_value() && reply->data == 42, "answer content");
+    auto resp = call.recv(1_ms);
+    expect(resp.has_value(), "the nonblocking responder answered");
+    expect(resp.has_value() && resp->data == 42, "answer content");
   });
 
-  // case8: custom correlation traits compensate for a payload without a `rid` field
+  // case8: custom correlation traits compensate for a payload without a `req_id` field
   run_case(__func__, "case8", [] {
     auto server = shuttle::serve<CorrReq, CorrResp, CorrTraits>(
         "rq.traits.req", "rq.traits.resp",
@@ -206,22 +206,21 @@ WEAVE_TEST(requester_tests) {
 
     shuttle::Requester<CorrReq, CorrResp, CorrTraits> client("rq.traits.req", "rq.traits.resp");
     auto call = client.send_serial(CorrReq{0, 7});
-    auto replies = call.wait_all(1_ms);
-    expect_eq(static_cast<long long>(replies.size()), 1,
-              "reply received through the custom traits");
-    expect_eq(static_cast<long long>(replies.at(0).data), 21, "answer content");
-    expect_eq(static_cast<long long>(replies.at(0).corr), static_cast<long long>(call.rid()),
-              "the custom correlation field carries the rid");
+    auto resps = call.wait_all(1_ms);
+    expect_eq(static_cast<long long>(resps.size()), 1, "reply received through the custom traits");
+    expect_eq(static_cast<long long>(resps.at(0).data), 21, "answer content");
+    expect_eq(static_cast<long long>(resps.at(0).corr), static_cast<long long>(call.req_id()),
+              "the custom correlation field carries the req_id");
     (void)server;
   });
 
-  // case9: the request payload handed to the responder carries the requester's rid (that is what
+  // case9: the request payload handed to the responder carries the requester's req_id (that is what
   // lets an SV responder echo it), and the caller's own copy is untouched
   run_case(__func__, "case9", [] {
-    std::uint32_t seen_rid = 0;
+    std::uint32_t seen_req_id = 0;
     auto server = shuttle::serve<RqReq, RqResp>(
-        "rq.echo.req", "rq.echo.resp", [&seen_rid](const RqReq& req, const shuttle::Meta&) {
-          seen_rid = req.rid;
+        "rq.echo.req", "rq.echo.resp", [&seen_req_id](const RqReq& req, const shuttle::Meta&) {
+          seen_req_id = req.req_id;
           return RqResp{0, req.op};
         });
 
@@ -229,14 +228,14 @@ WEAVE_TEST(requester_tests) {
     RqReq mine{0, 5};
     auto call = client.send_serial(mine);
     call.wait_all(1_ms);
-    expect_eq(static_cast<long long>(seen_rid), static_cast<long long>(call.rid()),
-              "the responder saw the allocated rid");
-    expect_eq(static_cast<long long>(mine.rid), 0, "the caller's message is not modified");
+    expect_eq(static_cast<long long>(seen_req_id), static_cast<long long>(call.req_id()),
+              "the responder saw the allocated req_id");
+    expect_eq(static_cast<long long>(mine.req_id), 0, "the caller's message is not modified");
     (void)server;
   });
 
-  // case10: request and reply topics must differ (same-topic replies would sit behind the callback
-  // that publishes them), and the rid counter is exposed for diagnostics
+  // case10: request and resp topics must differ (same-topic resps would sit behind the callback
+  // that publishes them), and the req_id counter is exposed for diagnostics
   run_case(__func__, "case10", [] {
     bool threw = false;
     try {
@@ -248,13 +247,13 @@ WEAVE_TEST(requester_tests) {
     expect(threw, "a Requester with identical request/reply topics throws");
 
     shuttle::Requester<RqReq, RqResp> client("rq.diag.req", "rq.diag.resp");
-    const std::uint32_t first = client.next_rid();
+    const std::uint32_t first = client.next_req_id();
     auto call = client.send_serial(RqReq{0, 1});
-    expect_eq(static_cast<long long>(call.rid()), static_cast<long long>(first),
-              "next_rid() predicts the next allocation");
-    expect_eq(static_cast<long long>(client.next_rid()), static_cast<long long>(first) + 1,
+    expect_eq(static_cast<long long>(call.req_id()), static_cast<long long>(first),
+              "next_req_id() predicts the next allocation");
+    expect_eq(static_cast<long long>(client.next_req_id()), static_cast<long long>(first) + 1,
               "the counter advances");
-    expect(client.request_topic() == "rq.diag.req" && client.reply_topic() == "rq.diag.resp",
+    expect(client.req_topic() == "rq.diag.req" && client.resp_topic() == "rq.diag.resp",
            "topic accessors");
   });
 

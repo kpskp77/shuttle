@@ -60,7 +60,7 @@
 //   · a mailbox wakes one queue, Requester wakes per call (one Event per Call),
 //     so two outstanding requests are waited for independently;
 //   · a reply that belongs to a cancelled or dropped call must still be
-//     *counted* (Requester::stale_replies()), which needs the rid->call table;
+//     *counted* (Requester::stale_responses()), which needs the req_id->call table;
 //   · the reply subscription must be shared by all calls of one Requester, not
 //     one queue per call and not one subscription per call.
 // Mailbox is the right tool when the responder set is fixed and one queue of
@@ -71,17 +71,16 @@
 #include <cstdint>
 #include <deque>
 #include <optional>
-#include <stdexcept>
-#include <string>
-#include <type_traits>
-#include <utility>
-#include <vector>
-
 #include <shuttle/detail/abi.hpp>
 #include <shuttle/exception.hpp>
 #include <shuttle/meta.hpp>
 #include <shuttle/subscription.hpp>
 #include <shuttle/types.hpp>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
 #include <weave/event.hpp>
 #include <weave/sync.hpp>
 #include <weave/task.hpp>
@@ -108,7 +107,7 @@ struct MailboxState {
       : capacity(opts.max_pending), overflow(opts.overflow) {}
 
   std::deque<MailboxItem<T>> items;
-  weave::Event not_empty;  // level-triggered: "the queue is non-empty"
+  weave::Event not_empty;    // level-triggered: "the queue is non-empty"
   std::size_t capacity = 0;  // 0 = unbounded
   OverflowPolicy overflow = OverflowPolicy::drop_oldest;
   bool closed = false;
@@ -164,8 +163,7 @@ MailboxItem<T> mailbox_pop(MailboxState<T>& st) {
 template <typename T>
 MailboxItem<T> mailbox_recv(MailboxState<T>& st) {
   while (st.items.empty()) {
-    if (st.closed)
-      throw MailboxClosed("shuttle: receiving from a closed mailbox (queue drained)");
+    if (st.closed) throw MailboxClosed("shuttle: receiving from a closed mailbox (queue drained)");
     st.not_empty.wait();
   }
   return mailbox_pop(st);
@@ -186,8 +184,8 @@ std::optional<MailboxItem<T>> mailbox_recv(const std::shared_ptr<MailboxState<T>
     // cancelling the waiter consumes nothing, so a late frame stays queued.
     // The state is captured by value: the waiter must not touch a dead reference
     // if the timeout wins.
-    weave::Task waiter = weave::create_task("shuttle-mailbox-wait",
-                                            [st_holder] { st_holder->not_empty.wait(); });
+    weave::Task waiter =
+        weave::create_task("shuttle-mailbox-wait", [st_holder] { st_holder->not_empty.wait(); });
     try {
       weave::wait_for(waiter, weave::duration(remaining));
     } catch (const weave::TimeoutError&) {
@@ -209,9 +207,7 @@ public:
   // ── Receiving (blocking primitives: they need a weave task context) ──
   // Blocks until a frame arrives; throws MailboxClosed when the mailbox is
   // closed and its queue is drained.
-  MailboxItem<T> recv() {
-    return detail::mailbox_recv(*require_state());
-  }
+  MailboxItem<T> recv() { return detail::mailbox_recv(*require_state()); }
   // nullopt = timed out (or the mailbox was closed while empty? no: closed
   // throws, same as the blocking form)
   std::optional<MailboxItem<T>> recv(weave::duration timeout) {

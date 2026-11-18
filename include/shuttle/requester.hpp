@@ -1,40 +1,44 @@
 #pragma once
 
-// Request/response sugar: one request topic, one reply topic, a correlation id
+// Request/response sugar: one request topic, one response topic, a correlation id
 // carried in the payload. Built on the same subscription primitives as mailbox
 // (mailbox.hpp), which is a sibling, not a dependency: a mailbox is one FIFO,
-// while replies have to be demultiplexed by rid, so this file keeps its own
-// rid -> call table (see the note at the end of mailbox.hpp's header).
+// while replies have to be demultiplexed by req_id, so this file keeps its own
+// req_id -> call table (see the note at the end of mailbox.hpp's header).
 //
 //   // responder side (any number of them, C++ or SV)
 //   shuttle::serve<Req, Resp>("dev.req", "dev.resp",
 //                             [](const Req& r, const shuttle::Meta&) {
-//                               return Resp{0, business(r)};   // rid is filled in for you
+//                               return Resp{0, business(r)};   // req_id is filled in for you
 //                             });
 //
 //   // requester side
 //   shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
 //   auto call = client.send_serial(Req{0, 21});
-//   for (const auto& reply : call.wait_all(1_ms)) use(reply);
+//   for (const auto& resp : call.wait_all(1_ms)) use(resp);
 //
 // ── Correlation ─────────────────────────────────────────────────────────
-// The rid lives in the payload, so it crosses languages unchanged. By default
-// both payload types expose a `rid` field (shuttle::RidField); pass a different
+// `req_id` is the *request correlation id*: allocated by the Requester, echoed by
+// whoever answers, used to route each reply to its Call. (It is not the PCIe
+// Requester ID — that one names a bus/device/function, this one names a call.)
+//
+// It lives in the payload, so it crosses languages unchanged. By default both
+// payload types expose a `req_id` field (shuttle::ReqIdField); pass a different
 // Traits type as the third template argument to use another field:
 //
 //   struct MyCorr {                       // traits: "which field correlates"
-//     static std::uint32_t get_rid(const Req& r)  { return r.corr; }
-//     static void set_rid(Req& r, std::uint32_t v) { r.corr = v; }
-//     static std::uint32_t get_rid(const Resp& r)  { return r.corr; }
-//     static void set_rid(Resp& r, std::uint32_t v) { r.corr = v; }
+//     static std::uint32_t get_req_id(const Req& r)  { return r.corr; }
+//     static void set_req_id(Req& r, std::uint32_t v) { r.corr = v; }
+//     static std::uint32_t get_req_id(const Resp& r)  { return r.corr; }
+//     static void set_req_id(Resp& r, std::uint32_t v) { r.corr = v; }
 //   };
 //
 // ── Why a correlation field and not Meta.topic_seq ──────────────────────
 // Meta.topic_seq is assigned by the broker and is not visible to the publisher
 // of the frame (Publication carries counters, not the frame's topic_seq), so a
-// requester cannot learn the topic_seq of its own request. The rid is allocated by
-// the Requester and overwritten by `serve` into the reply — the same value on
-// both ends, with no broker support and no protocol change.
+// requester cannot learn the topic_seq of its own request. The req_id is therefore
+// allocated by the Requester and echoed by `serve` into the reply — the same value
+// on both ends, with no broker support and no protocol change.
 //
 // ── Counting replies ────────────────────────────────────────────────────
 // Nothing in the framework knows "how many replies to expect", so the count is
@@ -46,13 +50,13 @@
 // ── Lifetime and stale replies ──────────────────────────────────────────
 // A Call holds the only reference to its slot; the Requester keeps a weak
 // reference, so dropping the handle (or cancel()) frees the slot and any reply
-// that arrives afterwards is counted in stale_replies() and discarded. This is
-// also what makes retained reply topics harmless (still not recommended).
+// that arrives afterwards is counted in stale_responses() and discarded. This is
+// also what makes retained response topics harmless (still not recommended).
 //
 // ── Scope ───────────────────────────────────────────────────────────────
 // This is C++-side sugar; the SV side participates by subscribing to the
-// request topic and publishing a reply that echoes the rid (see
-// docs/dpi_protocol.md). Request and reply topics must differ: a responder
+// request topic and publishing a reply that echoes the req_id (see
+// docs/dpi_protocol.md). Request and response topics must differ: a responder
 // publishes the reply from inside its request callback, and using the same
 // topic would put that frame behind the very callback that publishes it.
 
@@ -87,7 +91,7 @@ namespace shuttle {
 // send_serial() returns a Call<TResp>: one *invocation in flight*, not one result. It
 // exists before any reply does, it can end with zero replies (no responder), one
 // (the common case) or N (one per responder), and it owns the request frame
-// itself as well (publication(), rid(), cancel()). Naming it Future<Reply> would
+// itself as well (publication(), req_id(), cancel()). Naming it Future<Reply> would
 // promise exactly one value and invite sharing it as an awaitable; naming it
 // Reply would name the outcome rather than the pending request. Call also pairs
 // with serve(): a call is served — possibly by several components — and its
@@ -96,34 +100,34 @@ namespace shuttle {
 // reply_to + correlation_id, Erlang gen_server:call/{Pid, Tag}, DDS-RPC
 // Requester/Replier).
 
-// Default correlation-field policy: both payload types expose a `rid` field
+// Default correlation-field policy: both payload types expose a `req_id` field
 // assignable from std::uint32_t. Pass your own traits as the third template
 // argument of Requester/serve to correlate on a different field.
 //
 // Why a policy type and not a framework-owned header field: the payload is the
 // user's own struct, encoded field-by-field in declaration order ({>>{...}} on
 // the SV side), so a base class or an extra wrapper member would change the wire
-// layout in both languages. The rid must therefore be a real field of the struct,
+// layout in both languages. The req_id must therefore be a real field of the struct,
 // and only its owner knows what it is called — the traits are that knowledge,
 // made a compile-time parameter so that Requesters, responders and the SV echo
 // cannot silently use different rules *within one type* (Requester<Req, Resp,
 // Corr> names its rule in the type). Reading and writing are separate because the
 // frame payload is const and shared: a responder sees `const TReq&` and writes
-// the rid into its own new reply, while the requester writes it into its own copy
+// the req_id into its own new reply, while the requester writes it into its own copy
 // of the request (the caller's object is untouched).
 //
-// Two limits worth knowing: the rid space is 32 bits (next_rid is a std::uint32_t
+// Two limits worth knowing: the req_id space is 32 bits (next_req_id is a std::uint32_t
 // and wraps), so a wider field must not lose the low 32 bits on the way out and
 // back; and nothing checks that the requester, the responder and the SV side
 // agree on the field — a mismatch shows up as "no replies", not as an error.
-struct RidField {
+struct ReqIdField {
   template <typename T>
-  static std::uint32_t get_rid(const T& msg) {
-    return static_cast<std::uint32_t>(msg.rid);
+  static std::uint32_t get_req_id(const T& msg) {
+    return static_cast<std::uint32_t>(msg.req_id);
   }
   template <typename T>
-  static void set_rid(T& msg, std::uint32_t rid) {
-    msg.rid = rid;  // implicit conversion; the field must accept std::uint32_t
+  static void set_req_id(T& msg, std::uint32_t req_id) {
+    msg.req_id = req_id;  // implicit conversion; the field must accept std::uint32_t
   }
 };
 
@@ -131,21 +135,23 @@ namespace detail {
 
 struct CallAccess;  // named construction channel, defined below
 
-// Contract for the correlation traits (RidField or a replacement): the responder
-// reads the rid off the request and writes it into the reply, the requester does
+// Contract for the correlation traits (ReqIdField or a replacement): the responder
+// reads the req_id off the request and writes it into the reply, the requester does
 // the opposite, so both sides are checked here and in one place.
 template <typename Traits, typename TReq, typename TResp>
-constexpr void require_rid_traits() {
+constexpr void require_req_id_traits() {
+  static_assert(std::is_convertible_v<decltype(Traits::get_req_id(std::declval<const TReq&>())),
+                                      std::uint32_t>,
+                "shuttle: correlation traits need std::uint32_t get_req_id(const TReq&)");
   static_assert(
-      std::is_convertible_v<decltype(Traits::get_rid(std::declval<const TReq&>())), std::uint32_t>,
-      "shuttle: correlation traits need std::uint32_t get_rid(const TReq&)");
-  static_assert(std::is_void_v<decltype(Traits::set_rid(std::declval<TReq&>(), std::uint32_t{}))>,
-                "shuttle: correlation traits need void set_rid(TReq&, std::uint32_t)");
+      std::is_void_v<decltype(Traits::set_req_id(std::declval<TReq&>(), std::uint32_t{}))>,
+      "shuttle: correlation traits need void set_req_id(TReq&, std::uint32_t)");
+  static_assert(std::is_convertible_v<decltype(Traits::get_req_id(std::declval<const TResp&>())),
+                                      std::uint32_t>,
+                "shuttle: correlation traits need std::uint32_t get_req_id(const TResp&)");
   static_assert(
-      std::is_convertible_v<decltype(Traits::get_rid(std::declval<const TResp&>())), std::uint32_t>,
-      "shuttle: correlation traits need std::uint32_t get_rid(const TResp&)");
-  static_assert(std::is_void_v<decltype(Traits::set_rid(std::declval<TResp&>(), std::uint32_t{}))>,
-                "shuttle: correlation traits need void set_rid(TResp&, std::uint32_t)");
+      std::is_void_v<decltype(Traits::set_req_id(std::declval<TResp&>(), std::uint32_t{}))>,
+      "shuttle: correlation traits need void set_req_id(TResp&, std::uint32_t)");
 }
 
 // One outstanding request: the replies that already arrived for it.
@@ -157,12 +163,12 @@ struct CallState {
 };
 
 // Shared by the Requester and its Calls: one reply subscription, the demux
-// table (rid -> weak CallState) and the rid counter. Weak entries are what make
+// table (req_id -> weak CallState) and the req_id counter. Weak entries are what make
 // "drop the handle" free the slot: a reply for an expired slot is stale.
 template <typename TResp>
-struct ReplyTable {
+struct ResponseTable {
   std::map<std::uint32_t, std::weak_ptr<CallState<TResp>>> inflight;
-  std::uint32_t next_rid = 1;
+  std::uint32_t next_req_id = 1;
   std::uint64_t stale = 0;
   Subscription sub;
 
@@ -175,9 +181,9 @@ struct ReplyTable {
     }
   }
 
-  // Delivery path (nonblocking entry): route one reply to its call.
-  void deliver(const TResp& msg, std::uint32_t rid) {
-    auto it = inflight.find(rid);
+  // Delivery path (nonblocking entry): route one response to its call.
+  void deliver(const TResp& resp, std::uint32_t req_id) {
+    auto it = inflight.find(req_id);
     if (it == inflight.end()) {
       ++stale;  // reply for a call that was cancelled or already dropped
       return;
@@ -192,7 +198,7 @@ struct ReplyTable {
       ++stale;
       return;
     }
-    call->items.push_back(msg);
+    call->items.push_back(resp);
     call->wake.set();
   }
 };
@@ -225,12 +231,15 @@ inline std::int64_t deadline_after(weave::duration timeout) {
   return now_fs() + timeout.count();
 }
 
-inline void check_topics(const std::string& request_topic, const std::string& reply_topic) {
-  if (request_topic == reply_topic)
+// `req_name` may be a pattern (serve() accepts one) while `resp_topic` is the
+// concrete name the responder publishes to: the rule only needs the two to
+// differ as strings, so one check serves both callers.
+inline void check_topics(const std::string& req_topic, const std::string& resp_topic) {
+  if (req_topic == resp_topic)
     throw std::invalid_argument(
-        "shuttle: request and reply topics must differ (the responder publishes the reply from "
-        "inside the request callback, so the same topic would deadlock the serial chain)");
-  if (request_topic.empty() || reply_topic.empty())
+        "shuttle: request and response topics must differ (the responder publishes the response "
+        "from inside the request callback, so the same topic would deadlock the serial chain)");
+  if (req_topic.empty() || resp_topic.empty())
     throw std::invalid_argument("shuttle: request/response needs two non-empty topic names");
 }
 
@@ -243,7 +252,7 @@ public:
   Call() = default;
 
   [[nodiscard]] bool valid() const { return static_cast<bool>(state_); }
-  [[nodiscard]] std::uint32_t rid() const { return rid_; }
+  [[nodiscard]] std::uint32_t req_id() const { return req_id_; }
   // The request frame (counters: subscriber_count() == expected replies for
   // wait_all(), failures() if a responder's handler threw)
   [[nodiscard]] Publication publication() const { return pub_; }
@@ -301,7 +310,7 @@ public:
 private:
   std::shared_ptr<detail::CallState<TResp>> state_;
   std::function<void()> cancel_;  // erases the slot from the requester's table
-  std::uint32_t rid_ = 0;
+  std::uint32_t req_id_ = 0;
   Publication pub_;
 
   TResp take() {
@@ -314,8 +323,11 @@ private:
   }
 
   Call(std::shared_ptr<detail::CallState<TResp>> state, std::function<void()> cancel,
-       std::uint32_t rid, Publication pub)
-      : state_(std::move(state)), cancel_(std::move(cancel)), rid_(rid), pub_(std::move(pub)) {}
+       std::uint32_t req_id, Publication pub)
+      : state_(std::move(state)),
+        cancel_(std::move(cancel)),
+        req_id_(req_id),
+        pub_(std::move(pub)) {}
 
   friend struct detail::CallAccess;
 };
@@ -325,39 +337,39 @@ namespace detail {
 struct CallAccess {
   template <typename TResp>
   static Call<TResp> make(std::shared_ptr<CallState<TResp>> state, std::function<void()> cancel,
-                          std::uint32_t rid, Publication pub) {
-    return Call<TResp>(std::move(state), std::move(cancel), rid, std::move(pub));
+                          std::uint32_t req_id, Publication pub) {
+    return Call<TResp>(std::move(state), std::move(cancel), req_id, std::move(pub));
   }
 };
 
 }  // namespace detail
 
 // Request side: publishes on the request topic and demultiplexes the replies.
-template <typename TReq, typename TResp, typename Traits = RidField>
+template <typename TReq, typename TResp, typename Traits = ReqIdField>
 class Requester {
 public:
-  Requester(std::string request_topic, std::string reply_topic)
-      : request_topic_(std::move(request_topic)),
-        reply_topic_(std::move(reply_topic)),
-        table_(std::make_shared<detail::ReplyTable<TResp>>()) {
-    detail::require_rid_traits<Traits, TReq, TResp>();
-    detail::check_topics(request_topic_, reply_topic_);
-    state_ = std::make_shared<State>(request_topic_, reply_topic_, table_);
+  Requester(std::string req_topic, std::string resp_topic)
+      : req_topic_(std::move(req_topic)),
+        resp_topic_(std::move(resp_topic)),
+        table_(std::make_shared<detail::ResponseTable<TResp>>()) {
+    detail::require_req_id_traits<Traits, TReq, TResp>();
+    detail::check_topics(req_topic_, resp_topic_);
+    state_ = std::make_shared<State>(req_topic_, resp_topic_, table_);
   }
 
   [[nodiscard]] bool valid() const { return static_cast<bool>(state_); }
-  [[nodiscard]] const std::string& request_topic() const { return request_topic_; }
-  [[nodiscard]] const std::string& reply_topic() const { return reply_topic_; }
-  // The rid the next send_*() will use (diagnostics / cross-language assertions)
-  [[nodiscard]] std::uint32_t next_rid() const { return table_->next_rid; }
+  [[nodiscard]] const std::string& req_topic() const { return req_topic_; }
+  [[nodiscard]] const std::string& resp_topic() const { return resp_topic_; }
+  // The req_id the next send_*() will use (diagnostics / cross-language assertions)
+  [[nodiscard]] std::uint32_t next_req_id() const { return table_->next_req_id; }
   [[nodiscard]] std::size_t inflight() const {
     std::size_t n = 0;
     for (const auto& entry : table_->inflight)
       if (!entry.second.expired()) ++n;
     return n;
   }
-  // Replies whose rid belonged to no live call (cancelled / dropped handles)
-  [[nodiscard]] std::uint64_t stale_replies() const { return table_->stale; }
+  // Replies whose req_id belonged to no live call (cancelled / dropped handles)
+  [[nodiscard]] std::uint64_t stale_responses() const { return table_->stale; }
 
   // Same three flavors and parameter shapes as Publisher: send_serial /
   // send_concurrent / send_now map 1:1 onto publish_serial / publish_concurrent /
@@ -385,29 +397,27 @@ public:
 
 private:
   struct State {
-    State(std::string request_topic, std::string reply_topic,
-          std::shared_ptr<detail::ReplyTable<TResp>> table)
-        : pub(std::move(request_topic)),
-          table_(std::move(table)),
-          reply_topic(std::move(reply_topic)) {
+    State(std::string req_topic, std::string resp_topic,
+          std::shared_ptr<detail::ResponseTable<TResp>> table)
+        : pub(std::move(req_topic)), table_(std::move(table)), resp_topic(std::move(resp_topic)) {
       // Weak capture: the subscription lives inside the table (table->sub), so a
       // strong capture would be a cycle.
-      std::weak_ptr<detail::ReplyTable<TResp>> weak = table_;
-      // `reply_topic` (the parameter) is already moved into the member above.
+      std::weak_ptr<detail::ResponseTable<TResp>> weak = table_;
+      // `resp_topic` (the parameter) is already moved into the member above.
       table_->sub = detail::sub_typed(
-          this->reply_topic, detail::type_ops<TResp>(),
+          this->resp_topic, detail::type_ops<TResp>(),
           [weak](const void* payload, const Meta&) {
             auto t = weak.lock();
             if (!t) return;
             const TResp& msg = *static_cast<const TResp*>(payload);
-            t->deliver(msg, Traits::get_rid(msg));
+            t->deliver(msg, Traits::get_req_id(msg));
           },
           Capability::nonblocking, SubOptions{});
     }
 
     Publisher<TReq> pub;
-    std::shared_ptr<detail::ReplyTable<TResp>> table_;
-    std::string reply_topic;
+    std::shared_ptr<detail::ResponseTable<TResp>> table_;
+    std::string resp_topic;
   };
 
   template <typename Publish>
@@ -415,26 +425,26 @@ private:
     if (!state_) throw std::logic_error("shuttle: empty Requester handle");
     std::shared_ptr<State> st = state_;
     table_->prune();
-    const std::uint32_t rid = table_->next_rid++;
+    const std::uint32_t req_id = table_->next_req_id++;
     TReq carried = req;
-    Traits::set_rid(carried, rid);
+    Traits::set_req_id(carried, req_id);
 
     auto call = std::make_shared<detail::CallState<TResp>>();
-    table_->inflight[rid] = call;  // before publishing: a reply may arrive inline
+    table_->inflight[req_id] = call;  // before publishing: a reply may arrive inline
     Publication pub = publish(st, carried);
     auto table = table_;
     return detail::CallAccess::make<TResp>(
-        call, [table, rid] { table->inflight.erase(rid); }, rid, pub);
+        call, [table, req_id] { table->inflight.erase(req_id); }, req_id, pub);
   }
 
-  std::string request_topic_;
-  std::string reply_topic_;
-  std::shared_ptr<detail::ReplyTable<TResp>> table_;
+  std::string req_topic_;
+  std::string resp_topic_;
+  std::shared_ptr<detail::ResponseTable<TResp>> table_;
   std::shared_ptr<State> state_;
 };
 
 // Responder sugar: subscribe to the request topic and publish the handler's
-// return value on the reply topic, with the correlation id echoed from the
+// return value on the response topic, with the correlation id echoed from the
 // request. The handler may throw: that is recorded as this frame's delivery
 // Failure.
 //
@@ -446,38 +456,37 @@ private:
 namespace detail {
 
 template <typename TReq, typename TResp, typename Traits, typename F>
-auto serve_body(std::string reply_topic, F&& handler) {
+auto serve_body(std::string resp_topic, F&& handler) {
   static_assert(
       std::is_invocable_r_v<TResp, F&, const TReq&, const Meta&>,
       "shuttle: serve handler signature should be TResp(const TReq&, const shuttle::Meta&)");
-  require_rid_traits<Traits, TReq, TResp>();
-  auto reply_pub =
-      std::make_shared<Publisher<TResp>>(std::move(reply_topic));  // outlives the subscription
-  return [reply_pub, fn = std::forward<F>(handler)](const TReq& req, const Meta& meta) mutable {
+  require_req_id_traits<Traits, TReq, TResp>();
+  auto resp_pub =
+      std::make_shared<Publisher<TResp>>(std::move(resp_topic));  // outlives the subscription
+  return [resp_pub, fn = std::forward<F>(handler)](const TReq& req, const Meta& meta) mutable {
     TResp resp = fn(req, meta);
-    Traits::set_rid(resp, Traits::get_rid(req));  // correlation comes from the request
-    reply_pub->publish_serial(resp);              // reply in the background
+    Traits::set_req_id(resp, Traits::get_req_id(req));  // correlation comes from the request
+    resp_pub->publish_serial(resp);                     // response in the background
   };
 }
 
 }  // namespace detail
 
-template <typename TReq, typename TResp, typename Traits = RidField, typename F>
-Subscription serve(std::string request_pattern, std::string reply_topic, F&& handler,
+template <typename TReq, typename TResp, typename Traits = ReqIdField, typename F>
+Subscription serve(std::string req_pattern, std::string resp_topic, F&& handler,
                    SubOptions opts = {}) {
-  detail::check_topics(request_pattern, reply_topic);
+  detail::check_topics(req_pattern, resp_topic);
   auto body =
-      detail::serve_body<TReq, TResp, Traits>(std::move(reply_topic), std::forward<F>(handler));
-  return subscribe<TReq>(std::move(request_pattern), std::move(body), std::move(opts));
+      detail::serve_body<TReq, TResp, Traits>(std::move(resp_topic), std::forward<F>(handler));
+  return subscribe<TReq>(std::move(req_pattern), std::move(body), std::move(opts));
 }
 
-template <typename TReq, typename TResp, typename Traits = RidField, typename F>
-Subscription serve(std::string request_pattern, std::string reply_topic, NonBlocking<F> handler,
+template <typename TReq, typename TResp, typename Traits = ReqIdField, typename F>
+Subscription serve(std::string req_pattern, std::string resp_topic, NonBlocking<F> handler,
                    SubOptions opts = {}) {
-  detail::check_topics(request_pattern, reply_topic);
-  auto body =
-      detail::serve_body<TReq, TResp, Traits>(std::move(reply_topic), std::move(handler.fn));
-  return subscribe<TReq>(std::move(request_pattern), nb(std::move(body)), std::move(opts));
+  detail::check_topics(req_pattern, resp_topic);
+  auto body = detail::serve_body<TReq, TResp, Traits>(std::move(resp_topic), std::move(handler.fn));
+  return subscribe<TReq>(std::move(req_pattern), nb(std::move(body)), std::move(opts));
 }
 
 }  // namespace shuttle
