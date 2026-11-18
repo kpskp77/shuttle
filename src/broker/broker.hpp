@@ -30,8 +30,8 @@ namespace shuttle::detail {
 
 class Broker {
 public:
-  std::map<std::string, Topic, std::less<>>
-      topics;  // transparent comparator: string_view can query directly
+  // transparent comparator: string_view can query directly
+  std::map<std::string, Topic, std::less<>> topics;
   std::vector<std::shared_ptr<Subscriber>> subs;
   std::map<int, std::shared_ptr<PubState>> pubs;
   int next_sub_id = 1;
@@ -106,8 +106,7 @@ public:
   void remove_sub(const std::shared_ptr<Subscriber>& sub);
 };
 
-// publish_now shared by the C++ and SV sides: synchronous nonblocking
-// section + skip/defer policy.
+// publish_now shared by the C++ and SV sides: synchronous nonblocking section + skip/defer policy.
 std::shared_ptr<PubState> dispatch_now(Broker& broker, std::shared_ptr<const Envelope> env,
                                        NowPolicy policy);
 

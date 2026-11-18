@@ -66,8 +66,7 @@ shuttle::NowPolicy now_policy_of(int v) {
   }
 }
 
-// Read a byte stream from an SV open array (byte payload[] → contiguous 8-bit
-// elements).
+// Read a byte stream from an SV open array (byte payload[] → contiguous 8-bit elements).
 std::vector<std::byte> read_payload(const svOpenArrayHandle h) {
   std::vector<std::byte> out;
   if (!h) return out;
@@ -238,8 +237,7 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
           1000000000000000ull);
     }
     int wst = 0;
-    weave_sv_wait(w, ticks, -1,
-                  &wst);  // ← the only suspension point: suspends the current SV process
+    weave_sv_wait(w, ticks, -1, &wst);
     slot->active = false;
     weave_sv_destroy_event(w);
 

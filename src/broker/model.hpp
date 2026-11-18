@@ -101,6 +101,7 @@ struct Binding {
 };
 
 struct Topic {
+  std::string_view name_view;  // view of this topic's key in `topics` (never erased), for Meta
   // Unbound = byte-stream-only publications; the optional makes "bound but
   // without an operation table" inexpressible.
   std::optional<Binding> binding;
@@ -120,9 +121,8 @@ struct Topic {
   std::uint64_t failed = 0;
   std::uint64_t deferred = 0;
   [[nodiscard]] std::uint64_t dropped() const { return retired + skipped + failed; }
-  std::string_view name_view;  // view of this topic's key in `topics` (never erased), for Meta
-  weave::Event
-      chain;  // tail of the background serial chain shared by publish_serial and publish_now(defer)
+  // tail of the background serial chain shared by publish_serial and publish_now(defer)
+  weave::Event chain;
   // Tail of each subscriber's concurrent chain, keyed by Subscriber::id (ids
   // are never reused). publish_concurrent hands off through one chain per
   // (topic, subscriber), so a subscriber sees its own frames in publish order

@@ -80,9 +80,8 @@ const std::string& last_error() {
 Publication ext_pub_now(std::string_view topic, std::string_view tag, std::vector<std::byte> frame,
                         NowPolicy policy, std::uint32_t corr_id) {
   Broker& b = Broker::get();
-  b.now_preflight(
-      topic, tag,
-      policy);  // decide before building the frame: reject consumes no seq / refreshes no retained
+  // decide before building the frame: reject consumes no seq / refreshes no retained
+  b.now_preflight(topic, tag, policy);
   auto env = b.make_envelope_bytes(topic, tag, std::move(frame), corr_id);
   return track_pub(detail_pub_access::make(dispatch_now(b, std::move(env), policy)));
 }
@@ -142,9 +141,8 @@ void ext_unsub(int handle) {
 
 namespace {
 
-// Fetch the publication state by id (unknown id = nullptr): the single shared
-// entry point for the five facade functions below, so they need not each
-// repeat find + end-check.
+// Fetch the publication state by id (unknown id = nullptr): the single shared entry point for the
+// five facade functions below, so they need not each repeat find + end-check.
 std::shared_ptr<PubState> pub_of(int pub_id) {
   Broker& b = Broker::get();
   const auto it = b.pubs.find(pub_id);
@@ -217,10 +215,9 @@ void pub_on_complete(int pub_id, std::function<void()> fn) {
 }
 
 // ── Cross-language event registry (SV-side shuttle_event / SHUTTLE_TRIG_EVENT) ──
-// Events are created only on the SV side (shuttle_c_event_create); the C++
-// side never holds a handle — access is by id, so the registry alone owns the
-// objects and destroy frees them (SV's shuttle_event::close() goes through
-// here).
+// Events are created only on the SV side (shuttle_c_event_create); the C++ side never holds a
+// handle — access is by id, so the registry alone owns the objects and destroy frees them (SV's
+// shuttle_event::close() goes through here).
 namespace {
 struct EventSlot {
   int id;

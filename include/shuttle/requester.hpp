@@ -20,14 +20,7 @@
 // ── Correlation ─────────────────────────────────────────────────────────
 // `Meta::corr_id` is the *correlation id*: allocated by the Requester, echoed by
 // whoever answers, used to route each response to its Call. It is the AMQP
-// `correlation_id` idea, scoped to one simulation process. (It is not the PCIe
-// Requester ID — that one names a bus/device/function, this one names a call.)
-//
-// It lives in the frame header rather than the payload for a practical reason: the
-// payload type is often not yours (a third-party struct, a generated type, a packed SV
-// struct), so forcing an extra field into it — or wrapping it on every call — is
-// intrusive and easy to get wrong on one side. Every frame already carries Meta in both
-// languages, so the id costs one header word and changes no payload type at all.
+// `correlation_id` idea, scoped to one simulation process.
 //
 // Nothing in the framework interprets corr_id: the broker copies it verbatim, and only
 // Requester/serve give it meaning. A plain publish leaves it 0 (uncorrelated), and any
@@ -35,14 +28,6 @@
 // `Publisher::publish_now/publish_serial/publish_concurrent` take no corr_id and never will:
 // correlation is a request/response concept, so only the request/response objects
 // (Requester::send_*, serve, and SV `shuttle_pub::reply`) write it.
-//
-// ── Why not Meta.topic_seq ──────────────────────────────────────────────
-// topic_seq is assigned by the broker while the frame is built (the publisher cannot see
-// it beforehand) and is a *per-topic* counter. Correlation needs a value known *before*
-// publishing — the slot has to be registered before the frame leaves, because a response
-// can arrive inline in publish_now — and it needs to stay unique across topics when the
-// responder serves a wildcard pattern. corr_id provides both, in the header, in both
-// languages.
 //
 // ── Counting replies ────────────────────────────────────────────────────
 // Nothing in the framework knows "how many replies to expect", so the count is
@@ -91,32 +76,6 @@
 
 namespace shuttle {
 
-// ── Why the handle is called Call ────────────────────────────────────────
-// send_serial() returns a Call<TResp>: one *invocation in flight*, not one result. It
-// exists before any response does, it can end with zero responses (no responder), one
-// (the common case) or N (one per responder), and it owns the request frame
-// itself as well (publication(), corr_id(), cancel()). Naming it Future<Reply> would
-// promise exactly one value and invite sharing it as an awaitable; naming it
-// Reply would name the outcome rather than the pending request. Call also pairs
-// with serve(): a call is served — possibly by several components — and its
-// responses are pulled (recv / wait_for / wait_all) rather than awaited once. The
-// word is the RPC one: one method invocation, correlated by an id (cf. AMQP
-// reply_to + correlation_id, Erlang gen_server:call/{Pid, Tag}, DDS-RPC
-// Requester/Replier).
-
-// The correlation-id counter is process-wide, not per-Requester.
-//
-// The simulation runs one active process at a time (weave's port contract, AGENTS.md
-// invariant 1), so an ordinary increment needs no atomic and no lock: there is no
-// suspension point between reading and storing it. It is nonetheless shared by every
-// Requester, which is what makes two Requesters on one response topic safe: ids cannot
-// collide, so a response can never be routed to the wrong caller. Starting at 1 and
-// skipping 0 (reserved for "uncorrelated") is the whole policy.
-//
-// C++ and the simulator are one process, so ids allocated here are unique across both
-// languages for the lifetime of the simulation. A future SV-side requester would have
-// to allocate from a disjoint range of the 32-bit space, because it cannot see this
-// counter without an extra DPI call.
 namespace detail {
 
 inline std::uint32_t& corr_id_counter() {
@@ -457,8 +416,7 @@ auto serve_body(std::string resp_topic, F&& handler) {
   // watchers only. Claimed before the publisher exists so the first registration
   // on it already sees the mark.
   detail::topic_mark_responses(resp_topic);
-  auto resp_pub =
-      std::make_shared<Publisher<TResp>>(std::move(resp_topic));  // outlives the subscription
+  auto resp_pub = std::make_shared<Publisher<TResp>>(std::move(resp_topic));
   return [resp_pub, fn = std::forward<F>(handler)](const TReq& req, const Meta& meta) mutable {
     TResp resp = fn(req, meta);
     // Same as resp_pub->publish_now(resp), plus the correlation id that the

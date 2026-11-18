@@ -56,19 +56,17 @@ public:
   ~DecodeError() override;
 };
 
-// Receiving from a mailbox that was closed and drained: nothing more will ever
-// arrive (only the blocking forms of Mailbox::recv throw this; try_recv returns
-// nullopt).
+// Receiving from a mailbox that was closed and drained: nothing more will ever arrive (only the
+// blocking forms of Mailbox::recv throw this; try_recv returns nullopt).
 class MailboxClosed : public ShuttleError {
 public:
   using ShuttleError::ShuttleError;
   ~MailboxClosed() override;
 };
 
-// A bounded mailbox overflowed under OverflowPolicy::reject. Thrown inside the
-// delivery callback, so the frame is recorded as that subscriber's Failure and
-// counted in the failed component of dropped(); for publish_now the exception
-// also reaches the publisher.
+// A bounded mailbox overflowed under OverflowPolicy::reject. Thrown inside the delivery callback,
+// so the frame is recorded as that subscriber's Failure and counted in the failed component of
+// dropped(); for publish_now the exception also reaches the publisher.
 class MailboxOverflowError : public ShuttleError {
 public:
   using ShuttleError::ShuttleError;

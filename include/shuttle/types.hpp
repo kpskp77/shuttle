@@ -30,8 +30,7 @@ struct Meta;
 //   publish_serial/concurrent invoke whichever entry that registration used
 //   (blocking or nonblocking) — there is no "preferred entry": one
 //   registration has exactly one entry; for both, register twice (on the SV
-//   side, call shuttle_subscribe and shuttle_subscribe_nb on the same
-//   object).
+//   side, call shuttle_subscribe and shuttle_subscribe_nb on the same object).
 enum class Capability {
   blocking,
   nonblocking,

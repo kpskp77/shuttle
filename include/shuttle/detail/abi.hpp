@@ -93,12 +93,11 @@ void topic_mark_responses(const std::string& topic);
 Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, const TypeOps* ops,
                     NowPolicy policy, std::uint32_t corr_id = 0);
 
-// pub_serial (= publish_serial): background single-chain, in-order callbacks;
-// pub_concurrent (= publish_concurrent): background, one task per subscriber,
-// parallel across subscribers with FIFO per (topic, subscriber). Both deliver to
-// **all** matching subscribers (each
-// subscriber is invoked once, on the one entry it registered). With an empty
-// trigger they start immediately; both return the completion handle right away.
+// pub_serial (= publish_serial): background single-chain, in-order callbacks; pub_concurrent (=
+// publish_concurrent): background, one task per subscriber, parallel across subscribers with FIFO
+// per (topic, subscriber). Both deliver to **all** matching subscribers (each subscriber is invoked
+// once, on the one entry it registered). With an empty trigger they start immediately; both return
+// the completion handle right away.
 Publication pub_serial(const std::string& topic, std::shared_ptr<const void> msg,
                        const TypeOps* ops, Trigger trig, std::uint32_t corr_id = 0);
 Publication pub_concurrent(const std::string& topic, std::shared_ptr<const void> msg,

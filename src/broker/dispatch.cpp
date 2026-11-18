@@ -124,9 +124,6 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
     return pub;
   }
 
-  // The frame's topic outlives every task: `topics` is append-only, so keeping a
-  // Topic* avoids re-doing the name lookup in the task body (and again when a
-  // deferred frame joins the chain).
   Topic& frame_topic = topic_for(topic);
   // `mine` — the chain-tail event this frame must release — is always created
   // here and never re-read from the topic later (invariant 5).
@@ -142,13 +139,12 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   if (queued) prev = chain_join(frame_topic, 0, mine);
   Topic* const topic_state = &frame_topic;
   weave::create_task(
-      std::string("shuttle-seq-") + std::string(topic),
+      std::string("shuttle-serial-") + std::string(topic),
       [this, pub, env, trig = std::move(trig), targets = std::move(targets), prev, mine,
        topic_state]() mutable {
         std::optional<Publication::Failure> failure;
         Topic& t = *topic_state;
-        std::size_t idx =
-            0;  // targets already in a terminal state; used to backfill on unit-level failure
+        std::size_t idx = 0;
         try {
           wait_trigger(trig);
           if (!prev) {
@@ -229,7 +225,7 @@ std::shared_ptr<PubState> Broker::start_concurrent(
     const auto mine = std::make_shared<weave::Event>();
     std::shared_ptr<weave::Event> prev;
     if (queued) prev = chain_join(frame_topic, key, mine);
-    weave::create_task(std::string("shuttle-par-") + std::string(topic),
+    weave::create_task(std::string("shuttle-concurrent-") + std::string(topic),
                        [this, pub, env, trig, sub, topic_state, mine, prev, queued]() mutable {
                          std::optional<Publication::Failure> failure;
                          Topic& t = *topic_state;
@@ -361,10 +357,9 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
   // defer reuses publish_serial's chain; on completion the remaining targets
   // are merged back into this frame's handle.
   t.deferred += blocking_count;
-  auto chain =
-      b.start_serial(topic, std::move(env), Trigger{},
-                     std::vector<std::shared_ptr<Subscriber>>(
-                         std::make_move_iterator(nb_end), std::make_move_iterator(matched.end())));
+  auto deferred_targets = std::vector<std::shared_ptr<Subscriber>>(
+      std::make_move_iterator(nb_end), std::make_move_iterator(matched.end()));
+  auto chain = b.start_serial(topic, std::move(env), Trigger{}, deferred_targets);
   const std::size_t n = chain->target_count;
   chain->on_complete.push_back([pub, chain, n]() {
     for (const auto& failure : chain->failures) pub->failures.push_back(failure);

@@ -15,10 +15,10 @@ namespace shuttle::broker {
 struct TopicInfo {
   std::string name;
   std::string type_tag;  // type tag; empty = no type binding yet (wildcard subscribers only)
-  // number of subscribers whose name matches (type not considered: one topic
-  // entry may serve multiple types)
-  std::size_t subscriber_count;
-  bool retained;            // whether retained is enabled
+  bool retained;         // whether retained is enabled
+  std::size_t subscriber_count;  // number of subscribers whose name matches (type not considered:
+                                 // one topic entry may serve multiple types)
+
   std::uint64_t published;  // cumulative published frames
   std::uint64_t delivered;  // cumulative deliveries (summed over all subscribers)
   std::uint64_t dropped;    // cumulative unsuccessful deliveries (retired + skipped + failed)

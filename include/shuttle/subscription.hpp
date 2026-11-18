@@ -43,9 +43,8 @@ public:
   // when the last handle is destroyed, unsubscribe() runs automatically
   ~Subscription();
 
-  [[nodiscard]] bool valid() const {
-    return static_cast<bool>(impl_);
-  }  // all other member functions require this
+  // all other member functions require this
+  [[nodiscard]] bool valid() const { return static_cast<bool>(impl_); }
 
   // Explicit unsubscribe (idempotent); no new deliveries after unsubscribing
   // (deliveries already started / already queued from a snapshot still run to
@@ -54,8 +53,8 @@ public:
   // diagnostics can re-check the counters after unsubscribing.
   void unsubscribe();
 
-  [[nodiscard]] const std::string& topic()
-      const;  // the subscribed topic (wildcards preserved verbatim)
+  // the subscribed topic (wildcards preserved verbatim)
+  [[nodiscard]] const std::string& topic() const;
   [[nodiscard]] Capability capability() const;
 
   // Diagnostic counters (invariant: received + dropped == number of frames

@@ -43,8 +43,8 @@ Trigger after(const weave::Task& t) {
 
 Trigger after_all(std::vector<Trigger> trigs) {
   return Trigger([trigs = std::move(trigs)]() {
-    for (const auto& tr : trigs)
-      tr.wait();  // wait in order; the first failure (non-cancellation) propagates out
+    // wait in order; the first failure (non-cancellation) propagates out
+    for (const auto& tr : trigs) tr.wait();
   });
 }
 

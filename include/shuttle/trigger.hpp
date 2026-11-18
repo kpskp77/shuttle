@@ -47,8 +47,7 @@ public:
 private:
   explicit Trigger(std::function<void()> fn) : fn_(std::move(fn)) {}
 
-  std::function<void()>
-      fn_;  // copyable; may be awaited concurrently by multiple dispatch processes
+  std::function<void()> fn_;  // may be awaited concurrently by multiple dispatch processes
 
   friend Trigger after(weave::Event& ev);
   friend Trigger after(weave::duration d);
