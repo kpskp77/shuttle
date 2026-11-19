@@ -204,6 +204,9 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
       *status = (st == 2) ? 2 : 0;
       return;
     }
+    // A frame whose chain is held by the very SV process that waits for it can
+    // never complete; diagnose it here instead of suspending forever.
+    shuttle::detail::pub_check_self_blocked(pub_id);
 
     const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
     const int w = weave_sv_create_event();

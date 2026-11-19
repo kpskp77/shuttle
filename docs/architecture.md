@@ -300,8 +300,24 @@ per-订阅者链复用同一规则，case10/case11 钉住它（延迟帧不阻�
 在本帧之后，任何 FIFO 链设计下都死锁；`concurrent` 下同一订阅者收到的内层帧同样排在本帧之后
 （其他订阅者那一份能跑完，但只要目标里包含自己就永远等不到）。判据简单：回调里只发布不
 等待，或改用其他 topic；`Mailbox`（nonblocking 入口 + 自己的队列）也是安全形态。
-这一点无法可靠检出：除非 weave 暴露当前任务身份，否则 `wait()` 在 broker 里看到的是陈旧的
-"正在投递"标记（链任务挂起期间对其他任务不可见），据此报错会误报。
+
+这种自等待**可诊断**（`weave::DeadlockError`），依据是链上的所有权信息而不是"正在投递"标记：
+- 每条链的链尾是一个 `ChainLink{weave::Event ev; int owner;}`，`owner` 是"将会 set 这个事件
+  的任务 id"，由**投递单元自己**在开跑时写入（`mine->owner = current_task().id()`），
+  完成时先清零再 `ev.set()`。发布时不知道投递任务是谁，所以 owner 不能由发布方代填——
+  而等待方在挂起前读到的正是这个字段，晚写也没关系（`PubState::blocked_by` 持有的是
+  `ChainLink` 的 `shared_ptr`，读到的是活值）。
+- 判定放在**等待**处而不是入队处：`detail::check_self_blocked(pub)` 在
+  `Publication::wait()` / `wait(timeout)` / svdpi `shuttle_c_wait_pub` 挂起之前调用，
+  只要 `blocked_by` 里任一 link 的 `owner == current_task()` 就抛。
+  放进入队处会误报——回调里对自己的 topic **只发布不等待**（转发/中继）是合法用法，
+  那时链尾也确实由该回调的投递任务持有。
+- 三种入口都走同一条判定，所以 C++ 与 SV 报出的结论一致：C++ 抛
+  `weave::DeadlockError`（派生自 `std::logic_error`，会被 `catch (const std::exception&)`
+  记成普通 `Failure`），SV 侧 `shuttle_c_wait_pub` 返回 `SHUTTLE_WAIT_FAILED` 并把诊断文本
+  放进 `shuttle_c_last_error()`（`wait_done()` 据此 `$error`）。
+- 覆盖不到的形状：两个**互不相干的任务**互相等待（A 等 B 的帧、B 等 A 的帧）需要等待图，
+  单进程内的链所有权只够判断"自己等自己"。
 
 ## 7. 入口模型与 NowPolicy
 

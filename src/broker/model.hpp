@@ -94,6 +94,18 @@ struct Subscriber {
 // exceptions and accounted uniformly by the delivery unit.
 enum class Delivery { delivered, retired };
 
+// One link of an ordered delivery chain: the event a frame releases when its
+// delivery is complete, plus the id of the task that will release it (-1 = not
+// known yet, which includes frames published from a context that is not a
+// weave task). The owner is recorded by the delivery unit itself when it starts
+// and read by `check_self_blocked` afterwards, so the waiter never has to guess
+// "who holds the chain I am queued behind".
+struct ChainLink {
+  weave::Event ev;
+  int owner = -1;
+};
+using ChainLinkPtr = std::shared_ptr<ChainLink>;
+
 // ── Topic ─────────────────────────────────────────────────────────────────
 struct Binding {
   std::string tag;     // type tag (raw binding = SV type_tag)
@@ -121,8 +133,10 @@ struct Topic {
   std::uint64_t failed = 0;
   std::uint64_t deferred = 0;
   [[nodiscard]] std::uint64_t dropped() const { return retired + skipped + failed; }
-  // tail of the background serial chain shared by publish_serial and publish_now(defer)
-  weave::Event chain;
+  // Tail of the background serial chain shared by publish_serial and publish_now(defer).
+  // Held by pointer (not by value) so that a waiter can read `owner` from the
+  // very link it waits on; the link's event is never reset, so sharing is safe.
+  ChainLinkPtr chain;
   // Tail of each subscriber's concurrent chain, keyed by Subscriber::id (ids
   // are never reused). publish_concurrent hands off through one chain per
   // (topic, subscriber), so a subscriber sees its own frames in publish order
@@ -130,13 +144,19 @@ struct Topic {
   // publish_serial: the two flavors keep independent order and must not
   // overtake each other's promises. Erased when the subscriber is removed
   // (Broker::remove_sub) — a dead registration must not leave its chain behind.
-  std::unordered_map<int, std::shared_ptr<weave::Event>> sub_chains;
-  Topic() { chain.set(); }
+  std::unordered_map<int, ChainLinkPtr> sub_chains;
+  Topic() : chain(std::make_shared<ChainLink>()) { chain->ev.set(); }
 };
 
 // ── Publication state ────────────────────────────────────────────────────
 struct PubState {
   int id = 0;
+  // Topic name for diagnostics (a view of the `topics` key, never erased).
+  std::string_view topic_view;
+  // Chain links this frame is queued behind, one per target subscriber. Used to
+  // diagnose "the task that awaits this frame is the task that holds its chain"
+  // (see detail::check_self_blocked).
+  std::vector<ChainLinkPtr> blocked_by;
   // All completion counters are per target subscriber, not per delivery unit.
   std::size_t target_count = 0;
   std::size_t finished = 0;

@@ -85,30 +85,65 @@ namespace {
 // (single-active-process invariant), and it must not happen at publish time for
 // a frame whose trigger is not satisfied yet — an un-fired trigger holding the
 // tail would stall every later frame of that chain (AGENTS.md invariant 12).
-std::shared_ptr<weave::Event> chain_join(Topic& topic, int key,
-                                         const std::shared_ptr<weave::Event>& mine) {
+// Returns the displaced tail: the frame must wait on its event, and its `owner`
+// says which task will release it (see check_self_blocked).
+ChainLinkPtr chain_join(Topic& topic, int key, const ChainLinkPtr& mine) {
   if (key == 0) {
-    // The topic-wide tail is a value on Topic; a copy of it is the wait handle
-    // (already set when no frame is in flight, so waiting is a no-op).
-    auto prev = std::make_shared<weave::Event>(topic.chain);
-    topic.chain = *mine;
+    // The topic-wide tail is shared by pointer: the waiter owns the same link it
+    // recorded in PubState::blocked_by, so it can re-read `owner` later. The
+    // event is never reset, so sharing cannot lose a wake-up.
+    ChainLinkPtr prev = std::move(topic.chain);
+    topic.chain = mine;
     return prev;
   }
   // A per-subscriber tail is handed off by pointer: the waiting frame keeps its
-  // predecessor alive and one delivery unit costs one event instead of two.
+  // predecessor alive and one delivery unit costs one link instead of two.
   auto& slot = topic.sub_chains[key];
-  std::shared_ptr<weave::Event> prev;
+  ChainLinkPtr prev;
   if (slot) {
     prev = std::move(slot);
   } else {
-    prev = std::make_shared<weave::Event>();
-    prev->set();  // first frame of this chain: nothing to wait for
+    prev = std::make_shared<ChainLink>();
+    prev->ev.set();  // first frame of this chain: nothing to wait for
   }
   slot = mine;
   return prev;
 }
 
+// Id of the task running right now (-1 when the caller is not a weave task: an
+// SV import that publishes runs on the simulator's stack, not on a task).
+int current_task_id() {
+  const std::optional<weave::Task> me = weave::current_task();
+  return me ? me->id() : -1;
+}
+
 }  // namespace
+
+// A frame whose delivery must be released by the very task waiting for it can
+// never complete: the chain it is queued behind is owned by its own waiter.
+// Nothing else in the design can diagnose that — the frame is not failed, not
+// retired and not skipped, it simply never starts — so the wait would hang
+// until the simulation is killed, which is exactly the shape of bug that costs
+// hours in a regression.
+//
+// The check runs when someone *waits*, not when a frame joins a chain: a
+// callback that publishes on its own topic and does not wait for the result is
+// legitimate (fire-and-forget), and its chain link is owned by that callback's
+// task too.
+void check_self_blocked(const std::shared_ptr<PubState>& pub) {
+  if (pub->done_flag) return;
+  const std::optional<weave::Task> me = weave::current_task();
+  if (!me) return;
+  for (const ChainLinkPtr& link : pub->blocked_by) {
+    if (link && link->owner == me->id()) {
+      throw weave::DeadlockError(
+          "shuttle: publication " + std::to_string(pub->id) + " on topic '" +
+          std::string(pub->topic_view) +
+          "' can never start: its delivery chain is held by the task that is now waiting for "
+          "it (a subscriber callback published on its own topic and waited for the result)");
+    }
+  }
+}
 
 // ── publish_serial: one delivery unit per frame, per-topic serial chain
 //    keeps publication-order FIFO ─────────────────────────────────────────
@@ -126,9 +161,10 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   }
 
   Topic& frame_topic = topic_for(topic);
-  // `mine` — the chain-tail event this frame must release — is always created
+  pub->topic_view = frame_topic.name_view;
+  // `mine` — the chain-tail link this frame must release — is always created
   // here and never re-read from the topic later (invariant 5).
-  auto mine = std::make_shared<weave::Event>();
+  auto mine = std::make_shared<ChainLink>();
   // A frame whose trigger is already satisfied reserves the tail inside the
   // publish call, so its delivery order equals the publish order and does not
   // depend on when weave first runs the task. A deferred frame must NOT reserve
@@ -136,8 +172,11 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   // stall every later frame (and deadlock whenever the trigger itself depends
   // on one of them). It joins the chain at trigger time instead.
   const bool queued = trig.immediate();
-  std::shared_ptr<weave::Event> prev;
-  if (queued) prev = chain_join(frame_topic, 0, mine);
+  ChainLinkPtr prev;
+  if (queued) {
+    prev = chain_join(frame_topic, 0, mine);
+    pub->blocked_by.push_back(prev);
+  }
   Topic* const topic_state = &frame_topic;
   weave::create_task(
       std::string("shuttle-serial-") + std::string(topic),
@@ -147,14 +186,18 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
         Topic& t = *topic_state;
         std::size_t idx = 0;
         try {
+          // From here on this task is the one that will release `mine`, so it is
+          // the one a waiter has to be compared against (check_self_blocked).
+          mine->owner = current_task_id();
           wait_trigger(trig);
           if (!prev) {
             // Deferred frame joining the chain now. chain_join reads the tail and
             // installs ours in one step: no suspension point lies between them
             // (single-active-process invariant), so no other frame can interleave.
             prev = chain_join(t, 0, mine);
+            pub->blocked_by.push_back(prev);
           }
-          prev->wait();
+          prev->ev.wait();
           for (; idx < targets.size(); ++idx) {
             const auto& sub = targets[idx];
             try {
@@ -188,8 +231,11 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
           ++targets[idx]->failed;
           target_finished(pub);
         }
-        mine->set();  // release the next frame regardless of outcome, to prevent chain stall
-                      // (harmless when a deferred frame never installed it)
+        // Release the next frame regardless of outcome, to prevent chain stall
+        // (harmless when a deferred frame never installed it). Clearing the owner
+        // first means a waiter released by this link never reads a stale id.
+        mine->owner = -1;
+        mine->ev.set();
         record_failure(pub, failure);
         if (pub->finished == pub->target_count && !pub->done_flag) pub_complete(pub);
       });
@@ -210,6 +256,7 @@ std::shared_ptr<PubState> Broker::start_concurrent(
     return pub;
   }
   Topic& frame_topic = topic_for(topic);
+  pub->topic_view = frame_topic.name_view;
   Topic* const topic_state = &frame_topic;
   // Chains are per (topic, subscriber): two frames in flight for the same
   // subscriber are serialized, and different subscribers still run in parallel
@@ -223,14 +270,20 @@ std::shared_ptr<PubState> Broker::start_concurrent(
   const bool queued = trig.immediate();
   for (const auto& sub : targets) {
     const int key = sub->id;
-    const auto mine = std::make_shared<weave::Event>();
-    std::shared_ptr<weave::Event> prev;
-    if (queued) prev = chain_join(frame_topic, key, mine);
+    const auto mine = std::make_shared<ChainLink>();
+    ChainLinkPtr prev;
+    if (queued) {
+      prev = chain_join(frame_topic, key, mine);
+      pub->blocked_by.push_back(prev);
+    }
     weave::create_task(std::string("shuttle-concurrent-") + std::string(topic),
                        [this, pub, env, trig, sub, topic_state, mine, prev, queued]() mutable {
                          std::optional<Publication::Failure> failure;
                          Topic& t = *topic_state;
                          try {
+                           // This unit is the one that will release `mine`, so it is the
+                           // task a waiter is compared against (check_self_blocked).
+                           mine->owner = current_task_id();
                            wait_trigger(trig);
                            if (!prev && !sub->removed) {
                              // Deferred frame joining this subscriber's chain now. A target
@@ -238,8 +291,9 @@ std::shared_ptr<PubState> Broker::start_concurrent(
                              // (its delivery is recorded as retired anyway), and skipping the
                              // handoff keeps a dead registration from leaving a chain behind.
                              prev = chain_join(t, sub->id, mine);
+                             pub->blocked_by.push_back(prev);
                            }
-                           if (prev) prev->wait();
+                           if (prev) prev->ev.wait();
                            if (deliver(sub, *env, t) == Delivery::delivered)
                              ++t.delivered;
                            else
@@ -254,9 +308,11 @@ std::shared_ptr<PubState> Broker::start_concurrent(
                            count_failed(t, sub);
                            failure = failure_of(describe(sub), unknown_exc());
                          }
-                         // Release the next frame of this chain regardless of outcome; an event
-                         // that was never installed is harmless.
-                         mine->set();
+                         // Release the next frame of this chain regardless of outcome; a link
+                         // that was never installed is harmless. Clearing the owner first
+                         // keeps a released waiter from reading a stale id.
+                         mine->owner = -1;
+                         mine->ev.set();
                          unit_finished(pub, failure);
                        });
   }
@@ -314,6 +370,7 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
 
   auto pub = std::make_shared<PubState>();
   pub->id = b.next_pub_id++;
+  pub->topic_view = t.name_view;
   const bool defer = (policy == NowPolicy::defer) && blocking_count != 0;
   pub->target_count = nb_count + (defer ? blocking_count : 0);
   pub->deferred = defer ? blocking_count : 0;
@@ -376,13 +433,10 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
 // watcher plus timeout race; true = already completed, false = timed out.
 bool wait_pub_timed(const std::shared_ptr<PubState>& pub, weave::duration timeout) {
   if (pub->done_flag) return true;
-  weave::Task watcher = weave::create_task("shuttle-pub-watch", [pub]() { pub->done_ev.wait(); });
-  try {
-    weave::wait_for(watcher, timeout);
-    return true;
-  } catch (const weave::TimeoutError&) {
-    return false;
-  }
+  check_self_blocked(pub);
+  // The frame may complete between the check above and the wait: wait_wake
+  // re-reads the level, so that race costs one wake-up, never a wrong answer.
+  return wait_wake(pub->done_ev, deadline_after(timeout));
 }
 
 }  // namespace shuttle::detail

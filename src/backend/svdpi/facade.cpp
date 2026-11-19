@@ -204,6 +204,12 @@ int pub_state(int pub_id) {
   return pub->failures.empty() ? 1 : 2;
 }
 
+void pub_check_self_blocked(int pub_id) {
+  const std::shared_ptr<PubState> pub = pub_of(pub_id);
+  if (!pub) return;
+  check_self_blocked(pub);
+}
+
 void pub_on_complete(int pub_id, std::function<void()> fn) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
   if (!pub) return;

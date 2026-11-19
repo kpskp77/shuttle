@@ -517,6 +517,31 @@ module shuttle_tests;
     end
   endtask
 
+  // ── Subscriber that publishes on its own topic and waits: diagnosed, not hung ──────────────────
+  // The frame it publishes is queued behind the very delivery that is asking for it, so it can
+  // never start. The C++ wait entry detects this (detail::check_self_blocked) and answers
+  // SHUTTLE_WAIT_FAILED with shuttle_c_last_error() set. `wait_done()` is avoided here because this
+  // file must not emit $error.
+  class SelfWaitSink implements shuttle_sink;
+    int             blk_count   = 0;
+    int             wait_status = -1;
+    string          wait_error  = "";
+    shuttle_handle  inner;
+    shuttle_pub #(XMsg) pub;
+
+    virtual task invoke(input byte payload[], input shuttle_meta meta);
+      XMsg m = XMsg::unpack(payload);
+      XMsg echo = new();
+      blk_count++;
+      if (m.addr != 32'hD1) return;
+      echo.addr = 32'hD2;
+      echo.data = 32'h0;
+      inner = pub.publish_serial(echo);          // same topic: queued behind this delivery
+      shuttle_c_wait_pub(inner.id(), 0, wait_status);
+      wait_error = shuttle_c_last_error();
+    endtask
+  endclass
+
   // ── shuttle_event: set() releases deliveries triggered by it; close() frees the id in the C++ registry ──
   task automatic case_event();
     automatic shuttle_event       ev  = new();
@@ -564,6 +589,32 @@ module shuttle_tests;
     check(rec.last.addr == 32'hE1, "event.edge.payload");
     check(h.done() == 1 && h.first_error() == "", "event.edge.no_failure");
     ev.close();
+    sub.unsubscribe();
+  endtask
+
+  // ── self-wait: a callback that publishes on its own topic and waits is diagnosed, not hung ──────
+  task automatic case_self_wait();
+    automatic SelfWaitSink        sink = new();
+    automatic shuttle_pub #(XMsg) pub  = new("sv.t.selfwait");
+    automatic XMsg                m    = new();
+    automatic shuttle_handle      h;
+    automatic shuttle_sub         sub  = shuttle_subscribe("sv.t.selfwait", sink, "XMsg");
+    sink.pub = pub;
+    m.addr = 32'hD1;
+    m.data = 32'h0;
+    h = pub.publish_serial(m);
+    h.wait_done();                             // the callback itself never suspends: it got a status
+    for (int i = 0; i < 1000 && sink.blk_count < 2; i++) #(1us);
+    check(sink.wait_status == SHUTTLE_WAIT_FAILED, "selfwait.diagnosed");
+    // The diagnosis carries its own text through shuttle_c_last_error. Compared by indexing instead
+    // of substr(): VCS 2018.09 reads substr(a, b) as "chars a..b inclusive", not as (start, length).
+    begin
+      automatic string tail = "";
+      for (int i = sink.wait_error.len() - 22; i < sink.wait_error.len(); i++)
+        tail = {tail, sink.wait_error[i]};
+      check(tail == "waited for the result)", "selfwait.message");
+    end
+    check(sink.blk_count == 2, "selfwait.inner_frame_delivered");
     sub.unsubscribe();
   endtask
 
@@ -642,6 +693,7 @@ module shuttle_tests;
     case_snapshot();
     case_event();
     case_event_edge();
+    case_self_wait();
     case_mailbox();
     case_xlang();
     g_sv_done = 1;

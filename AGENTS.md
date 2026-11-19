@@ -10,7 +10,7 @@ just build          # 按当前后端构建
 just sc             # systemc 后端本地跑（预期末行 "WEAVE TEST PASSED"）
 just vcs            # svdpi 后端 + 真实 VCS 仿真（预期 "SHUTTLE CPP DEMO PASSED"）
 just test           # 示例：两个后端都过一遍
-just test-all       # 测试套件：systemc 全套（78 用例）+ VCS 全套（含 SV 断言）
+just test-all       # 测试套件：systemc 全套（81 用例）+ VCS 全套（81 用例 + 103 个 SV 断言）
 ```
 
 `tests/svdpi/run.sh` 在没有 vcs 的机器上会打印 `[svdpi-test] skipped` 并以 0 退出，
@@ -44,6 +44,10 @@ just test-all       # 测试套件：systemc 全套（78 用例）+ VCS 全套�
    `wait_trigger` 返回后才入队。两条链互不相干：`concurrent` 帧只进 per-订阅者链，`serial` 帧
    只进 topic 链，不得让一条链去"保证"另一条的顺序（跨方式不保序）。`Broker::remove_sub`
    会擦掉该 id 的链尾槽（退订不能让链尾事件堆在 `topics` 里）。
+   链尾是 `ChainLink{ev, owner}`（`shared_ptr`：等待方要看到**活值**，值拷贝会把 owner 冻在
+   交接那一刻）。`owner` 只能由**投递单元自己**在开跑时写（`mine->owner = current_task_id()`）、
+   完成时先清成 −1 再 `ev.set()`；发布方不知道投递任务是谁，代填即错。等待入口靠它诊断
+   自等待（见不变 12），判定必须在**挂起前**（`detail::check_self_blocked`）。
 6. **SV 打包方向是 `{>>{...}}`**（声明序、每字段高位在前），与 C++ `Writer` 的大端逐字节一致；
    `{<<{...}}` 会整段反转比特流。string 先写 32 位长度前缀。
 7. **退订即生效（在途投递记 retired）**：快照只保证"谁被选中"，不保证"一定被调用"。
@@ -92,9 +96,12 @@ just test-all       # 测试套件：systemc 全套（78 用例）+ VCS 全套�
     case8/case9 钉住这两条）。所以 `start_serial` 只在 `trig.immediate()` 时做发布时链尾交接，
     否则由 task 在 `wait_trigger` 返回后做一次读-改写入队（无挂起点，单活跃进程保证原子）。
     串行链的跨订阅者队头阻塞仍是显式接受的代价——想要并发请用 `publish_concurrent`。
-    已知无解模式：回调里对同一 topic 发布帧并 `wait()`（内层帧排在本帧之后，本帧又要等它）——
-    任何 FIFO 设计都死锁（`concurrent` 下只要目标含自己同样如此），属于禁止用法；`wait()` 在
-    `weave` 暴露"当前任务身份"之前无法可靠检出。
+    禁止用法：回调里对同一 topic 发布帧并 `wait()`（内层帧排在本帧之后，本帧又要等它）——
+    任何 FIFO 设计都死锁（`concurrent` 下只要目标含自己同样如此）。这种**自等待已可诊断**
+    （`weave::DeadlockError` → `Failure`；SV 侧 `SHUTTLE_WAIT_FAILED` + `shuttle_c_last_error()`），
+    机制是不变 5 的 `ChainLink::owner` 与 `detail::check_self_blocked`。判定只能放在**等待**处：
+    回调里对本 topic 只发布不等待（中继）是合法用法，那时链尾也确实由该回调的投递任务持有，
+    入队处判定必误报。也别把它简化成"回调内禁止发布本 topic"。
 
 13. **邮箱的投递回调不许阻塞**：`Mailbox` 用 nonblocking 入口注册，其回调只做一次拷贝入队，
     因为 `publish_now` 的同步段（发布者栈内）也会调它。由此有两条硬规则：有界邮箱构造时

@@ -114,4 +114,10 @@ std::shared_ptr<PubState> dispatch_now(Broker& broker, std::shared_ptr<const Env
 // Must be called in a weave task / simulation-process context.
 bool wait_pub_timed(const std::shared_ptr<PubState>& pub, weave::duration timeout);
 
+// Throws weave::DeadlockError when the frame can never start because the task
+// that awaits it is the task that holds its delivery chain (a subscriber
+// callback published on its own topic and waited for the result). Every entry
+// point that blocks on a frame calls it before suspending.
+void check_self_blocked(const std::shared_ptr<PubState>& pub);
+
 }  // namespace shuttle::detail

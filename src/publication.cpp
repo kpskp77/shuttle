@@ -105,6 +105,9 @@ bool Publication::done() const {
 
 void Publication::wait() {
   if (!valid()) throw std::logic_error("shuttle: empty Publication handle");
+  // A frame queued behind a chain held by the waiting task can never start;
+  // waiting would hang instead of failing (see detail::check_self_blocked).
+  detail::check_self_blocked(impl_->pub);
   impl_->pub->done_ev.wait();
 }
 
