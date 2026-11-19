@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <shuttle/detail/abi.hpp>
 #include <shuttle/publication.hpp>
 #include <shuttle/trigger.hpp>
@@ -59,6 +60,21 @@ std::string g_last_error;
 Publication track_pub(Publication pub) {
   if (auto state = detail_pub_access::state(pub)) Broker::get().pubs[state->id] = std::move(state);
   return pub;
+}
+
+// SV's registration selector (1 = `shuttle_subscribe`, 2 = `shuttle_subscribe_nb`) →
+// Capability. Precisely one of the two: never a set of bits, and never "none" —
+// the entry is a property of the registering call, not of the runtime
+// (AGENTS.md invariant 4). nullopt = a value the protocol does not define.
+std::optional<Capability> capability_of(int caps) {
+  switch (caps) {
+    case 1:
+      return Capability::blocking;
+    case 2:
+      return Capability::nonblocking;
+    default:
+      return std::nullopt;
+  }
 }
 }  // namespace
 
@@ -103,9 +119,9 @@ Publication ext_pub_concurrent(std::string_view topic, std::string_view tag,
 }
 
 int pub_id(const Publication& p) {
-  if (!p.valid()) return 0;
+  if (!p.valid()) return kNoPub;
   const std::shared_ptr<PubState> pub = detail_pub_access::state(p);
-  return pub ? pub->id : 0;
+  return pub ? pub->id : kNoPub;
 }
 
 int ext_sub(std::string pattern, int caps, std::string type_tag, int handle) {
@@ -115,16 +131,16 @@ int ext_sub(std::string pattern, int caps, std::string type_tag, int handle) {
     // (`shuttle_subscribe_nb`). Any other value is undefined — otherwise `now`
     // and `serial`/`concurrent` would take different entries for the same
     // subscriber, violating invariant 4; rejected outright.
-    if (caps != 1 && caps != 2)
+    const std::optional<Capability> entry = capability_of(caps);
+    if (!entry)
       throw std::invalid_argument(
           "shuttle: subscription capability must be exactly one bit (blocking=1 / nonblocking=2)");
-    b.register_sub(std::move(pattern), SubKind::external,
-                   caps == 1 ? Capability::blocking : Capability::nonblocking, std::move(type_tag),
-                   nullptr, {}, {}, handle);
-    return 0;
+    b.register_sub(std::move(pattern), SubKind::external, *entry, std::move(type_tag), nullptr, {},
+                   {}, handle);
+    return kFacadeOk;
   } catch (const std::exception& e) {
     set_last_error(e.what());
-    return 1;
+    return kFacadeError;
   }
 }
 
@@ -163,23 +179,24 @@ void pub_wait(int pub_id, std::int64_t timeout_fs, int* status) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
   if (!pub) {
     set_last_error("shuttle: unknown pub_id " + std::to_string(pub_id));
-    *status = 2;
+    *status = wire(WaitStatus::failed);
     return;
   }
-  if (timeout_fs <= 0) {
+  if (timeout_fs <= 0) {  // the protocol spells "no deadline" as 0
     pub->done_ev.wait();
   } else if (!wait_pub_timed(pub, weave::duration(timeout_fs))) {
-    *status = 1;
+    *status = wire(WaitStatus::timeout);
     return;
   }
-  *status = pub->failures.empty() ? 0 : 2;
+  *status = wire(pub->failures.empty() ? WaitStatus::ok : WaitStatus::failed);
 }
 
 long long pub_stat(int pub_id, int kind) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
   // The on-wire kind is a bare int: validate the range before converting to
-  // the enum; out-of-range and unknown pub_id share the same answer (-1).
-  if (!pub || kind < 0 || kind > static_cast<int>(PubStatKind::retired)) return -1;
+  // the enum; out-of-range and unknown pub_id share the same answer.
+  if (!pub || kind < wire(PubStatKind::target_count) || kind > wire(PubStatKind::retired))
+    return kUnknownPub;
   switch (static_cast<PubStatKind>(kind)) {
     case PubStatKind::target_count:
       return static_cast<long long>(pub->target_count);
@@ -192,14 +209,14 @@ long long pub_stat(int pub_id, int kind) {
     case PubStatKind::retired:
       return static_cast<long long>(pub->retired);
   }
-  return -1;  // unreachable (range validated, enum fully covered)
+  return kUnknownPub;  // unreachable (range validated, enum fully covered)
 }
 
 int pub_state(int pub_id) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
-  if (!pub) return -1;
-  if (!pub->done_flag) return 0;
-  return pub->failures.empty() ? 1 : 2;
+  if (!pub) return kUnknownPub;
+  if (!pub->done_flag) return wire(PubLifecycle::running);
+  return wire(pub->failures.empty() ? PubLifecycle::done : PubLifecycle::done_with_failures);
 }
 
 void pub_check_self_blocked(int pub_id) {

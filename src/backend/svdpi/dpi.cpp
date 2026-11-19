@@ -20,48 +20,39 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <weave/event.hpp>
 #include <weave/sv.hpp>
+#include <weave/task.hpp>
 #include <weave/time.hpp>
 
 #include "backend/backend.hpp"
 #include "detail/trigger.hpp"
 #include "svdpi_internal.hpp"
 
-// ── SV primitives exported by weave (defined in weave_pkg.sv) ────────────
-// shuttle needs the ability to "suspend the current SV process", but
-// weave::Event::wait() is only legal inside a weave task context (it throws
-// "weave: blocking primitive outside task context" in a plain SV native
-// process), so we use weave's DPI exports directly: the event id is allocated
-// on the C++ side and fired by the C++ side at the moment of publication
-// completion.
-// Semantics (see ../weave/sv/weave_pkg.sv, weave_sv_wait): a three-way race
-// between the ev_id leg, the tick-timeout leg, and the abort leg; status
-// 0=event hit 1=timeout 2=cancelled; ev_id<0 means no event leg,
-// timeout_ticks<0 means no timeout leg, abort_id<0 means no cancel leg.
-// timeout_ticks is in units of $time ticks.
-extern "C" {
-int weave_sv_create_event();
-void weave_sv_trigger(int ev_id);
-void weave_sv_destroy_event(int ev_id);
-long long weave_sv_ticks_per_sec();
-void weave_sv_wait(int ev_id, long long timeout_ticks, int abort_id, int* status);
-}
+// Deliberately no `import "DPI-C"` of weave's exports here: a consumer that
+// declares weave's exports as its own imports bypasses weave's DPI backend (and
+// with it the scope fixing that backend does). Everything below drives weave
+// through its C++ API instead, which also means no svSetScope for weave_pkg is
+// needed anywhere in shuttle — weave owns its own package's scope.
 
 namespace {
 
+using shuttle::detail::kUnknownPub;
 using shuttle::detail::last_error;
+using shuttle::detail::PubLifecycle;
 using shuttle::detail::set_last_error;
-using WeaveScopeGuard = shuttle::detail::backend::SvScopeGuard;
+using shuttle::detail::TrigKind;
+using shuttle::detail::WaitStatus;
+using shuttle::detail::wire;
 
-// DPI constants → NowPolicy: 0 = reject / 1 = skip / 2 = defer (out-of-range
-// falls back to the default defer). An explicit mapping instead of
-// static_cast: a changed constant table cannot silently misalign.
+// On-wire strategy code → NowPolicy. The numeric values are protocol constants
+// (docs/dpi_protocol.md pins NowPolicy::reject/skip/defer to SHUTTLE_NOW_* 0/1/2),
+// so the code is the enum; anything else falls back to the default, defer.
 shuttle::NowPolicy now_policy_of(int v) {
-  switch (v) {
-    case 0:
-      return shuttle::NowPolicy::reject;
-    case 1:
-      return shuttle::NowPolicy::skip;
+  switch (static_cast<shuttle::NowPolicy>(v)) {
+    case shuttle::NowPolicy::reject:
+    case shuttle::NowPolicy::skip:
+      return static_cast<shuttle::NowPolicy>(v);
     default:
       return shuttle::NowPolicy::defer;
   }
@@ -84,22 +75,22 @@ std::vector<std::byte> read_payload(const svOpenArrayHandle h) {
 // Assemble the deferred trigger condition per protocol (trig_kind constants in shuttle_pkg.sv).
 shuttle::Trigger build_trigger(int trig_kind, long long trig_arg, const char* trig_name) {
   using namespace shuttle;
-  switch (trig_kind) {
-    case 0:
+  switch (static_cast<TrigKind>(trig_kind)) {
+    case TrigKind::none:
       return Trigger();
-    case 1:
+    case TrigKind::delay:
       return after(weave::duration(trig_arg));
-    case 2:  // wait for another publication to complete (TRIG_PUB); its subscriber failures also
-             // count as "reached a terminal state"
+    case TrigKind::completion:  // wait for another publication to complete; its subscriber failures
+                                // also count as "reached a terminal state"
       return detail::TriggerAccess::from_fn([pub_id = static_cast<int>(trig_arg)]() {
         int status = 0;
         detail::pub_wait(pub_id, 0, &status);
       });
-    case 3: {  // wait for a weave edge (TRIG_EDGE). Only the *name* crosses the boundary: the
-               // Edge constructor is a find-or-insert into weave's own name table, so the SV
-               // side and this side end up holding the same id without shuttle owning a
-               // registry. Waiting through Edge::wait() (not a raw weave_sv_wait) keeps the
-               // cancellation injection and the wait graph that weave's dispatch installs.
+    case TrigKind::edge: {  // wait for a weave edge. Only the *name* crosses the boundary: the
+      // Edge constructor is a find-or-insert into weave's own name table, so the SV
+      // side and this side end up holding the same id without shuttle owning a
+      // registry. Waiting through Edge::wait() (not a raw weave_sv_wait) keeps the
+      // cancellation injection and the wait graph that weave's dispatch installs.
       if (trig_name == nullptr || *trig_name == '\0')
         throw std::invalid_argument("shuttle: TRIG_EDGE requires an edge name");
       auto edge = std::make_shared<weave::sv::Edge>(trig_name);
@@ -116,7 +107,6 @@ shuttle::Trigger build_trigger(int trig_kind, long long trig_arg, const char* tr
 int publish_frame_bg(const char* topic, const char* type_tag, const svOpenArrayHandle payload,
                      int trig_kind, long long trig_arg, const char* trig_name, unsigned int corr_id,
                      bool concurrent) {
-  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
     std::vector<std::byte> frame = read_payload(payload);
     shuttle::Trigger trig = build_trigger(trig_kind, trig_arg, trig_name);
@@ -160,10 +150,9 @@ void shuttle_c_sub_retired(int /*sv_sid*/) {
 int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenArrayHandle payload,
                           int now_policy, unsigned int corr_id) {
   // These imports may indirectly drive weave (creating tasks/events/suspending
-  // waits); weave's exports are defined in weave_pkg, so switch the scope to
-  // weave_pkg at the entry, otherwise VCS reports Error-[DPI-DXFNF]
-  // 'weave_sv_*' invisible (the entry scope is shuttle_pkg).
-  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
+  // waits). No scope switch is needed for that: weave's DPI backend fixes the
+  // svScope around every one of its own imports (weave >= 1.2.0), so its
+  // exports resolve whatever scope the caller happens to be in.
   try {
     const shuttle::Publication pub =
         shuttle::detail::ext_pub_now(topic ? topic : "", type_tag ? type_tag : "",
@@ -195,77 +184,58 @@ int shuttle_c_publish_concurrent(const char* topic, const char* type_tag,
 }
 
 // DPI task: block until one publication completes.
-// The suspension point is the task exported by weave, weave_sv_wait — it
-// suspends **the calling SV process itself**, so an ordinary initial/always
-// process can wait directly (it need not be inside a weave task).
+// The suspension is a leaf wait on a weave event (weave allows an ownerless leaf
+// wait: the importing SV process runs no weave task, and there is nothing to
+// cancel or to publish in the wait graph), so an ordinary initial/always process
+// can wait directly.
 // timeout_fs<=0 means wait forever.
 void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
   int sink = 0;
   if (!status) status = &sink;
-  // The scope must be weave_pkg for the whole entry: the self-blocked check calls
-  // weave::current_task(), which asks the simulator for this process's task id.
-  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
     const int st = shuttle::detail::pub_state(pub_id);
-    if (st < 0) {
+    if (st == kUnknownPub) {
       set_last_error("shuttle: unknown pub_id " + std::to_string(pub_id));
-      *status = 2;
+      *status = wire(WaitStatus::failed);
       return;
     }
-    if (st != 0) {  // already completed: answer directly, without suspending
-      *status = (st == 2) ? 2 : 0;
+    if (st != wire(PubLifecycle::running)) {  // already completed: answer without suspending
+      *status = (st == wire(PubLifecycle::done_with_failures)) ? wire(WaitStatus::failed)
+                                                               : wire(WaitStatus::ok);
       return;
     }
     // A frame whose chain is held by the very SV process that waits for it can
     // never complete; diagnose it here instead of suspending forever.
     shuttle::detail::pub_check_self_blocked(pub_id);
 
-    const int w = weave_sv_create_event();
-    if (w < 0) {
-      set_last_error("shuttle: failed to create the SV wakeup event");
-      *status = 2;
-      return;
-    }
-    // After a timeout the event id is destroyed, so the completion hook must
-    // know it is already invalid (weave's convention: a destroyed id must not
-    // be triggered again). The single-active-process guarantee makes atomics
-    // unnecessary here.
-    struct Slot {
-      int ev;
-      bool active = true;
-    };
-    auto slot = std::make_shared<Slot>();
-    slot->ev = w;
-    shuttle::detail::pub_on_complete(pub_id, [slot] {
-      if (!slot->active) return;
-      const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
-      weave_sv_trigger(slot->ev);
-    });
+    auto wake = std::make_shared<weave::Event>();
+    shuttle::detail::pub_on_complete(pub_id, [wake] { wake->set(); });
 
-    long long ticks = -1;
+    // The deadline leg needs a task of its own (a timeout is a cancellation of
+    // something), and it must not outlive this wait: whoever loses is taken down.
+    weave::Task deadline;
     if (timeout_fs > 0) {
-      const long long tps = weave_sv_ticks_per_sec();
-      const unsigned long long per_sec = static_cast<unsigned long long>(tps > 0 ? tps : 1);
-      ticks = static_cast<long long>(
-          (static_cast<unsigned __int128>(static_cast<unsigned long long>(timeout_fs)) * per_sec) /
-          1000000000000000ull);
+      deadline = weave::create_task("shuttle-pub-deadline", [wake, timeout_fs] {
+        weave::sleep(weave::duration(timeout_fs));
+        wake->set();
+      });
     }
-    int wst = 0;
-    weave_sv_wait(w, ticks, -1, &wst);
-    slot->active = false;
-    weave_sv_destroy_event(w);
+    wake->wait();
+    if (deadline.valid()) deadline.cancel();
 
-    if (wst == 1) {  // the timeout leg won
-      *status = 1;
+    const int fin = shuttle::detail::pub_state(pub_id);
+    if (fin == wire(PubLifecycle::running)) {  // the deadline leg won
+      *status = wire(WaitStatus::timeout);
       return;
     }
-    *status = (shuttle::detail::pub_state(pub_id) == 2) ? 2 : 0;
+    *status = (fin == wire(PubLifecycle::done_with_failures)) ? wire(WaitStatus::failed)
+                                                              : wire(WaitStatus::ok);
   } catch (const std::exception& e) {
     set_last_error(e.what());
-    *status = 2;
+    *status = wire(WaitStatus::failed);
   } catch (...) {
     set_last_error("shuttle: wait cancelled or unknown exception");
-    *status = 2;
+    *status = wire(WaitStatus::failed);
   }
 }
 
@@ -287,7 +257,6 @@ const char* shuttle_c_pub_error(int pub_id) {
 }
 
 int shuttle_c_subscribe(const char* topic_pattern, int caps, const char* type_tag, int sv_sid) {
-  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
     return shuttle::detail::ext_sub(topic_pattern ? topic_pattern : "", caps,
                                     type_tag ? type_tag : "", sv_sid);
@@ -301,7 +270,6 @@ int shuttle_c_subscribe(const char* topic_pattern, int caps, const char* type_ta
 }
 
 void shuttle_c_unsubscribe(int sv_sid) {
-  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   shuttle::detail::ext_unsub(sv_sid);
 }
 

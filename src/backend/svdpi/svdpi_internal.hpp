@@ -4,7 +4,7 @@
 // `src/backend/svdpi/`; not visible outside.
 //
 // What lives here is "how the svdpi backend itself is implemented":
-//   - scope fixing for package-level exports (SvScopeGuard);
+//   - scope fixing for our own package-level exports (SvScopeGuard);
 //   - the C++→SV frame-byte pull channel (FrameContext + frame_len/frame_qword);
 //   - declarations of the external facade (`shuttle::detail::ext_*` / `pub_*` /
 //     the event registry / set_last_error; implemented in facade.cpp).
@@ -28,16 +28,11 @@
 #include <string_view>
 #include <vector>
 
-// The package names can be overridden with -DSHUTTLE_SV_PACKAGE= /
-// -DSHUTTLE_WEAVE_SV_PACKAGE=.
+// The package name can be overridden with -DSHUTTLE_SV_PACKAGE=. Only shuttle's
+// own package needs it: weave's DPI backend fixes the svScope around each of its
+// own imports, so nothing here switches scope for weave.
 #ifndef SHUTTLE_SV_PACKAGE
 #define SHUTTLE_SV_PACKAGE "shuttle_pkg"
-#endif
-// weave's SV package (its exports are defined there; shuttle switches the
-// scope to it at import entry points, so the exports are visible when the C++
-// side calls weave primitives (sleep/create_event/spawn…)).
-#ifndef SHUTTLE_WEAVE_SV_PACKAGE
-#define SHUTTLE_WEAVE_SV_PACKAGE "weave_pkg"
 #endif
 
 namespace shuttle::detail {
@@ -61,9 +56,9 @@ inline svScope scope_for(const char* pkg) {
 // process, subsequent calls to package-level exports fail with
 //   Error-[DPI-DXFNF] DPI export function not found
 // The import call changes the current svScope, making the export invisible in
-// the current scope. Therefore we explicitly switch the scope to shuttle's SV
-// package before entering each export and restore it afterwards, so other
-// libraries' (e.g. weave_pkg) export resolution is not affected.
+// the current scope. Therefore we explicitly switch the scope to shuttle's own
+// SV package before entering each export of ours and restore it afterwards
+// (weave handles the same problem for its own exports internally).
 class SvScopeGuard {
 public:
   explicit SvScopeGuard(const char* pkg = SHUTTLE_SV_PACKAGE) : prev_(svGetScope()) {
@@ -104,6 +99,40 @@ int frame_len();
 std::uint64_t frame_qword(int index);
 
 }  // namespace backend
+
+// ── On-wire codes ────────────────────────────────────────────────────────
+// SV asks for these with bare ints, so every family gets a name on this side
+// too: the numbers are part of the DPI protocol (constant table in
+// docs/dpi_protocol.md) and must not drift. Convert once at the boundary,
+// compare enums inside. Codes that already have a public enum in shuttle
+// (`NowPolicy`, `Capability`) use that one instead of a second spelling — the
+// protocol table pins their numeric values.
+
+// Trigger kinds (SHUTTLE_TRIG_*): how a background frame waits for its release.
+enum class TrigKind : int { none = 0, delay = 1, completion = 2, edge = 3 };
+
+// State of a publication (pub_state); "no such id" is kUnknownPub, not a state.
+enum class PubLifecycle : int { running = 0, done = 1, done_with_failures = 2 };
+
+// Outcome of one blocking wait (shuttle_c_wait_pub; SHUTTLE_WAIT_*):
+// done -> ok, deadline won -> timeout, failure present or internal error -> failed.
+enum class WaitStatus : int { ok = 0, timeout = 1, failed = 2 };
+
+// The wire carries ints, so the comparisons at the boundary read
+// `wire(WaitStatus::timeout)` instead of a bare 1. (Enums only: there is no
+// reason to spell an int this way.)
+template <class Code>
+constexpr int wire(Code code) noexcept {
+  return static_cast<int>(code);
+}
+
+// Answer for "this id is not a publication, or this query makes no sense".
+inline constexpr int kUnknownPub = -1;
+// pub_id of an invalid Publication handle: ids start at 1, so 0 reads as "none".
+inline constexpr int kNoPub = 0;
+// Return codes of the facade entries that answer with a code instead of throwing.
+inline constexpr int kFacadeOk = 0;
+inline constexpr int kFacadeError = 1;
 
 // ── External facade (implemented in facade.cpp; namespace stays
 //    shuttle::detail so dpi.cpp can call it as detail::* directly) ────────

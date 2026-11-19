@@ -10,7 +10,7 @@ just build          # 按当前后端构建
 just sc             # systemc 后端本地跑（预期末行 "WEAVE TEST PASSED"）
 just vcs            # svdpi 后端 + 真实 VCS 仿真（预期 "SHUTTLE CPP DEMO PASSED"）
 just test           # 示例：两个后端都过一遍
-just test-all       # 测试套件：systemc 全套（83 用例）+ VCS 全套（83 用例 + 111 个 SV 断言）
+just test-all       # 测试套件：systemc 全套（83 用例）+ VCS 全套（83 用例 + 116 个 SV 断言）
 ```
 
 `tests/svdpi/run.sh` 在没有 vcs 的机器上会打印 `[svdpi-test] skipped` 并以 0 退出，
@@ -21,9 +21,11 @@ just test-all       # 测试套件：systemc 全套（83 用例）+ VCS 全套�
 1. **单活跃进程**（weave 的 port 契约）：任一时刻只有一个进程执行 C++ 侧记账代码；
    挂起 ≡ 交出调度权。shuttle 的"投递时把帧字节流放在进程级上下文里让 SV 拉取"
    （`src/backend/svdpi/` 的 `FrameContext` + `shuttle_c_frame_len/qword`）就依赖这一点。
-2. **作用域修正**：调用包级 export 前必须切 `svScope`（`svScope` 会被 import 调用污染，
-   VCS 报 `Error-[DPI-DXFNF]`）。见 `src/backend/svdpi/svdpi_internal.hpp` 的 `SvScopeGuard`；驱动 weave 的
-   import 入口切到 `weave_pkg`，其余切到 `shuttle_pkg`。
+2. **作用域修正只管我们自己的包**：调用 `shuttle_pkg` 的包级 export 前必须切 `svScope`
+   （`svScope` 会被返回 string 的 import 污染，VCS 报 `Error-[DPI-DXFNF]`），见
+   `src/backend/svdpi/svdpi_internal.hpp` 的 `SvScopeGuard`。**weave 的 export 不归我们管**：
+   weave ≥ 1.2.0 的 DPI 后端在**每个自己的 import** 外面套了 scope guard，所以不要再写
+   "驱动 weave 之前切到 `weave_pkg`"这类逻辑，也不要恢复 `SHUTTLE_WEAVE_SV_PACKAGE`/`WeaveScopeGuard`。
 3. **import function 的调用链里不能调 export task**（`Error-[DPI-INCDIC]`）：`publish_now` 的
    投递必须走 `shuttle_sv_dispatch_nb`（function），不接受任何例外。
 4. **一次注册 = 一个订阅者 = 一个入口**：入口由**注册时调用的函数**决定——C++ `subscribe(fn)`

@@ -97,7 +97,7 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 | `src/detail/publication.hpp` | `Publication::Impl` 与 `detail_pub_access`，供 API 和 svdpi 门面包装/反查句柄（不安装） |
 | `src/backend/svdpi/facade.cpp` | 外部门面：`ext_pub_*`（字节帧）/ `ext_sub` / `ext_unsub` / 按 `pub_id` 的 `pub_*` 查询 / `Event` 注册表 / FFI 错误通道。与 dpi.cpp 分层：这里只做 broker 编排，不做 DPI 翻译。**svdpi 专属**（systemc 不编译本文件） |
 | `src/backend/svdpi/bridge.cpp` | `detail::backend` 的 svdpi 实现：`dispatch` / `dispatch_nb` / `note_retired_delivery` + 帧拉取（`frame_len` / `frame_qword`） |
-| `src/backend/svdpi/svdpi_internal.hpp` | svdpi 目录私有头：包名宏、`SvScopeGuard`、`FrameContext` + 外部门面声明（`ext_*` / `pub_*` / `set_last_error`） |
+| `src/backend/svdpi/svdpi_internal.hpp` | svdpi 目录私有头：包名宏、`SvScopeGuard`（只管 `shuttle_pkg`）、`FrameContext` + 外部门面声明（`ext_*` / `pub_*` / `set_last_error`） |
 | `src/backend/svdpi/dpi.cpp` | `shuttle_c_*` 的全部 DPI 导出面（import 被仿真器调用、export 反过来调仿真器） |
 | `src/backend/systemc/bridge.cpp` | systemc 后端：`detail::backend` 的退化实现 |
 | `src/trigger.cpp` | `Trigger` 工厂（`after` / `after_all` / `after_any`） |
@@ -653,17 +653,20 @@ export 执行期间没有其他进程能修改 `g_frame`。`FrameContext` 是 RA
 ### 11.2 作用域修正
 
 ```cpp
-class SvScopeGuard { ... };                  // 包级 export：进入前 svSetScope(<pkg>)
-class WeaveScopeGuard = SvScopeGuard;        // 驱动 weave 的 import 入口切到 weave_pkg
+class SvScopeGuard { ... };                  // 我们的包级 export：进入前 svSetScope(shuttle_pkg)
 ```
 
 - 同一 SV 进程内调用过返回 `string` 的 import（如 `shuttle_c_last_error`）之后，
   包级 export 会变得不可见，VCS 报 `Error-[DPI-DXFNF]`。因此 `dispatch` / `dispatch_nb`
   进入时切换到 `shuttle_pkg`，返回时还原调用者作用域；
-- 反向：C++ 经 import 去创建 task/事件或挂起等待时，调用链的作用域是 `shuttle_pkg`，
-  而 weave 的 export 位于 `weave_pkg`，因此 `shuttle_c_publish_*` / `wait_pub` /
-  `subscribe` / `unsubscribe` / `event_*` 都切换到 `weave_pkg`；
-- 不涉及 weave 的入口无需 guard：`shuttle_c_set_retained` 与只读查询
+- **weave 的 export 我们一次都不直接调**：weave ≥ 1.2.0 的 DPI 后端给每个*自己的* import
+  套了 `DpiScopeGuard`（进入时 `svSetScope(weave_pkg)`，返回时还原调用者的），所以我们一律
+  走 weave 的 C++ API（`weave::now()` / `create_task` / `Event::wait()` / `sleep` …），由
+  weave 自己负责它的包。早期的 `WeaveScopeGuard`、`SHUTTLE_WEAVE_SV_PACKAGE` 以及
+  `dpi.cpp` 里那 5 个 "weave 导出的 DPI 函数" 的 `import` 声明都已删除，不要再加回来：
+  **直接用 `import "DPI-C"` 引 weave 的 export 会绕过 weave 后端的那层 guard**，那时才需要
+  自己切作用域（VCS 报 `Error-[DPI-DXFNF]`），而这正是我们要避免的耦合；
+- 不涉及任何 export 的入口无需 guard：`shuttle_c_set_retained` 与只读查询
   （`pub_done` / `pub_stat` / `pub_error` / `detail::backend::frame_len` /
   `detail::backend::frame_qword` —— 后两件只在 svdpi 后端存在，声明在
   `src/backend/svdpi/svdpi_internal.hpp`，不进 `backend/backend.hpp`：只有 export 体内够得着它们）。
@@ -681,7 +684,7 @@ class WeaveScopeGuard = SvScopeGuard;        // 驱动 weave 的 import 入口�
 systemc 构建根本不编译 facade.cpp（外部门面 + FFI 错误通道都是它的死代码），
 不对称没有运行时后果，只是文档里要说实话。
 
-包名可用 `-DSHUTTLE_SV_PACKAGE=` / `-DSHUTTLE_WEAVE_SV_PACKAGE=` 覆盖。
+包名可用 `-DSHUTTLE_SV_PACKAGE=` 覆盖（weave 的包名由 weave 自己管）。
 
 ### 11.3 export/import 的时序约束
 
@@ -716,17 +719,19 @@ C++ 只持有整数 handle（= SV 注册表编号 sv_sid）──▶ shuttle_sv_
 SV: h.wait_done() ─▶ import task shuttle_c_wait_pub(pub_id, timeout_fs, status)
       C++: pub_state(pub_id)
              ├─ 已完成 → 直接给结论
-             └─ 进行中 → w = weave_sv_create_event()
-                        pub_on_complete(pub_id, [w]{ weave_sv_trigger(w); })
-                        weave_sv_wait(w, ticks, -1, &wst)   ← 挂起调用者这个 SV 进程
-                        返回后 weave_sv_destroy_event(w)
-                        status = wst==1 ? 超时 : (pub_state==2 ? 有失败 : 成功)
+             └─ 进行中 → weave::Event wake
+                        pub_on_complete(pub_id, [wake]{ wake->set(); })
+                        timeout_fs > 0 ? create_task("shuttle-pub-deadline",
+                                          sleep(d); wake->set())     ← 只负责超时腿
+                        wake->wait()        ← weave 的 ownerless 叶子等待，挂起调用者这个 SV 进程
+                        deadline.cancel()   ← 赢家之外的那条腿被收掉
+                        status = pub_state 仍未完成 ? 超时 : (有失败 ? FAILED : OK)
 ```
 
-不能使用 `weave::Event::wait()`：它只在 weave task 上下文合法，普通 `initial` 进程会抛
-`weave: blocking primitive outside task context`。`weave_sv_wait` 是 weave 的 export task，
-挂起的是调用者本身。超时换算使用 `unsigned __int128(fs) * ticks_per_sec / 1e15`，避免
-64 位溢出。
+`shuttle_c_wait_pub` 是**唯一**需要挂起普通 SV 进程的地方，而它现在只用 weave 的公开 API：
+`weave::Event::wait()` 允许在没有 task 身份时作叶子等待（weave 1.2.0 起；普通 `initial`
+进程正是这种上下文），超时腿要有东西可取消，所以给它一个自己的任务。不用
+`weave::timeout()`：它内部 `wait_for()` 需要一个会挂起调用者的 task 上下文。
 
 ## 12. systemc 后端
 

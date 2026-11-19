@@ -571,6 +571,30 @@ module shuttle_tests;
     end
   endtask
 
+  // A wait_pub deadline: the timeout leg fires, the frame stays pending and completes later.
+  // Exercised through shuttle_c_wait_pub directly because shuttle_handle::wait_done() turns a
+  // timeout into $error by design (this file never calls $error).
+  task automatic case_wait_timeout();
+    automatic shuttle_pub #(XMsg) pub = new("sv.t.timeout");
+    automatic Rec                 rec = new();
+    automatic XMsg                m   = new();
+    automatic int                 st  = -1;
+    automatic shuttle_sub         sub;
+    automatic shuttle_handle      h;
+
+    sub = shuttle_subscribe("sv.t.timeout", rec, "XMsg");
+    check(sub.id() != 0, "wait.timeout_subscribed");
+    m.addr = 32'hA1;
+    m.data = 32'hB2;
+    h = pub.publish_serial(m, shuttle_trigger::after_delay(10_000_000));  // the frame is due at 10 ns
+    shuttle_c_wait_pub(h.id(), 1_000_000, st);                            // give up after 1 ns
+    check(st == SHUTTLE_WAIT_TIMEOUT, "wait.timeout_fires");
+    check(!h.done(), "wait.timeout_leaves_the_frame_pending");
+    shuttle_c_wait_pub(h.id(), 0, st);                                    // no deadline: wait it out
+    check(st == SHUTTLE_WAIT_OK && h.done(), "wait.completes_after_the_deadline");
+    check(rec.blk_count == 1, "wait.deadline_delivered_once");
+  endtask
+
   // ── Subscriber that publishes on its own topic and waits: diagnosed, not hung ──────────────────
   // The frame it publishes is queued behind the very delivery that is asking for it, so it can
   // never start. The C++ wait entry detects this (detail::check_self_blocked) and answers
@@ -762,6 +786,7 @@ module shuttle_tests;
     case_now_blocking();
     case_publish_serial();
     case_publish_concurrent();
+    case_wait_timeout();
     case_nb_in_background();
     case_dual_registration();
     case_trigger();
