@@ -56,6 +56,7 @@
 #include <deque>
 #include <optional>
 #include <shuttle/detail/abi.hpp>
+#include <shuttle/detail/wait.hpp>
 #include <shuttle/exception.hpp>
 #include <shuttle/meta.hpp>
 #include <shuttle/subscription.hpp>
@@ -158,23 +159,13 @@ MailboxItem<T> mailbox_recv(MailboxState<T>& st) {
 template <typename T>
 std::optional<MailboxItem<T>> mailbox_recv(const std::shared_ptr<MailboxState<T>>& st_holder,
                                            weave::duration timeout) {
-  const std::int64_t deadline = now_fs() + timeout.count();
+  const std::optional<weave::time_point> deadline = deadline_after(timeout);
   while (st_holder->items.empty()) {
     if (st_holder->closed)
       throw MailboxClosed("shuttle: receiving from a closed mailbox (queue drained)");
-    const std::int64_t remaining = deadline - now_fs();
-    if (remaining <= 0) return std::nullopt;  // checked after the queue: no frame is lost
-    // Race a one-shot waiter against the clock, the same shape as wait_pub_timed:
-    // cancelling the waiter consumes nothing, so a late frame stays queued.
-    // The state is captured by value: the waiter must not touch a dead reference
-    // if the timeout wins.
-    weave::Task waiter =
-        weave::create_task("shuttle-mailbox-wait", [st_holder] { st_holder->not_empty.wait(); });
-    try {
-      weave::wait_for(waiter, weave::duration(remaining));
-    } catch (const weave::TimeoutError&) {
-      return std::nullopt;
-    }
+    // The queue is checked before the clock: a frame that is already there is
+    // taken even if the deadline has passed (no frame is lost to a timeout).
+    if (!wait_wake(st_holder->not_empty, deadline)) return std::nullopt;
   }
   return mailbox_pop(*st_holder);
 }

@@ -221,7 +221,7 @@ if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 | --- | --- | --- |
 | 立即（默认） | 空 `Trigger{}` | `null` |
 | 固定延时 | `after(weave::duration)` | `shuttle_trigger::after_delay(fs)` |
-| 事件置位 | `after(weave::Event&)`（C++ 自己的事件） | `shuttle_trigger::after_event(ev.id())`（SV `shuttle_event`） |
+| 事件置位 | `after(weave::Event&)`（C++ 自己的事件） | `shuttle_trigger::after_event(ev.id())`（SV `shuttle_event`，**边沿**语义：`set()` 只唤醒此刻在等的帧，不会为之后注册的帧闩住） |
 | 另一个发布完成 | `after(const weave::Task&)` 或经桥装配 | `shuttle_trigger::after_pub(h)` |
 | 全部满足 / 任一满足 | `after_all(vector)` / `after_any(vector)` | —（组合在 C++ 侧构造） |
 
@@ -243,11 +243,14 @@ if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 | `include/shuttle/broker.hpp` | 只读内省：`topics()` / `topic_info()` |
 | `include/shuttle/exception.hpp` | `ShuttleError` 及其子类 |
 | `include/shuttle/detail/abi.hpp` | 类型擦除边界，供 `Publisher`/`subscribe` 模板使用；不直接 include |
+| `include/shuttle/detail/wait.hpp` | 内部原语：`wait_wake(ev, deadline)`（超时竞速），`mailbox`/`requester`/`Publication::wait(timeout)` 共用 |
 | `sv/shuttle_pkg.sv` | SV 侧：`shuttle_sink(_nb)`、`shuttle_pub#(T)`、`shuttle_sub`、`shuttle_handle`、`shuttle_trigger`、`shuttle_event`、注册表、DPI |
 
 ## 构建
 
-依赖 weave（xmake-repo，`backend=svdpi|systemc`）。常用动作由 `justfile` 提供：
+依赖 weave **>= 1.1.0**（xmake-repo，`backend=svdpi|systemc`）：仿真时间、超时竞速与
+SV 事件边沿都直接用 weave 的原语（`weave::now()` / `weave::timeout` / `weave::Pulse`），
+shuttle 自己不再维护时间源。常用动作由 `justfile` 提供：
 
 ```bash
 just build     # 按当前 xmake 后端构建库与示例

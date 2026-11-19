@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 #include <weave/task.hpp>
+#include <weave/time.hpp>
 
 #include "backend/backend.hpp"
 
@@ -302,7 +303,7 @@ std::shared_ptr<const Envelope> finish_envelope(Topic& t, std::shared_ptr<const 
   env->meta.topic_name = t.name_view;
   env->meta.type_tag = t.binding->tag;
   env->meta.topic_seq = ++t.seq;
-  env->meta.time_fs = backend::now_fs();
+  env->meta.time_fs = weave::now().count();
   env->meta.corr_id = corr_id;
   ++t.published;
   if (t.retained_on) t.retained_env = env;

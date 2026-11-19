@@ -30,7 +30,7 @@
 | `shuttle_c_frame_qword` | `(int index) → longint` | 不阻塞 | 取第 `index` 个 8 字节块（SV 侧按小端拼装，末块不足 8 字节的部分补零）。帧因此不经过 export 形参，绕开"C++ 无法构造 open array"的限制 |
 | `shuttle_c_sub_retired` | `(int sv_sid)` | 不阻塞 | **由 SV 侧调回 C++**：`shuttle_registry::dispatch[_nb]` 发现目标已退订（`retired_`）时静默丢弃这次在途投递，同时调用本函数回告。C++ 在 export 返回后把该次投递记为 retired（计入 `dropped` 的 `retired` 分量，不计 `delivered`，不留 `Failure`） |
 | `shuttle_c_event_create` | `() → int` | 不阻塞 | 创建一个由 C++ 注册表持有的事件 id（>0；0 表示失败），可作 `SHUTTLE_TRIG_EVENT` 的 `trig_arg`，也是 SV `shuttle_event` 的底层对象 |
-| `shuttle_c_event_set` | `(int ev_id)` | 不阻塞 | 置位并唤醒所有等待者（C++ 侧 `detail::event_wait_id` 与 `TRIG_EVENT` 的投递单元） |
+| `shuttle_c_event_set` | `(int ev_id)` | 不阻塞 | 唤醒**此刻**已登记的等待者（C++ 侧 `detail::event_wait_id` 与 `TRIG_EVENT` 的投递单元）。语义是 SV 的 `-> ev`——纯边沿，没有等待者时该次 `set` 丢失，不会闩住；C++ 侧底层是 `weave::Pulse` 而非 `weave::Event` |
 | `shuttle_c_event_destroy` | `(int ev_id)` | 不阻塞 | 释放 id（SV `shuttle_event::close()`）。仿真结束时不调用亦可随进程消亡 |
 | `shuttle_c_last_error` | `() → string` | 不阻塞 | 最近一次 import 调用失败的详细原因（每进程独立） |
 
@@ -40,7 +40,6 @@
 |---|---|---|---|
 | `shuttle_sv_dispatch` | `task (int sub_id, string topic_name, string type_tag, longint topic_seq, longint time_fs, int unsigned corr_id)` | **可阻塞** | `serial` / `concurrent` 的投递入口：由 C++ broker 的 weave task 调用，在承载该 task 的 SV 进程中执行，用户回调（`shuttle_sink.invoke`）可消耗仿真时间 |
 | `shuttle_sv_dispatch_nb` | `function void (同参)` | **不可阻塞** | `publish_now` 同步段的投递入口：在**发布者进程上下文**中执行，function 语义由编译器强制零延时；回调为 `shuttle_sink_nb.invoke_nb` |
-| `shuttle_sv_time_fs` | `function longint ()` | 不阻塞 | 仿真时间源，C++ `shuttle::now_fs()` 的 svdpi 实现；返回当前仿真时间的飞秒数 |
 
 两个 dispatch export 都**没有 payload 形参**：负载由 export 体内调用
 `shuttle_c_frame_len` / `shuttle_c_frame_qword` 从 C++ 侧的 `FrameContext` 拉取（§1）。

@@ -9,6 +9,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <shuttle/detail/wait.hpp>
 #include <shuttle/trigger.hpp>
 #include <string>
 #include <string_view>

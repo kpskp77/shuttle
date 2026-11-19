@@ -57,6 +57,7 @@
 #include <memory>
 #include <optional>
 #include <shuttle/detail/abi.hpp>
+#include <shuttle/detail/wait.hpp>
 #include <shuttle/exception.hpp>
 #include <shuttle/meta.hpp>
 #include <shuttle/publication.hpp>
@@ -141,31 +142,16 @@ struct ResponseTable {
 };
 
 // Blocks until the call's queue is non-empty, the deadline passes, or the slot
-// is cancelled. The waiter task captures the state, so a timeout never leaves a
-// dangling reference behind.
+// is cancelled. The queue is checked before the clock, so a reply that is
+// already there is never lost to a timeout.
 template <typename TResp>
-bool wait_call(const std::shared_ptr<CallState<TResp>>& call, std::int64_t deadline_fs) {
+bool wait_call(const std::shared_ptr<CallState<TResp>>& call,
+               std::optional<weave::time_point> deadline) {
   while (call->items.empty()) {
     if (call->cancelled) return false;
-    if (deadline_fs >= 0 && now_fs() >= deadline_fs) return false;
-    weave::Task waiter = weave::create_task("shuttle-call-wait", [call] { call->wake.wait(); });
-    try {
-      if (deadline_fs < 0) {
-        waiter.await();
-      } else {
-        const std::int64_t remaining = deadline_fs - now_fs();
-        if (remaining <= 0) return false;
-        weave::wait_for(waiter, weave::duration(remaining));
-      }
-    } catch (const weave::TimeoutError&) {
-      return false;
-    }
+    if (!wait_wake(call->wake, deadline)) return false;
   }
   return true;
-}
-
-inline std::int64_t deadline_after(weave::duration timeout) {
-  return now_fs() + timeout.count();
 }
 
 // `req_name` may be a pattern (serve() accepts one) while `resp_topic` is the
@@ -201,7 +187,7 @@ public:
   // is guaranteed to answer).
   std::optional<TResp> recv() {
     if (!state_) return std::nullopt;
-    if (!detail::wait_call(state_, -1)) return std::nullopt;
+    if (!detail::wait_call(state_, std::nullopt)) return std::nullopt;
     return take();
   }
 
@@ -218,7 +204,7 @@ public:
   std::vector<TResp> wait_for(std::size_t n, weave::duration timeout) {
     std::vector<TResp> out;
     if (!state_) return out;
-    const std::int64_t deadline = detail::deadline_after(timeout);
+    const std::optional<weave::time_point> deadline = detail::deadline_after(timeout);
     while (out.size() < n) {
       if (state_->cancelled) break;
       if (!detail::wait_call(state_, deadline)) break;

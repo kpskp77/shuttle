@@ -542,6 +542,31 @@ module shuttle_tests;
     sub.unsubscribe();
   endtask
 
+  // ── shuttle_event edge semantics: set() with no waiter is lost (SV `-> ev`, not a latch) ────────
+  // Pinned because the C++ side waits on a weave::Pulse: a sticky flag here would silently release
+  // deliveries armed *after* the set, i.e. an edge that never belonged to them.
+  task automatic case_event_edge();
+    automatic shuttle_event       ev  = new();
+    automatic Rec                 rec = new();
+    automatic shuttle_sub         sub = shuttle_subscribe("sv.t.evedge", rec, "XMsg");
+    automatic shuttle_pub #(XMsg) pub = new("sv.t.evedge");
+    automatic XMsg                m   = new();
+    automatic shuttle_handle      h;
+    m.addr = 32'hE1;
+    ev.set();                                  // nobody waiting yet: this edge is lost
+    h = pub.publish_serial(m, shuttle_trigger::after_event(ev.id()));
+    #(1us);
+    check(rec.blk_count == 0, "event.edge.not_latched");
+    check(h.done() == 0, "event.edge.frame_still_pending");
+    ev.set();                                  // the delivery unit is waiting by now
+    h.wait_done();
+    check(rec.blk_count == 1, "event.edge.released_by_next_set");
+    check(rec.last.addr == 32'hE1, "event.edge.payload");
+    check(h.done() == 1 && h.first_error() == "", "event.edge.no_failure");
+    ev.close();
+    sub.unsubscribe();
+  endtask
+
   // ── Mailbox: subscription + queue, pure SV (weave_pkg's event primitives only) ──────────────────
   task automatic case_mailbox();
     automatic shuttle_mailbox     box    = new("sv.t.mbox");
@@ -616,6 +641,7 @@ module shuttle_tests;
     case_bad_topic();
     case_snapshot();
     case_event();
+    case_event_edge();
     case_mailbox();
     case_xlang();
     g_sv_done = 1;

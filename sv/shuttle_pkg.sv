@@ -48,8 +48,8 @@
 
 package shuttle_pkg;
   // timeunit convention matches weave_pkg: it fixes the conversion basis for
-  // #() delays and 1s literals (shuttle_sv_time_fs converts $realtime/1s*1e15
-  // to femtoseconds).
+  // #() delays and 1s literals (weave's tick is this timeunit, so simulation
+  // time is exact in both directions).
   timeunit 1ps; timeprecision 1ps;
 
   // weave_pkg supplies the SV-side blocking primitive (weave_sv_wait) and the
@@ -103,7 +103,6 @@ package shuttle_pkg;
   // entries into a module — the protocol is unchanged.
   export "DPI-C" task shuttle_sv_dispatch;
   export "DPI-C" function shuttle_sv_dispatch_nb;
-  export "DPI-C" function shuttle_sv_time_fs;
 
   // ── Constants: strictly aligned with the C++ enums (docs/dpi_protocol.md §constants) ──
   // Subscription entries (caps argument of shuttle_c_subscribe): one
@@ -549,11 +548,16 @@ package shuttle_pkg;
   endclass
 
   // ── Cross-language event handle (the C++-side registry owns the underlying
-  //    object; the C++ side waits on it with weave::Event) ──────────────────
+  //    object; the C++ side waits on it with weave::Pulse) ─────────────────
   // The underlying object resides in the C++-side registry (held by C++; SV
   // only holds the id): the SV-side set() wakes TRIG_EVENT delivery units
-  // waiting on it; it can also serve as the trigger condition of
+  // already waiting on it; it can also serve as the trigger condition of
   // shuttle_trigger::after_event(id) (below).
+  // Semantics are those of `-> ev`, not of a latch: set() releases the waiters
+  // present at that moment and leaves nothing behind, so a set() with no waiter
+  // (or a set() issued in the same process step as the publish that arms the
+  // trigger, before the delivery unit got to run) is lost — the frame stays
+  // pending until the next set().
   // There is no public C++ entry that waits by id: C++ code uses its own
   // weave::Event + after().
   class shuttle_event;
@@ -570,7 +574,8 @@ package shuttle_pkg;
     function bit valid();
       return active_;
     endfunction
-    // Wake all waiters (Trigger / TRIG_EVENT tasks on the C++ side waiting on this event are released)
+    // Wake the waiters present right now (SV `-> ev`: a set with no waiter is
+    // lost, it does not latch)
     function void set();
       if (active_) shuttle_c_event_set(id_);
     endfunction
@@ -768,15 +773,6 @@ package shuttle_pkg;
     byte payload[];
     shuttle_frame_bytes(payload);
     shuttle_registry::dispatch_nb(sub_id, payload, m);
-  endfunction
-
-  // Simulation time source (implementation of shuttle::now_fs() on the C++
-  // side). $realtime is in this package's timeunit; converted to femtoseconds.
-  // Note: real has only a 53-bit mantissa, so precision degrades at very large
-  // simulation times — a production implementation should switch to $time ×
-  // femtoseconds-per-tick (aligned with the tick convention of weave_pkg).
-  function automatic longint shuttle_sv_time_fs();
-    return longint'($realtime / 1s * 1e15);
   endfunction
 
 endpackage

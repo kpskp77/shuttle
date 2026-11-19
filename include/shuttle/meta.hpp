@@ -26,9 +26,10 @@ struct Meta {
   std::int64_t time_fs;       // simulation time at publish (femtoseconds), from now_fs()
 };
 
-// Current simulation time (femtoseconds).
-// svdpi backend: provided over DPI by the SV-side shuttle_sv_time_fs() (converted from $realtime);
-// systemc backend: converted from sc_time_stamp().
+// Current simulation time (femtoseconds). A thin forwarder over weave::now(): the clock belongs to
+// weave (its port's only non-suspending primitive), so the instant stamped on a frame is exactly the
+// instant weave schedules against -- no second time source, no unit conversion that could drift.
+// Resolution is the backend's tick (1 ps on both backends here).
 std::int64_t now_fs();
 
 }  // namespace shuttle

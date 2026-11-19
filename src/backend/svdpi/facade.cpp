@@ -218,10 +218,14 @@ void pub_on_complete(int pub_id, std::function<void()> fn) {
 // Events are created only on the SV side (shuttle_c_event_create); the C++ side never holds a
 // handle — access is by id, so the registry alone owns the objects and destroy frees them (SV's
 // shuttle_event::close() goes through here).
+// The object is a weave::Pulse, not a weave::Event: SV's `-> ev` wakes the waiters present at that
+// instant and leaves nothing behind, so a set() with no waiter must be *lost*. A sticky Event
+// would let a delivery armed after the set() pass on an edge that never belonged to it — a silent
+// false positive (which is exactly what weave documents Pulse for).
 namespace {
 struct EventSlot {
   int id;
-  weave::Event ev;
+  weave::Pulse ev;
 };
 
 std::map<int, std::shared_ptr<EventSlot>> g_events;
@@ -234,7 +238,11 @@ std::shared_ptr<EventSlot> event_lookup(int ev_id) {
 }  // namespace
 
 // The wait entry of TRIG_EVENT (SV references events by id): must be called
-// in a weave task context.
+// in a weave task context. It registers as a waiter *now*: the pulse only
+// releases waiters that were already present when set() fired, so the delivery
+// unit must reach here before the SV side sets the event (publishing a frame
+// and setting its event in the same SV process without an intervening delay
+// loses the edge — see docs/dpi_protocol.md).
 void event_wait_id(int ev_id) {
   const auto slot = event_lookup(ev_id);
   if (!slot)
@@ -243,7 +251,7 @@ void event_wait_id(int ev_id) {
 }
 
 int event_registry_create() {
-  auto slot = std::make_shared<EventSlot>(EventSlot{g_next_event_id++, weave::Event{}});
+  auto slot = std::make_shared<EventSlot>(EventSlot{g_next_event_id++, weave::Pulse{}});
   const int id = slot->id;
   g_events[id] = std::move(slot);
   return id;
@@ -253,7 +261,7 @@ void event_registry_set(int ev_id) {
   const auto slot = event_lookup(ev_id);
   if (!slot)
     throw std::invalid_argument("shuttle: unknown or destroyed event id " + std::to_string(ev_id));
-  slot->ev.set();
+  slot->ev.fire();
 }
 
 void event_registry_destroy(int ev_id) {

@@ -8,7 +8,11 @@
 // SV event registry, the DPI-C export surface, scope fixing — all stay inside
 // `src/backend/<backend>/` and do not enter this header. Adding a backend =
 // adding a directory; neither the broker nor this header changes (unless the
-// new backend cannot even provide "delivery + time").
+// new backend cannot even provide delivery).
+//
+// "Now" is not part of this contract: simulation time is owned by weave
+// (`weave::now()`, the port's only non-suspending primitive), so the broker
+// reads it directly and no backend can disagree about what time it is.
 //
 // Current implementations:
 //   src/backend/svdpi/    bridge.cpp (this interface) + dpi.cpp (DPI-C export surface)
@@ -46,9 +50,6 @@ void dispatch(int handle, std::string_view topic_name, std::string_view type_tag
 void dispatch_nb(int handle, std::string_view topic_name, std::string_view type_tag,
                  std::uint64_t topic_seq, std::int64_t time_fs, std::uint32_t corr_id,
                  const std::vector<std::byte>& payload);
-
-// Current simulation time (femtoseconds), used as `Meta::time_fs`.
-std::int64_t now_fs();
 
 // Unsubscribe feedback channel: when the backend finds during dispatch that
 // the target has already unsubscribed (an in-flight delivery was dropped), it

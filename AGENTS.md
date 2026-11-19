@@ -154,14 +154,21 @@ just test-all       # 测试套件：systemc 全套（78 用例）+ VCS 全套�
 - `src/*.cpp`：按公开对象划分的后端无关 TU——`publication.cpp` 同时实现 `Published` 侧
   入口（`pub_*` / `topic_*`）与 `Publication` 成员，`subscription.cpp` 同时实现
   `sub_typed` / `sub_raw` 与 `Subscription` 成员（`Subscription::Impl` 只在那里定义，
-  所以 `sub_*` 不能攞）；`meta.cpp` 只做 `now_fs()` 转发，`introspection.cpp` 实现
+  所以 `sub_*` 不能攞）；`meta.cpp` 只做 `now_fs()` → `weave::now()` 的转发（**仿真时间归
+  weave 所有**，不要为它再加后端入口、也不要自己用 `$realtime` 换飞秒），`introspection.cpp` 实现
   `shuttle::broker` 只读查询。
-- `src/backend/backend.hpp`：broker ↔ 后端的 6 入口窄口（不安装）。它属于后端边界，
+- `include/shuttle/detail/wait.hpp`（**已安装**）：`detail::deadline_after(timeout)` 与
+  `detail::wait_wake(weave::Event&, std::optional<weave::time_point>)`——三处"等一个事件、
+  可能带超时"的竞速都走它（mailbox 的 `recv(timeout)`、requester 的 `wait_for`、`Publication::wait(timeout)`），
+  内部用 `weave::timeout(body, limit)` 以便继承 weave 的级联取消。它是纯头文件，
+  因为 `mailbox.hpp` / `requester.hpp` 够不到 `src/`。
+- `src/backend/backend.hpp`：broker ↔ 后端的 **5** 入口窄口（`available` / `dispatch` /
+  `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery`，不安装）。它属于后端边界，
   所以住在 `src/backend/` 里，include 写作 `"backend/backend.hpp"`（`src/` 仍是包含根）。
 - `src/backend/<backend>/`：**按目录选一个后端编译**（`xmake.lua` 的
   `add_files("src/backend/" .. 后端 .. "/**.cpp")`）。不许互相 include、不许加
   `SHUTTLE_BACKEND_*` 之类的宏——换后端 = 换目录。systemc 后端只许经
-  `src/backend/backend.hpp` 的 6 入口窄口认识 broker；**svdpi 是显式的例外**：它是唯一
+  `src/backend/backend.hpp` 的 5 入口窄口认识 broker；**svdpi 是显式的例外**：它是唯一
   带 FFI 通道的后端（且永不会有第二个 FFI 调用方），其目录额外可见 broker 内部
   （include `broker/broker.hpp` 与 `detail/publication.hpp`），外部门面就住在那里（见下条）。
 - `src/backend/svdpi/facade.cpp` 是外部门面（`ext_*` / 按 `pub_id` 的 `pub_*` /

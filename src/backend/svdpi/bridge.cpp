@@ -23,7 +23,6 @@ void shuttle_sv_dispatch(int sv_sid, const char* topic_name, const char* type_ta
                          long long topic_seq, long long time_fs, unsigned int corr_id);
 void shuttle_sv_dispatch_nb(int sv_sid, const char* topic_name, const char* type_tag,
                             long long topic_seq, long long time_fs, unsigned int corr_id);
-long long shuttle_sv_time_fs();
 }
 
 namespace shuttle::detail {
@@ -77,11 +76,6 @@ bool take_retired_delivery() {
   const bool hit = g_retired_hit;
   g_retired_hit = false;
   return hit;
-}
-
-std::int64_t now_fs() {
-  SvScopeGuard scope;
-  return static_cast<std::int64_t>(shuttle_sv_time_fs());
 }
 
 int frame_len() {
