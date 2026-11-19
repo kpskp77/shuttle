@@ -12,7 +12,7 @@ option("backend", function()
 end)
 
 -- Add dependencies
-add_requires("weave >=1.1.0", { configs = { shared = true, backend = get_config("backend") } })
+add_requires("weave >=1.2.0", { configs = { shared = true, backend = get_config("backend") } })
 if get_config("backend") == "systemc" then
   add_requires("systemc", { configs = { shared = true } })
 else

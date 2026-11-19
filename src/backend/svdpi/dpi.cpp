@@ -202,6 +202,9 @@ int shuttle_c_publish_concurrent(const char* topic, const char* type_tag,
 void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
   int sink = 0;
   if (!status) status = &sink;
+  // The scope must be weave_pkg for the whole entry: the self-blocked check calls
+  // weave::current_task(), which asks the simulator for this process's task id.
+  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
     const int st = shuttle::detail::pub_state(pub_id);
     if (st < 0) {
@@ -217,7 +220,6 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
     // never complete; diagnose it here instead of suspending forever.
     shuttle::detail::pub_check_self_blocked(pub_id);
 
-    const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
     const int w = weave_sv_create_event();
     if (w < 0) {
       set_last_error("shuttle: failed to create the SV wakeup event");

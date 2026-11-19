@@ -8,6 +8,8 @@
 //   · sv_cases       — all in-SV cases (`now`/`serial`/`concurrent`, triggers, retained,
 //                       multiple publishers, unsubscribe, entry routing, seq semantics, snapshot semantics);
 //   · case_xlang     — cross-language round trip, paired with tests/cpp/xlang_tests.cpp;
+//   · case_xlang_mixed — one topic whose target set mixes an SV blocking entry with C++ ones
+//                       (task identity must survive the nested frame; weave v1.2.0);
 //   · run_cpp_tests  — launches the C++-side tests (WEAVE_TEST in tests/cpp) via weave_run;
 //                       both sides share one broker, so they see each other.
 //
@@ -518,6 +520,57 @@ module shuttle_tests;
     end
   endtask
 
+  // A sink that publishes from inside its own callback and then suspends. That nested publish
+  // forces the simulator to run a C++ frame in the middle of the outer delivery; with weave <= 1.1.0
+  // the outer frame came back with no current task, so the next C++ subscriber that blocked threw
+  // "weave: blocking primitive outside task context" (../weave/bugs.md; fixed by keying the task
+  // identity per simulation process in weave v1.2.0).
+  class MixedSink implements shuttle_sink;
+    int                 count = 0;
+    XMsg                last;
+    shuttle_pub #(XMsg) nested;
+
+    virtual task invoke(input byte payload[], input shuttle_meta meta);
+      XMsg m = XMsg::unpack(payload);
+      count++;
+      last = m;
+      if (nested != null) void'(nested.publish_serial(m));
+      #(1ns);
+    endtask
+  endclass
+
+  // Cross-language mixed target set (C++ side: case6 in tests/cpp/xlang_tests.cpp). The SV sink
+  // registers before the C++ subscriber does, so the frame's target list is
+  // [SV blocking entry, C++ blocking subscriber] - the ordering that used to break the identity.
+  task automatic case_xlang_mixed();
+    automatic MixedSink           sink  = new();
+    automatic shuttle_pub #(XMsg) ready = new("xlang.mixed.ready");
+    automatic XMsg                note  = new();
+    automatic shuttle_handle      h;
+    automatic shuttle_sub         sub;
+
+    sink.nested = new("xlang.mixed.mon");
+    sub         = shuttle_subscribe("xlang.mixed.tx", sink, "XMsg");
+    check(sub.id() != 0, "xlang.mixed.sink_registered");
+
+    // ready broadcast (retained): the C++ side subscribes after this, so it becomes the second and
+    // third target of the frame it publishes below
+    ready.set_retained(1);
+    note.addr = 32'h1;
+    note.data = 32'h0;
+    h = ready.publish_serial(note);
+    h.wait_done();
+    check(h.done() && h.first_error() == "", "xlang.mixed.ready_no_failure");
+
+    // the frame itself comes from the C++ side (0xA1/0xB2); bounded so a broken handshake fails loudly
+    for (int i = 0; i < 20000 && sink.count == 0; i++) #(10us);
+    check(sink.count == 1, "xlang.mixed.sink_delivered");
+    if (sink.last != null) begin
+      check(sink.last.addr == 32'hA1, "xlang.mixed.sink_payload_addr");
+      check(sink.last.data == 32'hB2, "xlang.mixed.sink_payload_data");
+    end
+  endtask
+
   // ── Subscriber that publishes on its own topic and waits: diagnosed, not hung ──────────────────
   // The frame it publishes is queued behind the very delivery that is asking for it, so it can
   // never start. The C++ wait entry detects this (detail::check_self_blocked) and answers
@@ -724,6 +777,7 @@ module shuttle_tests;
     case_self_wait();
     case_mailbox();
     case_xlang();
+    case_xlang_mixed();
     g_sv_done = 1;
     $display("[sv] %0d passed, %0d failed", g_pass, g_fail);
   end

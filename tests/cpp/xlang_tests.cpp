@@ -10,13 +10,20 @@
 //      3 SV-side callbacks have already finished (that is exactly the Publication completion
 //      semantics);
 //   3. once the SV side confirms the 3 frames, it publishes 3 frames on "xlang.sv2cpp";
-//   4. the C++ side waits for and validates these 3 frames (content, type_tag, monotonic seq).
+//   4. the C++ side waits for and validates these 3 frames (content, type_tag, monotonic seq);
+//   5. case6 covers the one shape that used to break: a *mixed* target set on a single topic — an
+//   SV blocking subscriber registered first, then blocking C++ subscribers that consume time. The
+//   SV callback publishes a nested frame and suspends, so the simulator runs a nested C++ frame in
+//   the middle of the outer delivery; weave <= 1.1.0 came back from it with no current task and the
+//   next blocking C++ callback threw "weave: blocking primitive outside task context" (fixed by
+//   keying task identity per simulation process in weave v1.2.0).
 //
 // After both sides finish their assertions, run_cpp_tests in tests/sv/shuttle_tests.sv renders the
 // verdict.
 
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <shuttle/shuttle.hpp>
 #include <string>
@@ -61,9 +68,13 @@ SHUTTLE_REFLECT(XMsg, addr, data)
 
 namespace {
 
-constexpr const char* kReadyTopic = "xlang.sv_ready";  // SV → C++ ready broadcast (retained)
-constexpr const char* kToSvTopic = "xlang.cpp2sv";     // C++ → SV
-constexpr const char* kFromSvTopic = "xlang.sv2cpp";   // SV → C++
+constexpr const char* kReadyTopic = "xlang.sv_ready";      // SV → C++ ready broadcast (retained)
+constexpr const char* kToSvTopic = "xlang.cpp2sv";         // C++ → SV
+constexpr const char* kFromSvTopic = "xlang.sv2cpp";       // SV → C++
+constexpr const char* kMixedTopic = "xlang.mixed.tx";      // mixed target set: SV sink + C++ subs
+constexpr const char* kMixedMonTopic = "xlang.mixed.mon";  // published by the SV sink itself
+constexpr const char* kMixedReadyTopic =
+    "xlang.mixed.ready";  // SV → C++ ready broadcast (retained)
 
 // State shared across cases (subscription handles must outlive the test, so they live in a heap
 // holder)
@@ -75,6 +86,14 @@ struct XlangState {
   std::vector<std::uint64_t> seqs;
   std::vector<std::string> tags;
   std::size_t ready_frames = 0;
+
+  // case6 state: the mixed target set
+  shuttle::Subscription mixed_ready;
+  shuttle::Subscription mixed_victim;
+  shuttle::Subscription mixed_monitor;
+  weave::Event mixed_ready_ev;
+  std::size_t mixed_hits = 0;      // the C++ subscriber that blocks after the SV sink ran
+  std::size_t mixed_mon_hits = 0;  // receives the frame the SV sink publishes from its callback
 };
 
 }  // namespace
@@ -172,6 +191,67 @@ WEAVE_TEST(xlang_tests) {
     expect_eq(static_cast<long long>(resps.at(0).data), 41, "answer computed on the SV side");
     expect_eq(static_cast<long long>(client.stale_responses()), 0,
               "the corr_id matched the live call, nothing landed as stale");
+  });
+
+  // case6: a mixed target set — SV blocking entry first, blocking C++ subscribers after it. The SV
+  // sink publishes a nested frame and suspends for one time step, so a nested C++ frame runs inside
+  // the outer delivery; with the frame identity not restored (weave <= 1.1.0) the *next* C++
+  // callback that blocks fails with "weave: blocking primitive outside task context" and shows up
+  // as a subscriber failure instead of a delivery.
+  run_case(__func__, "case6", [st] {
+    st->mixed_ready = shuttle::subscribe_bytes(
+        kMixedReadyTopic,
+        shuttle::nb([st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
+          expect(bytes.size() == 8, "the mixed ready frame wire length should be 8 bytes");
+          expect(meta.type_tag == "XMsg", "the mixed ready frame type tag comes from XMsg");
+          st->mixed_ready_ev.set();
+        }));
+    for (int i = 0; i < 2000 && !st->mixed_ready_ev.is_set(); ++i) weave::sleep(100_us);
+    expect(st->mixed_ready_ev.is_set(),
+           "never saw the SV-side ready broadcast (xlang.mixed.ready) — the SV sink registers on "
+           "the topic before it broadcasts, so the frame has an SV target ahead of the C++ ones");
+
+    // Both C++ subscribers block. The victim is the one that used to blow up: it is served after
+    // the SV entry, whose callback has already forced a nested C++ frame through the simulator.
+    st->mixed_victim =
+        shuttle::subscribe<XMsg>(kMixedTopic, [st](const XMsg&, const shuttle::Meta&) {
+          ++st->mixed_hits;
+          weave::sleep(1_us);
+        });
+    st->mixed_monitor =
+        shuttle::subscribe<XMsg>(kMixedMonTopic, [st](const XMsg&, const shuttle::Meta&) {
+          ++st->mixed_mon_hits;
+          weave::sleep(1_us);
+        });
+
+    shuttle::Publisher<XMsg> pub(kMixedTopic);
+    auto h = pub.publish_serial(XMsg{0xA1, 0xB2});
+    h.wait();
+    for (const auto& f : h.failures()) {
+      std::string why = "unknown";
+      try {
+        std::rethrow_exception(f.error);
+      } catch (const std::exception& e) {
+        why = e.what();
+      } catch (...) {
+      }
+      std::printf("[xlang] mixed subscriber failed: %s: %s\n", f.subscriber.c_str(), why.c_str());
+    }
+    expect_eq(static_cast<long long>(h.subscriber_count()), 2,
+              "the mixed frame goes to the SV sink and the C++ subscriber");
+    expect(h.done(), "the mixed publication should reach its terminal state");
+    expect(
+        h.failures().empty(),
+        "no subscriber may fail when the SV entry runs ahead of the C++ ones (task identity must "
+        "survive the nested frame, see weave v1.2.0)");
+    expect_eq(static_cast<long long>(st->mixed_hits), 1, "the C++ subscriber blocks and completes");
+    expect_eq(static_cast<long long>(st->mixed_mon_hits), 1,
+              "the frame published from inside the SV callback reaches a C++ subscriber");
+
+    // The SV sink must have been served first; that ordering is what the case is about.
+    auto info = shuttle::broker::topic_info(kMixedTopic);
+    expect(info.has_value(), "the mixed topic should be registered");
+    expect_eq(static_cast<long long>(info->delivered), 2, "both targets were served");
   });
 
   report(__func__);
