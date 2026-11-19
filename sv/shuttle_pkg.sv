@@ -56,6 +56,9 @@ package shuttle_pkg;
   // event table (weave_sv_create_event / _trigger): shuttle_mailbox is
   // implemented on top of them, entirely in SV (it adds no DPI entry point).
   // weave_pkg.sv must be compiled first (tests/svdpi/run.sh and examples do).
+  // A testbench that wants the deferred-publish recipe (weave_edge) imports weave_pkg itself: VCS
+  // 2018.09 does not propagate this import through `export weave_pkg::*`, so there is no point
+  // relying on re-export (verified).
   import weave_pkg::*;
 
   // ── DPI: imports (provided by libshuttle.so on the C++ side) ───────────
@@ -65,10 +68,10 @@ package shuttle_pkg;
       string topic, string type_tag, byte payload[], int now_policy, int unsigned corr_id = 0);
   import "DPI-C" context function int shuttle_c_publish_serial(
       string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg,
-      int unsigned corr_id = 0);
+      string trig_name, int unsigned corr_id = 0);
   import "DPI-C" context function int shuttle_c_publish_concurrent(
       string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg,
-      int unsigned corr_id = 0);
+      string trig_name, int unsigned corr_id = 0);
   import "DPI-C" context task shuttle_c_wait_pub(
       int pub_id, longint timeout_fs, output int status);
   import "DPI-C" context function int shuttle_c_pub_done(int pub_id);
@@ -92,11 +95,6 @@ package shuttle_pkg;
   import "DPI-C" context function int shuttle_c_frame_len();
   import "DPI-C" context function longint shuttle_c_frame_qword(int index);
 
-  // Cross-language events: DPI entries of the C++-side event registry (used by shuttle_event)
-  import "DPI-C" context function int shuttle_c_event_create();
-  import "DPI-C" context function void shuttle_c_event_set(int ev_id);
-  import "DPI-C" context function void shuttle_c_event_destroy(int ev_id);
-
   // ── DPI: exports (provided by this package, called back by the C++ broker) ──
   // Same precedent as weave: exports live inside the package (verified on
   // VCS); if a target simulator rejects in-package exports, move these two
@@ -115,10 +113,13 @@ package shuttle_pkg;
   localparam int SHUTTLE_NOW_SKIP   = 1;  // skip these subscribers: not in subscriber_count(), only in skipped()
   localparam int SHUTTLE_NOW_DEFER  = 2;  // default: hand to the topic's background serial chain, callback later
   // Trigger kinds (trig_kind argument of shuttle_c_publish_serial / _concurrent)
+  // An external edge is the one case that needs a name instead of a number: `trig_name` carries it
+  // (empty for every other kind). The name is the whole binding — C++ asks weave's own edge table
+  // for it, so no id ever crosses the DPI boundary.
   localparam int SHUTTLE_TRIG_NONE  = 0;  // start immediately
   localparam int SHUTTLE_TRIG_DELAY = 1;  // trig_arg = simulation delay (femtoseconds)
-  localparam int SHUTTLE_TRIG_EVENT = 2;  // trig_arg = C++-side event handle id (weave/shuttle Event)
-  localparam int SHUTTLE_TRIG_PUB   = 3;  // trig_arg = the pub_id of another Publication
+  localparam int SHUTTLE_TRIG_PUB   = 2;  // trig_arg = the pub_id of another Publication
+  localparam int SHUTTLE_TRIG_EDGE  = 3;  // trig_name = name of a weave_edge (edge semantics)
   // status output of shuttle_c_wait_pub
   localparam int SHUTTLE_WAIT_OK      = 0;  // all completed (not necessarily failure-free)
   localparam int SHUTTLE_WAIT_TIMEOUT = 1;
@@ -553,46 +554,6 @@ package shuttle_pkg;
     endfunction
   endclass
 
-  // ── Cross-language event handle (the C++-side registry owns the underlying
-  //    object; the C++ side waits on it with weave::Pulse) ─────────────────
-  // The underlying object resides in the C++-side registry (held by C++; SV
-  // only holds the id): the SV-side set() wakes TRIG_EVENT delivery units
-  // already waiting on it; it can also serve as the trigger condition of
-  // shuttle_trigger::after_event(id) (below).
-  // Semantics are those of `-> ev`, not of a latch: set() releases the waiters
-  // present at that moment and leaves nothing behind, so a set() with no waiter
-  // (or a set() issued in the same process step as the publish that arms the
-  // trigger, before the delivery unit got to run) is lost — the frame stays
-  // pending until the next set().
-  // There is no public C++ entry that waits by id: C++ code uses its own
-  // weave::Event + after().
-  class shuttle_event;
-    local int id_;
-    local bit active_;
-    function new();
-      id_ = shuttle_c_event_create();
-      active_ = (id_ > 0);
-      if (!active_) $error("shuttle: failed to create event: %s", shuttle_c_last_error());
-    endfunction
-    function int id();
-      return id_;
-    endfunction
-    function bit valid();
-      return active_;
-    endfunction
-    // Wake the waiters present right now (SV `-> ev`: a set with no waiter is
-    // lost, it does not latch)
-    function void set();
-      if (active_) shuttle_c_event_set(id_);
-    endfunction
-    // Explicit release (may be omitted at end of simulation; dies with the process)
-    function void close();
-      if (!active_) return;
-      active_ = 0;
-      shuttle_c_event_destroy(id_);
-    endfunction
-  endclass
-
   // ── Deferred trigger (corresponds to shuttle::Trigger) ─────────────────
   // Snapshot semantics match C++: the subscriber set and the message copy are
   // locked in at the moment of the publish call; the trigger only decides when
@@ -600,6 +561,8 @@ package shuttle_pkg;
   class shuttle_trigger;
     int     kind = SHUTTLE_TRIG_NONE;
     longint arg  = 0;
+    // NB: not named `edge` — VCS 2018.09 rejects it as a reserved word (as with `small`).
+    string  edge_name = "";
     static function shuttle_trigger none();
       shuttle_trigger t = new();
       return t;
@@ -611,21 +574,23 @@ package shuttle_pkg;
       t.arg  = fs;
       return t;
     endfunction
-    // Event handle id (created only on the SV side; the C++ side waits by id,
-    // see detail::event_wait_id). Pass an explicit id for a shuttle_event:
-    // after_event(ev.id()) (a class handle and an int support only a single
-    // implicit conversion; VCS rejects the two as overloads)
-    static function shuttle_trigger after_event(int ev_id);
-      shuttle_trigger t = new();
-      t.kind = SHUTTLE_TRIG_EVENT;
-      t.arg  = ev_id;
-      return t;
-    endfunction
     // Another publication completes (success or failure both count as done)
     static function shuttle_trigger after_pub(shuttle_handle h);
       shuttle_trigger t = new();
       t.kind = SHUTTLE_TRIG_PUB;
       t.arg  = h.id();
+      return t;
+    endfunction
+    // A weave edge (clock/reset/any handshake) fires. Only the *name* crosses the boundary: C++
+    // resolves it in weave's edge table, so the edge stays one object for both languages.
+    // Edge semantics, not a latch: a fire() that happens before the frame's delivery process has
+    // registered its wait is lost, and the frame stays pending until the next fire().
+    static function shuttle_trigger after_edge(weave_edge e);
+      shuttle_trigger t = new();
+      if (e == null || e.id < 0)
+        $error("shuttle: after_edge needs a live weave_edge (pass `new(\"name\")`)");
+      t.kind = SHUTTLE_TRIG_EDGE;
+      t.edge_name = (e == null) ? "" : e.name;
       return t;
     endfunction
   endclass
@@ -659,12 +624,15 @@ package shuttle_pkg;
     endfunction
 
     // Trigger → (trig_kind, trig_arg) scalars; null means start immediately
-    local function void trig_scalars(shuttle_trigger trig, output int kind, output longint arg);
+    local function void trig_scalars(shuttle_trigger trig, output int kind, output longint arg,
+                                    output string name);
       kind = SHUTTLE_TRIG_NONE;
       arg  = 0;
+      name = "";
       if (trig != null) begin
         kind = trig.kind;
         arg  = trig.arg;
+        name = trig.edge_name;
       end
     endfunction
 
@@ -711,9 +679,10 @@ package shuttle_pkg;
       byte payload[];
       int kind;
       longint arg;
-      trig_scalars(trig, kind, arg);
+      string name;
+      trig_scalars(trig, kind, arg, name);
       pack_payload(msg, payload);
-      return wrap(shuttle_c_publish_serial(topic_, T::type_tag, payload, kind, arg, 0),
+      return wrap(shuttle_c_publish_serial(topic_, T::type_tag, payload, kind, arg, name, 0),
                   "serial", 1'b1);
     endfunction
 
@@ -723,9 +692,10 @@ package shuttle_pkg;
       byte payload[];
       int kind;
       longint arg;
-      trig_scalars(trig, kind, arg);
+      string name;
+      trig_scalars(trig, kind, arg, name);
       pack_payload(msg, payload);
-      return wrap(shuttle_c_publish_concurrent(topic_, T::type_tag, payload, kind, arg, 0),
+      return wrap(shuttle_c_publish_concurrent(topic_, T::type_tag, payload, kind, arg, name, 0),
                   "concurrent", 1'b1);
     endfunction
 

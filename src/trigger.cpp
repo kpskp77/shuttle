@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 #include <weave/event.hpp>
+#include <weave/sv.hpp>
 #include <weave/task.hpp>
 #include <weave/time.hpp>
 
@@ -20,6 +21,21 @@ Trigger after(weave::Event& ev) {
   // std::function instantiates against a const target: forward the non-const wait() via shared_ptr
   auto evp = std::make_shared<weave::Event>(ev);
   return Trigger([evp]() { evp->wait(); });
+}
+
+Trigger after(weave::Pulse& p) {
+  // Same const-target constraint as above: forward through shared_ptr (a Pulse is a shared pimpl,
+  // so the copy is cheap).
+  auto pp = std::make_shared<weave::Pulse>(p);
+  return Trigger([pp]() { pp->wait(); });
+}
+
+Trigger after(weave::sv::Edge& e) {
+  // Holding the Edge (not an id) keeps the name alive for the lifetime of the trigger and goes
+  // through Edge::wait(), i.e. weave's own suspend path (cancellation injection, wait graph) —
+  // waiting on a raw id would bypass both.
+  auto ep = std::make_shared<weave::sv::Edge>(e);
+  return Trigger([ep]() { ep->wait(); });
 }
 
 Trigger after(weave::duration d) {

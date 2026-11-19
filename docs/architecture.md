@@ -97,7 +97,7 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 | `src/detail/publication.hpp` | `Publication::Impl` 与 `detail_pub_access`，供 API 和 svdpi 门面包装/反查句柄（不安装） |
 | `src/backend/svdpi/facade.cpp` | 外部门面：`ext_pub_*`（字节帧）/ `ext_sub` / `ext_unsub` / 按 `pub_id` 的 `pub_*` 查询 / `Event` 注册表 / FFI 错误通道。与 dpi.cpp 分层：这里只做 broker 编排，不做 DPI 翻译。**svdpi 专属**（systemc 不编译本文件） |
 | `src/backend/svdpi/bridge.cpp` | `detail::backend` 的 svdpi 实现：`dispatch` / `dispatch_nb` / `note_retired_delivery` + 帧拉取（`frame_len` / `frame_qword`） |
-| `src/backend/svdpi/svdpi_internal.hpp` | svdpi 目录私有头：包名宏、`SvScopeGuard`、`FrameContext` + 外部门面声明（`ext_*` / `pub_*` / 事件注册表 / `set_last_error`） |
+| `src/backend/svdpi/svdpi_internal.hpp` | svdpi 目录私有头：包名宏、`SvScopeGuard`、`FrameContext` + 外部门面声明（`ext_*` / `pub_*` / `set_last_error`） |
 | `src/backend/svdpi/dpi.cpp` | `shuttle_c_*` 的全部 DPI 导出面（import 被仿真器调用、export 反过来调仿真器） |
 | `src/backend/systemc/bridge.cpp` | systemc 后端：`detail::backend` 的退化实现 |
 | `src/trigger.cpp` | `Trigger` 工厂（`after` / `after_all` / `after_any`） |
@@ -678,7 +678,7 @@ class WeaveScopeGuard = SvScopeGuard;        // 驱动 weave 的 import 入口�
 门面整体是 svdpi 后端的一部分（永不会有第二个 FFI 调用方），但它刻意不认识 DPI：
 只经 `broker/broker.hpp` 的 `Broker` 编程，svdpi 语义全留在 dpi.cpp。由此得到知识不对称
 规则：**svdpi 目录可见 broker 内部，systemc 后端只经 `backend/backend.hpp` 窄口**。
-systemc 构建根本不编译 facade.cpp（外部门面 + 事件注册表 + FFI 错误通道都是它的死代码），
+systemc 构建根本不编译 facade.cpp（外部门面 + FFI 错误通道都是它的死代码），
 不对称没有运行时后果，只是文档里要说实话。
 
 包名可用 `-DSHUTTLE_SV_PACKAGE=` / `-DSHUTTLE_WEAVE_SV_PACKAGE=` 覆盖。
@@ -745,7 +745,6 @@ broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV
 | `Subscription` | `shared_ptr<Impl>`，**最后一份副本析构即退订**（`Impl::~Impl` → `Broker::remove_sub`）；`unsubscribe()` 幂等 |
 | `shuttle_sub`（SV） | `id_` + `active_`，`unsubscribe()` 幂等；销毁不退订（SV 无确定性析构） |
 | `shuttle_handle`（SV） | 持 `pub_id`，方法名与 `Publication` 对应：`wait_done(timeout_fs)` / `done()` / `subscriber_count()` / `finished()` / `skipped()` / `deferred()` / `retired()` / `first_error()` |
-| `shuttle_event`（SV） | C++ 注册表持有的 id，`set()` / `close()`；`set()` 是**边沿**（等价于 SV `-> ev`，底层 `weave::Pulse`），没有等待者时该次 set 丢失、不闩住，因此 `after_event(ev)` 只被 set 之后的帧看到 |
 
 退订即生效：它立刻把订阅者移出目标集（此后的帧不再选中它），也让**已快照**但尚未投递的帧
 跳过它——这些投递记 `retired`（不是失败，也不是 `delivered`）。两种语言同一口径；实现与来源
@@ -760,15 +759,43 @@ broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV
 | --- | --- |
 | 空 `Trigger` | 立即 |
 | `after(weave::duration)` | `weave::sleep(d)`，与其他触发单元互不影响 |
-| `after(weave::Event&)` | 等待该事件置位（C++ 侧没有按 id 等待 SV 事件的入口：事件句柄 `shuttle_event` 是 SV 侧的） |
+| `after(weave::Event&)` | 等待该事件置位（闩锁语义；**仅 C++**：`weave::Event` 是 C++ 侧对象，事件 id 不过 DPI 边界） |
+| `after(weave::Pulse&)` | 等待脉冲（边沿语义，fire 早于登记即丢失；纯进程内，不占名字表） |
+| `after(weave::sv::Edge&)` | 等待命名跨语言边沿：SV 侧同一个对象是 `weave_edge`，两侧共享 weave 的名字表（**只有名字过 DPI**） |
 | `after(const weave::Task&)` | 等待任务到达终态（不重抛其异常） |
 | `after_all(vector<Trigger>)` | 依次等待；任一子触发器抛异常（取消除外）立即中断，后续不再等待 |
 | `after_any(vector<Trigger>)` | 每个子触发器各建 task 竞速，先落定者置位（取消与失败也算落定）；空集合立即满足 |
 
-SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 过 DPI：`NONE` / `DELAY(fs)` /
-`EVENT(ev_id)` / `PUB(pub_id)`。等待发生在投递单元内部（`wait_trigger`），因此触发等待
-期间可以继续发布、订阅与退订；帧内容与目标集合在发布瞬间已快照。例外是 `after_any`：
-竞速 task 在 `after_any()` 调用点即创建，它们只等子触发器、不接触帧。
+SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 并额外带一个 `trig_name` 过 DPI：
+`NONE` / `DELAY(fs)` / `PUB(pub_id)` / `EDGE(trig_name)`（其余 kind 的 `trig_name` 为 `""`）。等待
+发生在投递单元内部（`wait_trigger`），因此触发等待期间可以继续发布、订阅与退订；帧内容与目标
+集合在发布瞬间已快照。例外是 `after_any`：竞速 task 在 `after_any()` 调用点即创建，它们只等子
+触发器、不接触帧。
+
+**`EDGE` 过界的是名字，不是 id**。SV 侧 `shuttle_trigger::after_edge(weave_edge e)` 只把 `e.name`
+交出去；C++ 侧 `weave::sv::Edge(trig_name)` 在 weave 自己的名字表里 find-or-insert（`src/core/sv.cpp`
+的 `registry()`），于是两侧拿到同一个 id，而 shuttle **不持有任何事件对象、也没有按 id 恢复的
+接口**（`shuttle_event` + `shuttle_c_event_*` + `SHUTTLE_TRIG_EVENT` 曾经是一个影子事件系统，
+已删）。等待走 `Edge::wait()` 而不是原始 `weave_sv_wait`，从而继承 weave 的挂起记账：取消注入、
+等待图、以及"挂起时无当前任务"（`current_task()` 为空）——最后一条正是不变 5 的自等待检出
+所需要的。
+
+边沿语义由 weave 定义（`fire()` 早于等待登记即丢失，不闩住），因此同一个触发单元在 `fire()`
+之前不会放行，帧保持 pending 直到下一次 `fire()`；要"闩住"用 `after(weave::Event&)` /
+`after_pub`。`after(weave::sv::Edge&)` 与后端无关：`Edge::fire()` 走 port，所以 C++ 自己 fire 时
+systemc 后端也成立，只有"必须由 SV 侧 fire"才依赖 svdpi。
+
+纯 SV 的等价配方（不需要触发语义时更省一层：目标集合与载荷在 fire 时刻才快照）：
+
+```systemverilog
+weave_edge e = new("uart0.mon.edge");          // 一条边沿，run 内不销毁，C++ 侧可按名共享
+fork begin e.wait_edge(); pub.publish_serial(tx); end join_none
+```
+
+两种写法的差别只在快照点：`after_edge` 在**发布调用**时锁定目标集合与载荷（因此发布之后才注册
+的订阅者不是本帧目标，且能进 `after_all`/`after_any`、拿得到 `shuttle_handle`），上面的配方在
+**fire 时刻**发布。延迟帧本来就在触发时刻入队（不变 12），"同 topic 的后台顺序 = 入队顺序"两种
+写法都不受影响。
 
 ## 15. 诊断与已知限制
 

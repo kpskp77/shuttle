@@ -10,7 +10,7 @@ just build          # 按当前后端构建
 just sc             # systemc 后端本地跑（预期末行 "WEAVE TEST PASSED"）
 just vcs            # svdpi 后端 + 真实 VCS 仿真（预期 "SHUTTLE CPP DEMO PASSED"）
 just test           # 示例：两个后端都过一遍
-just test-all       # 测试套件：systemc 全套（81 用例）+ VCS 全套（81 用例 + 103 个 SV 断言）
+just test-all       # 测试套件：systemc 全套（83 用例）+ VCS 全套（83 用例 + 106 个 SV 断言）
 ```
 
 `tests/svdpi/run.sh` 在没有 vcs 的机器上会打印 `[svdpi-test] skipped` 并以 0 退出，
@@ -118,12 +118,22 @@ just test-all       # 测试套件：systemc 全套（81 用例）+ VCS 全套�
     面"**——超时会说谎。别把它放宽成警告：这是注册期早失败，和不变 4 同一口径；也别改成投递
     时检查（那时已经晚了）。名字本身仍然公开（`resp_topic()`、跨语言硬编码都合法），手工往回执
     topic 发布也合法，只有"blocking 旁观"被禁。
-    回执必须用 `detail::pub_now` 发（`serve` 与 SV `shuttle_pub::reply` 都是），因为：
+   回执必须用 `detail::pub_now` 发（`serve` 与 SV `shuttle_pub::reply` 都是），因为：
     (a) `nb(handler)` 响应者 + `send_now()` 因此能给出"返回即可用"的零 RTT（`send_now` 返回时
     `call.queued() == 1`，仿真时间不推进）；(b) 回执不占链尾，旁观者再慢也咬不动请求方。
     `NowPolicy::defer` 只是兜底（标记之前就注册的 blocking 订阅者）。由此 `publish_now` 有递归
     风险：回调在发布者栈上跑，A↔B 互相发布就是无诊断的栈溢出，所以 `dispatch_now` 必须有
     重入深度上限（`kMaxNowDepth`，抛 `PublishError`）——删它等于把环变成崩溃。
+
+15. **边沿触发只传名字**：`SHUTTLE_TRIG_EDGE` 的 `trig_name` 是 weave 边沿名（SV
+    `weave_edge.name`），C++ 侧用 `weave::sv::Edge(name)` 在 weave 自己的名字表里 find-or-insert，
+    两侧因此共享同一个 id —— **shuttle 不持有任何事件对象、也没有按 id 恢复的入口**（曾经的
+    `shuttle_event` + `shuttle_c_event_*` + `SHUTTLE_TRIG_EVENT` 那个影子事件系统已删，别以任何
+    形式复活：id 一旦跨 DPI，就得有人维护"id → 事件"的表，并因此失去早失败与所有权单一）。等待
+    必须走 `Edge::wait()` / `Pulse::wait()`（weave 的挂起点），不要直接调 `weave_sv_wait`——后者
+    绕过取消注入、等待图和"挂起时无当前任务"，会让不变 5 的自等待检出失效。语义是**边沿**而不是
+    闩锁：`fire()` 早于等待登记即丢失（要闩锁用 `after(weave::Event&)`）。VCS 2018.09 把 `edge` 当
+    保留字，SV 侧字段名是 `edge_name`。
 
 ## 运行环境的坑（已踩）
 
@@ -132,7 +142,7 @@ just test-all       # 测试套件：systemc 全套（81 用例）+ VCS 全套�
 - `/home/penn/.synopsys/bin/vcs` 是 docker shim；容器只 identity-mount `~/workspace` 等目录，
   `/tmp` 对仿真器不可见——探针文件放仓库内。
 - 容器内 simv 的 stderr 会被吞，排查时用 `$display` 或把日志写到 `build/` 下的文件。
-- VCS 2018.09 的 SV 解析器把 `small` 当保留字（Verilog-AMS 关键字），不能作变量名；
+- VCS 2018.09 的 SV 解析器把 `small`、`edge` 当保留字（Verilog-AMS 关键字），不能作变量名；
   报错位置常指向相邻 token（`automatic shuttle_mailbox small = new(...)` 报 token is 'small'）。
 - VS Code IntelliSense（`.vscode/c_cpp_properties.json`）：`compilerPath` 必须是 **`/usr/bin/g++`**
   （写 `gcc` 时只拿到 C 的系统头目录，报"找不到 `<string>`"）；`compileCommands` 要写成
@@ -179,7 +189,7 @@ just test-all       # 测试套件：systemc 全套（81 用例）+ VCS 全套�
   带 FFI 通道的后端（且永不会有第二个 FFI 调用方），其目录额外可见 broker 内部
   （include `broker/broker.hpp` 与 `detail/publication.hpp`），外部门面就住在那里（见下条）。
 - `src/backend/svdpi/facade.cpp` 是外部门面（`ext_*` / 按 `pub_id` 的 `pub_*` /
-  跨语言事件注册表 `event_registry_*` / FFI 错误通道 `set_last_error`）：svdpi 专属，
+  FFI 错误通道 `set_last_error`）：svdpi 专属，
   systemc 构建不编译它；与 dpi.cpp 分层（这里只做 broker 编排，不做 DPI 翻译）。
   `src/publication.cpp`、`src/subscription.cpp` 与 `src/broker/` 因此只剩纯 C++ 路径，
   不认识任何外部通道。

@@ -95,9 +95,16 @@ module shuttle_demo;
       $error("subscriber failure(s) present: %s", h.first_error());
 
     // ── Other trigger forms ──────────────────────────────────────────────────
-    // shuttle_trigger::after_event(ev_id) —— wait for a C++-side weave::Event (handle id)
     // shuttle_trigger::after_pub(h)       —— follow another Publication to completion
+    // shuttle_trigger::after_edge(e)      —— wait for a weave edge (clock, reset, handshake):
+    //   automatic weave_edge e = new("uart0.mon.edge");
+    //   h = pub.publish_serial(tx, shuttle_trigger::after_edge(e));  // snapshot taken here
+    //   ...; e.fire();                                               // callbacks start now
+    // Only the edge *name* crosses into C++ (weave's own name table resolves it), and an edge is
+    // not a latch: a fire() with no armed waiter is lost, exactly like `-> ev`.
     // Publishing immediately is equivalent to shuttle_trigger::none() or omitting the trig argument.
+    // If you do not need the trigger snapshot, the cheaper recipe is to publish from the waiter —
+    //   fork begin e.wait_edge(); pub.publish_serial(tx); end join_none
 
     // ── retained (latched): once enabled, a new subscriber receives the latest frame replayed at registration time (here we only flip the switch) ────
     pub.set_retained(1);

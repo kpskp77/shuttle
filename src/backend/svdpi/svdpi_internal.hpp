@@ -172,15 +172,4 @@ void pub_check_self_blocked(int pub_id);
 // missed.
 void pub_on_complete(int pub_id, std::function<void()> fn);
 
-// ── Event registry (SV shuttle_event / TRIG_EVENT; semantically SV-specific,
-//    hence living in this directory) ──
-// event_wait_id: the wait entry of TRIG_EVENT (must be called in a weave task
-// context).
-void event_wait_id(int ev_id);
-// The underlying objects of SV-side shuttle_events are owned by the registry
-// (they stay valid until close).
-int event_registry_create();
-void event_registry_set(int ev_id);
-void event_registry_destroy(int ev_id);
-
 }  // namespace shuttle::detail

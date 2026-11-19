@@ -25,6 +25,10 @@
 #include <weave/task.hpp>
 #include <weave/time.hpp>
 
+namespace weave::sv {
+class Edge;  // include/weave/sv.hpp (only forward-declared here: plain C++ users never need it)
+}  // namespace weave::sv
+
 namespace shuttle {
 
 namespace detail {
@@ -50,6 +54,8 @@ private:
   std::function<void()> fn_;  // may be awaited concurrently by multiple dispatch processes
 
   friend Trigger after(weave::Event& ev);
+  friend Trigger after(weave::Pulse& p);
+  friend Trigger after(weave::sv::Edge& e);
   friend Trigger after(weave::duration d);
   friend Trigger after(const weave::Task& t);
   friend Trigger after_all(std::vector<Trigger> trigs);
@@ -57,10 +63,22 @@ private:
   friend struct detail::TriggerAccess;
 };
 
-// Wait for an event to be set (on the C++ side always a weave::Event; the SV
-// side's event handle `shuttle_event` is a different, id-referenced thing —
-// C++ does not hold it, see shuttle_event)
+// Wait for a C++ event to be set (always a weave::Event, which is sticky). For a cross-language or
+// single-shot edge use after(Pulse) / after(sv::Edge) below.
 Trigger after(weave::Event& ev);
+
+// Wait for a weave::Pulse to fire. A Pulse is edge semantics, not a latch: a fire() that lands
+// before the frame's delivery process has registered its wait is lost and the frame stays pending
+// until the next fire(). It is the in-process counterpart of sv::Edge (no name table, no DPI).
+Trigger after(weave::Pulse& p);
+
+// Wait for a named cross-language edge (weave::sv::Edge) to fire — the form the SV side reaches as
+// `shuttle_trigger::after_edge(new("clk"))`. The Edge constructor is a find-or-insert into weave's
+// own name table, so whichever side creates it first, both sides wait on the same id; no id ever
+// crosses the DPI boundary (only the name does). Same edge semantics as after(Pulse).
+// Works on both backends as long as *someone* fires it: Edge::fire() goes through the port, so a
+// C++-owned edge needs no SystemVerilog at all.
+Trigger after(weave::sv::Edge& e);
 
 // Wait for a simulation-time delay
 Trigger after(weave::duration d);

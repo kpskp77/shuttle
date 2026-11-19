@@ -36,7 +36,8 @@ WEAVE_TEST(trigger_demo) {
   // ── Simulation-delay trigger: the callback process starts only after 100ns ──
   auto h1 = pub.publish_serial(Alarm{1}, shuttle::after(100_ns));
 
-  // ── Event trigger: starts when the weave::Event is set (SV counterpart: TRIG_EVENT) ───────
+  // ── Event trigger: starts when the weave::Event is set (C++-only: no SV counterpart, since an
+  //    event id is never handed across the DPI boundary — SV arms a weave_edge instead) ────────
   weave::Event ev;
   auto h2 = pub.publish_concurrent(Alarm{2}, shuttle::after(ev));
   if (h2.done()) throw std::logic_error("trigger_demo: must not complete before the event fires");

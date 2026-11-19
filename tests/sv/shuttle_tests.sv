@@ -24,6 +24,7 @@ module shuttle_tests;
   timeprecision 1ps;
 
   import shuttle_pkg::*;
+  import weave_pkg::*;  // weave_edge for the deferred-publish recipe (case_event)
 
   int unsigned g_pass = 0;
   int unsigned g_fail = 0;
@@ -542,53 +543,80 @@ module shuttle_tests;
     endtask
   endclass
 
-  // ── shuttle_event: set() releases deliveries triggered by it; close() frees the id in the C++ registry ──
+  // ── Deferred publish on an external edge: arm a weave_edge and publish from its waiter ──────────
+  // There is no event trigger any more, so this *is* the documented recipe: the edge stays on the
+  // SV side (it never crosses the DPI boundary) and the frame is published when the edge fires.
+  // Note the edge semantics it inherits from weave: a fire() with no waiter is lost, so the waiter
+  // has to be armed before the fire.
   task automatic case_event();
-    automatic shuttle_event       ev  = new();
+    automatic weave_edge          ev  = new("sv.t.ev.edge");
     automatic Rec                 rec = new();
     automatic shuttle_sub         sub = shuttle_subscribe("sv.t.ev", rec, "XMsg");
     automatic shuttle_pub #(XMsg) pub = new("sv.t.ev");
     automatic XMsg                m   = new();
-    automatic shuttle_handle      h;
-    check(ev.valid() == 1, "event.created");
     m.addr = 32'hE0;
     m.data = 32'h0;
-    h = pub.publish_serial(m, shuttle_trigger::after_event(ev.id()));
-    check(rec.blk_count == 0, "event.not_before_set");
+    fork
+      begin
+        ev.wait_edge();
+        pub.publish_serial(m);
+      end
+    join_none
     #(10ns);
-    check(rec.blk_count == 0, "event.still_waiting");
-    ev.set();
-    h.wait_done();
-    check(rec.blk_count == 1, "event.delivered_after_set");
+    check(rec.blk_count == 0, "event.not_before_fire");
+    ev.fire();
+    for (int i = 0; i < 1000 && rec.blk_count == 0; i++) #(1ns);
+    check(rec.blk_count == 1, "event.delivered_after_fire");
     check(rec.last.addr == 32'hE0, "event.payload");
-    ev.close();            // goes to shuttle_c_event_destroy
-    check(ev.valid() == 0, "event.closed");
-    ev.set();              // already closed: must be a no-op, must not touch the freed id
+    ev.fire();  // nobody is armed now: a fire with no waiter is lost, it does not latch
+    #(100ns);
+    check(rec.blk_count == 1, "event.fire_without_waiter_lost");
     sub.unsubscribe();
   endtask
 
-  // ── shuttle_event edge semantics: set() with no waiter is lost (SV `-> ev`, not a latch) ────────
-  // Pinned because the C++ side waits on a weave::Pulse: a sticky flag here would silently release
-  // deliveries armed *after* the set, i.e. an edge that never belonged to them.
-  task automatic case_event_edge();
-    automatic shuttle_event       ev  = new();
-    automatic Rec                 rec = new();
-    automatic shuttle_sub         sub = shuttle_subscribe("sv.t.evedge", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.evedge");
-    automatic XMsg                m   = new();
+  // after_edge: the same weave_edge the C++ side reaches through weave::sv::Edge, but with *trigger*
+  // semantics — the snapshot (subscribers + payload) is taken at the publish call, not at fire time,
+  // which is exactly what the fork recipe above cannot give. Only the edge *name* crosses the DPI
+  // boundary (C++ finds it in weave's own table), and an edge is not a latch: a fire that lands
+  // before the delivery process registered its wait is lost.
+  task automatic case_edge_trigger();
+    automatic weave_edge          ev    = new("sv.t.ev.trig");
+    automatic Rec                 early = new();
+    automatic Rec                 late  = new();
+    automatic shuttle_sub         sub   = shuttle_subscribe("sv.t.ev.trig", early, "XMsg");
+    automatic shuttle_pub #(XMsg) pub   = new("sv.t.ev.trig");
+    automatic XMsg                m     = new();
+    automatic XMsg                m2    = new();
     automatic shuttle_handle      h;
-    m.addr = 32'hE1;
-    ev.set();                                  // nobody waiting yet: this edge is lost
-    h = pub.publish_serial(m, shuttle_trigger::after_event(ev.id()));
-    #(1us);
-    check(rec.blk_count == 0, "event.edge.not_latched");
-    check(h.done() == 0, "event.edge.frame_still_pending");
-    ev.set();                                  // the delivery unit is waiting by now
+    automatic shuttle_handle      h2;
+    automatic shuttle_sub         later;
+    m.addr  = 32'hA1;
+    m2.addr = 32'hA2;
+    h = pub.publish_serial(m, shuttle_trigger::after_edge(ev));
+    // subscribed *after* the publish: the snapshot was already taken, so this is not a target
+    later = shuttle_subscribe("sv.t.ev.trig", late, "XMsg");
+    #(10ns);
+    check(early.blk_count == 0, "edge_trigger.not_before_fire");
+    check(!h.done(), "edge_trigger.pending_before_fire");
+    ev.fire();
     h.wait_done();
-    check(rec.blk_count == 1, "event.edge.released_by_next_set");
-    check(rec.last.addr == 32'hE1, "event.edge.payload");
-    check(h.done() == 1 && h.first_error() == "", "event.edge.no_failure");
-    ev.close();
+    check(early.blk_count == 1, "edge_trigger.delivered_after_fire");
+    check(early.last.addr == 32'hA1, "edge_trigger.payload");
+    check(late.blk_count == 0, "edge_trigger.snapshot_at_publish");
+    check(h.finished() == 1, "edge_trigger.target_count");
+    check(h.first_error() == "", "edge_trigger.no_failure");
+
+    // no suspension between the publish and the fire, so the delivery process has not registered
+    // its wait yet: the edge is lost (unlike after_pub / a sticky event)
+    h2 = pub.publish_serial(m2, shuttle_trigger::after_edge(ev));
+    ev.fire();
+    #(10ns);
+    check(!h2.done(), "edge_trigger.lost_edge_does_not_latch");
+    ev.fire();
+    h2.wait_done();
+    check(early.blk_count == 2, "edge_trigger.second_fire_delivers");
+    check(early.last.addr == 32'hA2, "edge_trigger.second_payload");
+    later.unsubscribe();
     sub.unsubscribe();
   endtask
 
@@ -692,7 +720,7 @@ module shuttle_tests;
     case_bad_topic();
     case_snapshot();
     case_event();
-    case_event_edge();
+    case_edge_trigger();
     case_self_wait();
     case_mailbox();
     case_xlang();

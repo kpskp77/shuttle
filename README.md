@@ -221,7 +221,8 @@ if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 | --- | --- | --- |
 | 立即（默认） | 空 `Trigger{}` | `null` |
 | 固定延时 | `after(weave::duration)` | `shuttle_trigger::after_delay(fs)` |
-| 事件置位 | `after(weave::Event&)`（C++ 自己的事件） | `shuttle_trigger::after_event(ev.id())`（SV `shuttle_event`，**边沿**语义：`set()` 只唤醒此刻在等的帧，不会为之后注册的帧闩住） |
+| 事件置位（闩锁） | `after(weave::Event&)`（**仅 C++**） | —（SV 用下面的边沿） |
+| 边沿 | `after(weave::sv::Edge&)`（命名边沿，SV 侧同一个对象是 `weave_edge`，**只有名字过 DPI**）或 `after(weave::Pulse&)`（纯进内脉冲） | `shuttle_trigger::after_edge(edge)` |
 | 另一个发布完成 | `after(const weave::Task&)` 或经桥装配 | `shuttle_trigger::after_pub(h)` |
 | 全部满足 / 任一满足 | `after_all(vector)` / `after_any(vector)` | —（组合在 C++ 侧构造） |
 
@@ -236,7 +237,7 @@ if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 | `include/shuttle/publisher.hpp` | `Publisher<T>`：`publish_now` / `publish_serial` / `publish_concurrent` / `set_retained` |
 | `include/shuttle/subscription.hpp` | `subscribe<T>`（普通 / `nb()`）、`subscribe_bytes`、`Subscription` |
 | `include/shuttle/publication.hpp` | `Publication`：完成句柄、可见性计数、失败明细 |
-| `include/shuttle/trigger.hpp` | `Trigger`（`after(weave::Event&)` 等工厂） |
+| `include/shuttle/trigger.hpp` | `Trigger`（`after(weave::Event&)` / `after(weave::Pulse&)` / `after(weave::sv::Edge&)` 等工厂） |
 | `include/shuttle/types.hpp` | `Capability`、`NowPolicy`、`SubOptions`、`nb()` |
 | `include/shuttle/codec.hpp` | `Codec<T>`、`Reader`/`Writer`、`SHUTTLE_REFLECT` |
 | `include/shuttle/meta.hpp` | `Meta{topic_name, type_tag, topic_seq, corr_id, time_fs}`（`time_fs` 源于 `weave::now()`；时间没有 shuttle 自己的 API，直接用 `weave::now()`） |
@@ -244,7 +245,7 @@ if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 | `include/shuttle/exception.hpp` | `ShuttleError` 及其子类 |
 | `include/shuttle/detail/abi.hpp` | 类型擦除边界，供 `Publisher`/`subscribe` 模板使用；不直接 include |
 | `include/shuttle/detail/wait.hpp` | 内部原语：`wait_wake(ev, deadline)`（超时竞速），`mailbox`/`requester`/`Publication::wait(timeout)` 共用 |
-| `sv/shuttle_pkg.sv` | SV 侧：`shuttle_sink(_nb)`、`shuttle_pub#(T)`、`shuttle_sub`、`shuttle_handle`、`shuttle_trigger`、`shuttle_event`、注册表、DPI |
+| `sv/shuttle_pkg.sv` | SV 侧：`shuttle_sink(_nb)`、`shuttle_pub#(T)`、`shuttle_sub`、`shuttle_handle`、`shuttle_trigger`、注册表、DPI |
 
 ## 构建
 
@@ -274,8 +275,8 @@ xmake f --backend=svdpi   && xmake run shuttle_examples_svdpi_vcs   # 需 xmake 
 `tests/` 与 `examples/` 平行：示例示范用法，测试只断言行为（失败即 `[FAIL]`，整体判失败）。
 
 ```bash
-just test-sc    # systemc 后端：tests/cpp 46 个用例（跨语言用例不参与编译）
-just test-vcs   # VCS 后端：tests/cpp 49 个用例 + tests/sv 79 个断言
+just test-sc    # systemc 后端：tests/cpp 83 个用例（跨语言用例不参与编译）
+just test-vcs   # VCS 后端：tests/cpp 83 个用例 + tests/sv 106 个断言
 just test-all   # 两者都跑
 ```
 
@@ -288,7 +289,7 @@ just test-all   # 两者都跑
 | `tests/cpp/mailbox_tests.cpp` | 邮箱：`now` 同步填充、`serial`/`concurrent` 后台填充、超时不丢帧、三种溢出策略、`close` 唤醒、retained 回放、通配符、字节口味、请求-响应往返 |
 | `tests/cpp/trigger_tests.cpp` | `after(duration/Event/Task)`、`after_all` / `after_any`、触发等待期间退订（在途帧记 retired）、延迟帧不阻塞后续同 topic 帧、触发器由后续帧回调放行 |
 | `tests/cpp/xlang_tests.cpp` | 跨语言往返（仅 svdpi 后端）：就绪握手、双向各三帧、类型标签与 seq 单调 |
-| `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、订阅先于绑定的标签冲突、通配符 topic 发布被拒（`publish_now` 返回 null + last_error）、快照、`shuttle_event`、跨语言往返 |
+| `tests/sv/shuttle_tests.sv` | 三种发布方式、入口由注册函数决定、纯 nonblocking 订阅者也可收到 `serial`/`concurrent`、句柄计数、retained、多发布者、退订与在途投递、订阅先于绑定的标签冲突、通配符 topic 发布被拒（`publish_now` 返回 null + last_error）、快照、`weave_edge` + `fork` 延迟发布配方、跨语言往返 |
 
 两个后端共用同一 broker，同一仿真内两侧互相可见：`tests/sv/shuttle_tests.sv` 先跑 SV 用例，
 再用 `weave_run` 驱动 C++ 侧用例，两侧都通过才打印 `SHUTTLE TESTS PASSED`

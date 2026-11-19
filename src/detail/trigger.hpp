@@ -6,8 +6,9 @@
 // friend channel.
 //
 // The public factories are shuttle::after() / after_all() / after_any();
-// from_fn here lets the bridge layer (svdpi assembling SHUTTLE_TRIG_EVENT /
-// SHUTTLE_TRIG_PUB) construct a Trigger directly from any std::function.
+// from_fn here lets the bridge layer (svdpi assembling SHUTTLE_TRIG_PUB /
+// _EDGE) and after_any() construct a Trigger directly from any
+// std::function.
 // Trigger's constructor is private, so entry goes through the named friend
 // detail::TriggerAccess.
 

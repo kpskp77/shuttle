@@ -11,6 +11,7 @@
 #include <shuttle/shuttle.hpp>
 #include <stdexcept>
 #include <string>
+#include <weave/sv.hpp>
 #include <weave/test.hpp>
 #include <weave/weave.hpp>
 
@@ -278,6 +279,62 @@ WEAVE_TEST(trigger_tests) {
       expect_eq(static_cast<long long>(left), 2, "later frames still reach the survivor");
     }
     expect_eq(static_cast<long long>(gone), 0, "no phantom deliveries");
+  });
+
+  // case12: after(weave::Pulse&) — same edge contract as after(Event) but *not* sticky: a fire()
+  // that lands before the delivery process registered its wait is lost, so the frame stays pending
+  // until the next fire()
+  run_case(__func__, "case12", [] {
+    shuttle::Publisher<TrigMsg> pub("trig.pulse");
+    weave::Pulse pulse;
+    std::uint32_t seen = 0;
+    int hits = 0;
+    auto s = shuttle::subscribe<TrigMsg>("trig.pulse", [&](const TrigMsg& m, const shuttle::Meta&) {
+      seen = m.v;
+      ++hits;
+    });
+
+    auto early = pub.publish_serial(TrigMsg{11}, shuttle::after(pulse));
+    pulse.fire();  // no waiter registered yet at publish time -> lost
+    weave::sleep(20_us);
+    expect_eq(static_cast<long long>(seen), 0,
+              "a pulse fired before the wait is lost, not latched");
+    expect(!early.done(), "the frame is still pending after the lost edge");
+
+    pulse.fire();
+    expect(early.wait(200_us), "the next fire releases the pending frame");
+    expect_eq(static_cast<long long>(seen), 11, "payload delivered after the second edge");
+    expect_eq(static_cast<long long>(hits), 1, "one delivery, no duplicate");
+  });
+
+  // case13: after(weave::sv::Edge&) — a named edge, i.e. the same object the SV side reaches as
+  // `weave_edge`. Named by string only: the Edge constructor find-or-inserts into weave's own
+  // table, so no id crosses the DPI boundary. Works on both backends as long as someone fires it
+  // (here C++ does), and it composes with the other factories (after_all with a duration).
+  run_case(__func__, "case13", [] {
+    shuttle::Publisher<TrigMsg> pub("trig.edge");
+    weave::sv::Edge edge("trig.edge.sync");
+    std::uint32_t seen = 0;
+    auto s = shuttle::subscribe<TrigMsg>(
+        "trig.edge", [&](const TrigMsg& m, const shuttle::Meta&) { seen = m.v; });
+
+    auto h = pub.publish_serial(TrigMsg{7}, shuttle::after(edge));
+    weave::sleep(20_us);
+    expect_eq(static_cast<long long>(seen), 0, "nothing is delivered before the edge fires");
+    expect(!h.done(), "the frame is pending while the edge is quiet");
+
+    edge.fire();
+    expect(h.wait(200_us), "firing the named edge releases the frame");
+    expect_eq(static_cast<long long>(seen), 7, "the edge-triggered frame delivers its payload");
+
+    // composition: after_all(edge, duration) needs both legs
+    auto both = pub.publish_serial(
+        TrigMsg{9}, shuttle::after_all({shuttle::after(edge), shuttle::after(5_us)}));
+    weave::sleep(1_us);  // let the delivery process register its wait (an edge is not a latch)
+    edge.fire();
+    expect_eq(static_cast<long long>(seen), 7, "the duration leg still holds the frame back");
+    expect(both.wait(200_us), "both legs satisfied by now");
+    expect_eq(static_cast<long long>(seen), 9, "composed trigger delivers");
   });
 
   report(__func__);

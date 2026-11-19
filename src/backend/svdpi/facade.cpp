@@ -1,6 +1,5 @@
 // svdpi backend: external facade — byte-frame publish, external-subscriber
-// registration, per-pub_id queries/waits, and the cross-language event
-// registry (SV shuttle_event / SHUTTLE_TRIG_EVENT).
+// registration, per-pub_id queries/waits.
 //
 // This is the "FFI entry" half of the broker, opposite
 // `backend/backend.hpp` (the broker→SV exit direction). svdpi is the only
@@ -29,7 +28,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <shuttle/detail/abi.hpp>
 #include <shuttle/publication.hpp>
@@ -39,7 +37,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-#include <weave/event.hpp>
+#include <weave/time.hpp>
 
 #include "broker/broker.hpp"
 #include "detail/publication.hpp"
@@ -218,60 +216,6 @@ void pub_on_complete(int pub_id, std::function<void()> fn) {
     return;
   }
   pub->on_complete.push_back(std::move(fn));
-}
-
-// ── Cross-language event registry (SV-side shuttle_event / SHUTTLE_TRIG_EVENT) ──
-// Events are created only on the SV side (shuttle_c_event_create); the C++ side never holds a
-// handle — access is by id, so the registry alone owns the objects and destroy frees them (SV's
-// shuttle_event::close() goes through here).
-// The object is a weave::Pulse, not a weave::Event: SV's `-> ev` wakes the waiters present at that
-// instant and leaves nothing behind, so a set() with no waiter must be *lost*. A sticky Event
-// would let a delivery armed after the set() pass on an edge that never belonged to it — a silent
-// false positive (which is exactly what weave documents Pulse for).
-namespace {
-struct EventSlot {
-  int id;
-  weave::Pulse ev;
-};
-
-std::map<int, std::shared_ptr<EventSlot>> g_events;
-int g_next_event_id = 1;
-
-std::shared_ptr<EventSlot> event_lookup(int ev_id) {
-  if (const auto it = g_events.find(ev_id); it != g_events.end()) return it->second;
-  return nullptr;
-}
-}  // namespace
-
-// The wait entry of TRIG_EVENT (SV references events by id): must be called
-// in a weave task context. It registers as a waiter *now*: the pulse only
-// releases waiters that were already present when set() fired, so the delivery
-// unit must reach here before the SV side sets the event (publishing a frame
-// and setting its event in the same SV process without an intervening delay
-// loses the edge — see docs/dpi_protocol.md).
-void event_wait_id(int ev_id) {
-  const auto slot = event_lookup(ev_id);
-  if (!slot)
-    throw std::invalid_argument("shuttle: unknown or destroyed event id " + std::to_string(ev_id));
-  slot->ev.wait();
-}
-
-int event_registry_create() {
-  auto slot = std::make_shared<EventSlot>(EventSlot{g_next_event_id++, weave::Pulse{}});
-  const int id = slot->id;
-  g_events[id] = std::move(slot);
-  return id;
-}
-
-void event_registry_set(int ev_id) {
-  const auto slot = event_lookup(ev_id);
-  if (!slot)
-    throw std::invalid_argument("shuttle: unknown or destroyed event id " + std::to_string(ev_id));
-  slot->ev.fire();
-}
-
-void event_registry_destroy(int ev_id) {
-  g_events.erase(ev_id);
 }
 
 }  // namespace shuttle::detail

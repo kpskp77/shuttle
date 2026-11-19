@@ -20,6 +20,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <weave/sv.hpp>
 #include <weave/time.hpp>
 
 #include "backend/backend.hpp"
@@ -81,22 +82,29 @@ std::vector<std::byte> read_payload(const svOpenArrayHandle h) {
 }
 
 // Assemble the deferred trigger condition per protocol (trig_kind constants in shuttle_pkg.sv).
-shuttle::Trigger build_trigger(int trig_kind, long long trig_arg) {
+shuttle::Trigger build_trigger(int trig_kind, long long trig_arg, const char* trig_name) {
   using namespace shuttle;
   switch (trig_kind) {
     case 0:
       return Trigger();
     case 1:
       return after(weave::duration(trig_arg));
-    case 2:
-      return detail::TriggerAccess::from_fn(
-          [ev_id = static_cast<int>(trig_arg)]() { detail::event_wait_id(ev_id); });
-    case 3:  // wait for another publication to complete (TRIG_PUB); its subscriber failures also
+    case 2:  // wait for another publication to complete (TRIG_PUB); its subscriber failures also
              // count as "reached a terminal state"
       return detail::TriggerAccess::from_fn([pub_id = static_cast<int>(trig_arg)]() {
         int status = 0;
         detail::pub_wait(pub_id, 0, &status);
       });
+    case 3: {  // wait for a weave edge (TRIG_EDGE). Only the *name* crosses the boundary: the
+               // Edge constructor is a find-or-insert into weave's own name table, so the SV
+               // side and this side end up holding the same id without shuttle owning a
+               // registry. Waiting through Edge::wait() (not a raw weave_sv_wait) keeps the
+               // cancellation injection and the wait graph that weave's dispatch installs.
+      if (trig_name == nullptr || *trig_name == '\0')
+        throw std::invalid_argument("shuttle: TRIG_EDGE requires an edge name");
+      auto edge = std::make_shared<weave::sv::Edge>(trig_name);
+      return detail::TriggerAccess::from_fn([edge]() { edge->wait(); });
+    }
     default:
       throw std::invalid_argument("shuttle: unknown trig_kind " + std::to_string(trig_kind));
   }
@@ -106,11 +114,12 @@ shuttle::Trigger build_trigger(int trig_kind, long long trig_arg) {
 // scheduling → pub_id. The two flavors differ only in which broker entry they
 // call; the rest (frame read, trigger, error reporting) is identical.
 int publish_frame_bg(const char* topic, const char* type_tag, const svOpenArrayHandle payload,
-                     int trig_kind, long long trig_arg, unsigned int corr_id, bool concurrent) {
+                     int trig_kind, long long trig_arg, const char* trig_name, unsigned int corr_id,
+                     bool concurrent) {
   const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
   try {
     std::vector<std::byte> frame = read_payload(payload);
-    shuttle::Trigger trig = build_trigger(trig_kind, trig_arg);
+    shuttle::Trigger trig = build_trigger(trig_kind, trig_arg, trig_name);
     // The frame buffer is moved into the broker (raw frames keep it untouched);
     // topic/type_tag stay views into the SV strings for the duration of the call.
     const char* const t = topic ? topic : "";
@@ -173,16 +182,16 @@ int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenA
 // failure.
 int shuttle_c_publish_serial(const char* topic, const char* type_tag,
                              const svOpenArrayHandle payload, int trig_kind, long long trig_arg,
-                             unsigned int corr_id) {
-  return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, corr_id, false);
+                             const char* trig_name, unsigned int corr_id) {
+  return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, trig_name, corr_id, false);
 }
 
 // `publish_concurrent`: background, one task per subscriber, parallel across subscribers and FIFO
 // per (topic, subscriber). Returns pub_id (>0), or 0 on failure.
 int shuttle_c_publish_concurrent(const char* topic, const char* type_tag,
                                  const svOpenArrayHandle payload, int trig_kind, long long trig_arg,
-                                 unsigned int corr_id) {
-  return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, corr_id, true);
+                                 const char* trig_name, unsigned int corr_id) {
+  return publish_frame_bg(topic, type_tag, payload, trig_kind, trig_arg, trig_name, corr_id, true);
 }
 
 // DPI task: block until one publication completes.
@@ -314,37 +323,6 @@ int shuttle_c_frame_len() {
 
 long long shuttle_c_frame_qword(int index) {
   return static_cast<long long>(shuttle::detail::backend::frame_qword(index));
-}
-
-int shuttle_c_event_create() {
-  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
-  try {
-    return shuttle::detail::event_registry_create();
-  } catch (const std::exception& e) {
-    set_last_error(e.what());
-    return 0;
-  }
-}
-
-void shuttle_c_event_set(int ev_id) {
-  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
-  try {
-    shuttle::detail::event_registry_set(ev_id);
-  } catch (const std::exception& e) {
-    set_last_error(e.what());
-  }
-}
-
-// shuttle_pkg.sv's shuttle_event::close() goes through here (each event
-// occupies one id in the C++ registry; not destroying it leaks it until the
-// end of simulation — which is also acceptable).
-void shuttle_c_event_destroy(int ev_id) {
-  const WeaveScopeGuard weave_scope(SHUTTLE_WEAVE_SV_PACKAGE);
-  try {
-    shuttle::detail::event_registry_destroy(ev_id);
-  } catch (const std::exception& e) {
-    set_last_error(e.what());
-  }
 }
 
 }  // extern "C"

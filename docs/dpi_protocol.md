@@ -17,8 +17,8 @@
 | 函数 | 签名 | 阻塞性 | 说明 |
 |---|---|---|---|
 | `shuttle_c_publish_now` | `(string topic, string type_tag, byte payload[], int now_policy, int unsigned corr_id) → int` | 不阻塞（但同步执行回调） | `publish_now` 发布：在**调用该函数的 SV 进程**内同步回调入口为 nonblocking 的订阅者；入口为 blocking 的订阅者按 `now_policy`（`SHUTTLE_NOW_*`，默认 `defer`）处置。返回 `pub_id`（>0），失败返回 0（原因见 `shuttle_c_last_error`）。SV 侧据此构造 `shuttle_handle`，因此 `publish_now` 与 `serial` / `concurrent` 一样可 `wait_done()`、可查询 `skipped()` / `deferred()` / `retired()`。`topic` 必须是不含通配符的具体名，否则返回 0 并置 `shuttle_c_last_error` |
-| `shuttle_c_publish_serial` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg, int unsigned corr_id) → int` | 不阻塞，立即返回 | `publish_serial` 发布：后台单链顺序回调（topic 级 FIFO）。返回 `pub_id`（>0 成功，≤0 失败）。`trig_kind` / `trig_arg` 见常量表。调用瞬间锁定目标集合与消息拷贝（快照语义）。`topic` 含通配符或空段时返回 0 并置 last_error |
-| `shuttle_c_publish_concurrent` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg, int unsigned corr_id) → int` | 不阻塞，立即返回 | `publish_concurrent` 发布：后台每订阅者一个任务并发回调，无顺序承诺。其余同上（含 topic 名校验） |
+| `shuttle_c_publish_serial` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg, string trig_name, int unsigned corr_id) → int` | 不阻塞，立即返回 | `publish_serial` 发布：后台单链顺序回调（topic 级 FIFO）。返回 `pub_id`（>0 成功，≤0 失败）。`trig_kind` / `trig_arg` / `trig_name` 见常量表。调用瞬间锁定目标集合与消息拷贝（快照语义）。`topic` 含通配符或空段时返回 0 并置 last_error |
+| `shuttle_c_publish_concurrent` | `(string topic, string type_tag, byte payload[], int trig_kind, longint trig_arg, string trig_name, int unsigned corr_id) → int` | 不阻塞，立即返回 | `publish_concurrent` 发布：后台每订阅者一个任务并发回调：**每个 (topic, 订阅者) 内部 FIFO**（按入队顺序），订阅者之间并行、无相互顺序。其余同上（含 topic 名校验） |
 | `shuttle_c_wait_pub` | `(int pub_id, longint timeout_fs, output int status)` | **阻塞**（task） | 阻塞当前 SV 进程直至该发布的全部订阅者回调结束。`timeout_fs` = 0 表示无限等待。`status` 见常量表。实现复用 weave 的挂起机制（`weave_sv_wait`），可挂起任意调用它的 SV 进程 |
 | `shuttle_c_pub_done` | `(int pub_id) → int` | 不阻塞 | 轮询：非 0 表示全部订阅者回调已结束（含失败） |
 | `shuttle_c_pub_error` | `(int pub_id) → string` | 不阻塞 | 第一个失败订阅者的错误信息；空串表示无失败 |
@@ -29,9 +29,6 @@
 | `shuttle_c_frame_len` | `() → int` | 不阻塞 | 当前帧的字节流长度。**只能在 export 体内**（`shuttle_sv_dispatch[_nb]`）调用，数据来自 C++ 侧的 `FrameContext` |
 | `shuttle_c_frame_qword` | `(int index) → longint` | 不阻塞 | 取第 `index` 个 8 字节块（SV 侧按小端拼装，末块不足 8 字节的部分补零）。帧因此不经过 export 形参，绕开"C++ 无法构造 open array"的限制 |
 | `shuttle_c_sub_retired` | `(int sv_sid)` | 不阻塞 | **由 SV 侧调回 C++**：`shuttle_registry::dispatch[_nb]` 发现目标已退订（`retired_`）时静默丢弃这次在途投递，同时调用本函数回告。C++ 在 export 返回后把该次投递记为 retired（计入 `dropped` 的 `retired` 分量，不计 `delivered`，不留 `Failure`） |
-| `shuttle_c_event_create` | `() → int` | 不阻塞 | 创建一个由 C++ 注册表持有的事件 id（>0；0 表示失败），可作 `SHUTTLE_TRIG_EVENT` 的 `trig_arg`，也是 SV `shuttle_event` 的底层对象 |
-| `shuttle_c_event_set` | `(int ev_id)` | 不阻塞 | 唤醒**此刻**已登记的等待者（C++ 侧 `detail::event_wait_id` 与 `TRIG_EVENT` 的投递单元）。语义是 SV 的 `-> ev`——纯边沿，没有等待者时该次 `set` 丢失，不会闩住；C++ 侧底层是 `weave::Pulse` 而非 `weave::Event` |
-| `shuttle_c_event_destroy` | `(int ev_id)` | 不阻塞 | 释放 id（SV `shuttle_event::close()`）。仿真结束时不调用亦可随进程消亡 |
 | `shuttle_c_last_error` | `() → string` | 不阻塞 | 最近一次 import 调用失败的详细原因（每进程独立） |
 
 ## 2. export 表（SV 提供）
@@ -75,8 +72,8 @@ VCS 对"枚举变量接收 `int`"会报 `Warning-[ENUMASSIGN] Illegal assignment
 | 策略：转后台（默认） | `NowPolicy::defer` | `SHUTTLE_NOW_DEFER` | 2 | 整帧交给该 topic 的后台串行链，返回可等待句柄 |
 | 触发：立即 | 空 `Trigger` | `SHUTTLE_TRIG_NONE` | 0 | 立即启动回调进程 |
 | 触发：延时 | `after(duration)` | `SHUTTLE_TRIG_DELAY` | 1 | `trig_arg` = 延时（飞秒） |
-| 触发：事件 | `detail::event_wait_id(id)`（无公开 C++ 工厂） | `SHUTTLE_TRIG_EVENT` | 2 | `trig_arg` = 事件句柄 id（只由 SV 创建） |
-| 触发：发布完成 | —（SV `after_pub(h)`；C++ 经桥装配） | `SHUTTLE_TRIG_PUB` | 3 | `trig_arg` = 另一 Publication 的 `pub_id` |
+| 触发：发布完成 | —（SV `after_pub(h)`；C++ 经桥装配） | `SHUTTLE_TRIG_PUB` | 2 | `trig_arg` = 另一 Publication 的 `pub_id` |
+| 触发：边沿 | SV `after_edge(weave_edge)` / C++ `after(weave::sv::Edge&)`、`after(weave::Pulse&)` | `SHUTTLE_TRIG_EDGE` | 3 | `trig_name` = 边沿名（其余 kind 传 `""`）；边沿语义，不闩住 |
 | 等待：完成 | — | `SHUTTLE_WAIT_OK` | 0 | 全部回调结束（不代表无订阅者失败） |
 | 等待：超时 | — | `SHUTTLE_WAIT_TIMEOUT` | 1 | |
 | 等待：有失败 | — | `SHUTTLE_WAIT_FAILED` | 2 | 订阅者失败，详情见 `shuttle_c_pub_error`；内部错误见 `shuttle_c_last_error` |
@@ -147,12 +144,20 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    (topic, 订阅者) 一条链保证**该订阅者内部** FIFO（同样按入队顺序），不同订阅者之间并行、
    互不承诺。跨方式不保序（同一 topic 的 `serial` 帧与 `concurrent` 帧可互相超越）。
    `SHUTTLE_NOW_DEFER` 的帧进入的是与 `publish_serial` **同一条**链。
-9. **SV 侧邮箱不新增 DPI**：`shuttle_pkg::shuttle_mailbox` 通过 `shuttle_subscribe_nb` 注册，
+9. **边沿触发（`SHUTTLE_TRIG_EDGE`）**：过界的是**名字**，不是 id。SV 侧传
+   `weave_edge.name`（`trig_name`），C++ 侧用 `weave::sv::Edge(trig_name)` 在 weave 自己的名字表里
+   做一次 find-or-insert —— 两侧因此拿到同一个 id，而 shuttle 不持有任何事件注册表，也没有
+   "按 id 恢复"的接口需要。等待走 `Edge::wait()`（即 weave 的挂起点），不直接调 `weave_sv_wait`。
+   语义是**边沿**而不是闩锁：`fire()` 早于帧的投递进程登记等待就丢失，帧保持 pending 直到下一次
+   `fire()`（要"闩住"请用 `after(weave::Event&)` / `after_pub`）。C++ 侧对应的工厂是
+   `after(weave::sv::Edge&)`（同一条命名边沿，两后端都可用，只要有人 fire）与
+   `after(weave::Pulse&)`（纯进程内脉冲，不占名字表、过 DPI 时 `trig_name` 为空、由 C++ 自己 fire）。
+10. **SV 侧邮箱不新增 DPI**：`shuttle_pkg::shuttle_mailbox` 通过 `shuttle_subscribe_nb` 注册，
    队列是 SV 队列，唤醒走 `weave_pkg` 的 `weave_sv_wait` / `weave_sv_trigger`（纯 SV，非 DPI）。
    因此 `shuttle_pkg` 需要 `import weave_pkg::*`，编译顺序必须 `weave_pkg.sv` 在前。邮箱的容量
    溢出策略只有 `SHUTTLE_OVERFLOW_DROP_OLDEST` / `_DROP_NEWEST`（`block` / `reject` 在 SV 无
    对应物：投递回调不能阻塞，SV 也没有异常可抛）。
-10. **请求-响应的跨语言约定**：关联号走**帧头**（`corr_id` 形参 → `shuttle_meta::corr_id`），
+11. **请求-响应的跨语言约定**：关联号走**帧头**（`corr_id` 形参 → `shuttle_meta::corr_id`），
    不是载荷字段，因此 C++ `Requester`/`serve`（`include/shuttle/requester.hpp`）与 SV 响应者之间
    不需要任何字段约定：SV 侧把收到的 `shuttle_meta` 直接交给 `shuttle_pub#(T)::reply(msg, meta)`，
    后者把 `request.corr_id` 写进回执帧（无需新 DPI 入口）。**`publish_now` / `publish_serial` /
@@ -164,14 +169,14 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    `tests/sv/shuttle_tests.sv` 的 `SvRqSink`（`shuttle_subscribe` 注册 blocking 响应者，
    回调里 `pub.reply(resp, meta)` 发回执）。request/response topic 必须不同：响应者是在请求
    回调里发布回执的，同 topic 会形成串行链自环。
-11. **回执 topic 是响应通道**：C++ 的 `Requester` / `serve` 会对自己的回执 topic 调用
+12. **回执 topic 是响应通道**：C++ 的 `Requester` / `serve` 会对自己的回执 topic 调用
    `detail::topic_mark_responses`；此后在该 topic 上用 **blocking 入口**注册（C++
    `subscribe`/`subscribe_bytes`，SV `shuttle_subscribe`）会被拒绝：`shuttle_c_subscribe`
    返回非 0，SV 侧 `shuttle_register` 报 `$error` 并返回 `null`。通配符按**匹配**判定
    （`dev.>` 会命中 `dev.*.req` 的回执 topic）。`shuttle_subscribe_nb` 不受影响——那正是观察
    回执的合法方式。标记只约束之后的注册；已存在的 blocking 订阅者不会被追溯拒绝（它们也不再
    拖慢请求方，因为回执走 `publish_now`，见上一条）。
-12. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
+13. **退订与在途投递**：`shuttle_c_unsubscribe` 立即把订阅者从 broker 移除，而发布瞬间已
    快照的投递仍可能到达 SV 侧（C++ 侧靠 `Subscriber::removed` 拦住同一类投递，两侧口径
    一致：记 `retired`）。SV 注册表把这些已退订 id 记为 retired，静默丢弃并经
    `shuttle_c_sub_retired` 回告；未登记过的 id 才报 `$error`，以保留真实缺陷的可见性。
@@ -191,8 +196,7 @@ uint32 大端。SV 侧打包与解包都使用 `{>>{...}}`（1 位切片，由�
    （`shuttle_sv_dispatch_nb`），即使该订阅者注册的是 blocking 入口。
 3. **SV 语法限制**：export 声明不能带返回类型；函数返回类型不支持 unpacked 数组
    （改用 `output` 形参）；包级函数不能裸 `return new(x)`（先建 automatic 变量）；
-   包需声明 `timeunit` / `timeprecision`（否则与 `weave_pkg` 冲突）；
-   `after_event(int)` 与 `after_event(class)` 不能构成重载。
+   包需声明 `timeunit` / `timeprecision`（否则与 `weave_pkg` 冲突）。
 4. **流式打包方向**：大端线序必须用 `{>>{...}}`（VCS 实测 `{>>{32'h12, 32'h3c}}` →
    `00 00 00 12 00 00 00 3c`；`{<<{...}}` 得到 `3c 00 00 00 48 00 00 00`，即整段比特流
    反向）。混合位宽同样安全：`{>>{8'hAB, 16'hCDEF, 32'h12345678, 4'h5, 4'h6}}` →
