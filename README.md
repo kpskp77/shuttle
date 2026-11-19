@@ -239,7 +239,7 @@ if (auto first = call.recv(1_ms)) use(*first); // 或逐条取
 | `include/shuttle/trigger.hpp` | `Trigger`（`after(weave::Event&)` 等工厂） |
 | `include/shuttle/types.hpp` | `Capability`、`NowPolicy`、`SubOptions`、`nb()` |
 | `include/shuttle/codec.hpp` | `Codec<T>`、`Reader`/`Writer`、`SHUTTLE_REFLECT` |
-| `include/shuttle/meta.hpp` | `Meta{topic_name, type_tag, topic_seq, time_fs}`、`now_fs()` |
+| `include/shuttle/meta.hpp` | `Meta{topic_name, type_tag, topic_seq, corr_id, time_fs}`（`time_fs` 源于 `weave::now()`；时间没有 shuttle 自己的 API，直接用 `weave::now()`） |
 | `include/shuttle/broker.hpp` | 只读内省：`topics()` / `topic_info()` |
 | `include/shuttle/exception.hpp` | `ShuttleError` 及其子类 |
 | `include/shuttle/detail/abi.hpp` | 类型擦除边界，供 `Publisher`/`subscribe` 模板使用；不直接 include |

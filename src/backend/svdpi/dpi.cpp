@@ -5,7 +5,7 @@
 // no broker state is held. The broker-side external entry facade is `ext_*` /
 // `pub_*` in facade.cpp in the same directory (declared in
 // svdpi_internal.hpp, invoked as detail::*).
-// The `detail::backend` implementation (dispatch / now_fs / retired channel)
+// The `detail::backend` implementation (dispatch / retired channel)
 // is in bridge.cpp.
 
 #include <svdpi.h>

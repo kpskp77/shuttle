@@ -161,9 +161,9 @@ just test-all       # 测试套件：systemc 全套（81 用例）+ VCS 全套�
 - `src/*.cpp`：按公开对象划分的后端无关 TU——`publication.cpp` 同时实现 `Published` 侧
   入口（`pub_*` / `topic_*`）与 `Publication` 成员，`subscription.cpp` 同时实现
   `sub_typed` / `sub_raw` 与 `Subscription` 成员（`Subscription::Impl` 只在那里定义，
-  所以 `sub_*` 不能攞）；`meta.cpp` 只做 `now_fs()` → `weave::now()` 的转发（**仿真时间归
-  weave 所有**，不要为它再加后端入口、也不要自己用 `$realtime` 换飞秒），`introspection.cpp` 实现
-  `shuttle::broker` 只读查询。
+  所以 `sub_*` 不能攞）；`introspection.cpp` 实现 `shuttle::broker` 只读查询。**shuttle 没有自己的
+  时钟**：`Meta::time_fs` 与所有超时算术都用 `weave::now()`，不要为它加后端入口、不要自己用
+  `$realtime` 换飞秒、也不要再造一个 `shuttle::now_fs()` 之类的转发（曾经有过，已删）。
 - `include/shuttle/detail/wait.hpp`（**已安装**）：`detail::deadline_after(timeout)` 与
   `detail::wait_wake(weave::Event&, std::optional<weave::time_point>)`——三处"等一个事件、
   可能带超时"的竞速都走它（mailbox 的 `recv(timeout)`、requester 的 `wait_for`、`Publication::wait(timeout)`），

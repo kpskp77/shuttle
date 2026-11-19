@@ -243,11 +243,11 @@ WEAVE_TEST(requester_tests) {
     (void)server;
 
     shuttle::Requester<RqReq, RqResp> client("rq.sync.req", "rq.sync.resp");
-    const std::int64_t before = shuttle::now_fs();
+    const std::int64_t before = weave::now().count();
     auto call = client.send_now(RqReq{41});
     expect_eq(static_cast<long long>(call.queued()), 1,
               "the resp is already in the Call when send_now returns");
-    expect_eq(static_cast<long long>(shuttle::now_fs()), static_cast<long long>(before),
+    expect_eq(static_cast<long long>(weave::now().count()), static_cast<long long>(before),
               "no simulation time was spent: the round trip ran on the caller's stack");
     expect(call.publication().done(), "the request frame is complete on return");
     auto resp = call.recv();

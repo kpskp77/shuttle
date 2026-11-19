@@ -23,13 +23,9 @@ struct Meta {
                               // correlated exchange. It rides in the frame header, so the payload
                               // type needs no extra field and any encodable type works, third-party
                               // ones included. `Requester` allocates it, `serve` echoes it
-  std::int64_t time_fs;       // simulation time at publish (femtoseconds), from now_fs()
+  std::int64_t time_fs;       // simulation time at publish (femtoseconds), from weave::now(); ask
+                              // the clock with weave::now() yourself -- shuttle has no clock of its
+                              // own, so a frame's stamp and the caller's reading cannot disagree
 };
-
-// Current simulation time (femtoseconds). A thin forwarder over weave::now(): the clock belongs to
-// weave (its port's only non-suspending primitive), so the instant stamped on a frame is exactly the
-// instant weave schedules against -- no second time source, no unit conversion that could drift.
-// Resolution is the backend's tick (1 ps on both backends here).
-std::int64_t now_fs();
 
 }  // namespace shuttle

@@ -89,7 +89,6 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 | `include/shuttle/detail/abi.hpp` | **第二公开层（稳定 ABI）**：路径与内容随版本管理；公有模板需要 `pub_*` / `sub_*` 的声明，故随包安装；只被 `publisher.hpp` / `subscription.hpp` 间接包含，用户代码不应直接 include |
 | `src/publication.cpp` | 发布侧 ABI：`pub_now` / `pub_serial` / `pub_concurrent`、`topic_declare` / `topic_set_retained` / `topic_retained`，以及 `Publication` 的等待、计数与失败查询 |
 | `src/subscription.cpp` | 订阅侧 ABI：`sub_typed` / `sub_raw` 与 `Subscription` 的私有 Impl、生命周期和诊断方法（Impl 仅在此 TU 定义，故 `sub_*` 不能外移） |
-| `src/meta.cpp` | `shuttle::now_fs()`：转发 `weave::now()`（仿真时间归 weave 所有，见 §12） |
 | `src/introspection.cpp` | `shuttle::broker` 的只读 topic 内省 |
 | `src/broker/model.hpp` | `Subscriber` / `Topic` / `PubState` / `Envelope` 等纯数据模型与帧编码缓存；不依赖后端（不安装） |
 | `src/broker/broker.hpp` | `Broker` 操作声明及 `dispatch_now` / `wait_pub_timed` 共享入口；只声明，不塞函数实现（不安装） |
@@ -102,7 +101,7 @@ blocking 入口即 export task，nonblocking 入口即 export function。
 | `src/backend/svdpi/dpi.cpp` | `shuttle_c_*` 的全部 DPI 导出面（import 被仿真器调用、export 反过来调仿真器） |
 | `src/backend/systemc/bridge.cpp` | systemc 后端：`detail::backend` 的退化实现 |
 | `src/trigger.cpp` | `Trigger` 工厂（`after` / `after_all` / `after_any`） |
-| `src/backend/backend.hpp` | broker ↔ 后端的内部边界：5 个入口（`available` / `dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery`），不安装。**时间不在这个窄口里**：`shuttle::now_fs()` 直接取 `weave::now()`。属于后端边界所以住在 `src/backend/` 内，include 写作 `"backend/backend.hpp"`（`src/` 是包含根） |
+| `src/backend/backend.hpp` | broker ↔ 后端的内部边界：5 个入口（`available` / `dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery`），不安装。**时间不在这个窄口里**：broker 与 `Meta::time_fs` 直接取 `weave::now()`。属于后端边界所以住在 `src/backend/` 内，include 写作 `"backend/backend.hpp"`（`src/` 是包含根） |
 | `src/detail/trigger.hpp` | `detail::TriggerAccess`：供桥接层用任意 `std::function` 构造 `Trigger`（不安装） |
 | `sv/shuttle_pkg.sv` | SV 侧用户 API 与分派注册表 |
 | `tests/`、`examples/` | 测试套件与示例 |
@@ -132,7 +131,8 @@ broker 不额外引入线程。
 
 三种方式的**目标集合相同**，差异只在调度、顺序与完成时机。公共前置步骤是
 `make_envelope[_bytes]`：绑定类型、`++seq`、取 `time_fs`、必要时刷新 retained 快照。
-`time_fs` 来自 `weave::now()`（不是后端接口）：仿真时间由 weave 的 port 拥有，broker 只读。
+`time_fs` 来自 `weave::now()`（不是后端接口，也不是 shuttle 的 API）：仿真时间由 weave 的 port
+拥有，broker 只读。
 三条路径最终都落到 `deliver(sub, env)`：走哪条入口见 §7，顺序保证见 §6，
 计数规则见 §9。
 
@@ -732,8 +732,8 @@ SV: h.wait_done() ─▶ import task shuttle_c_wait_pub(pub_id, timeout_fs, stat
 
 `src/backend/systemc/bridge.cpp` 实现同一组 `detail::backend` 入口，但 `available() == false`：
 `dispatch` / `dispatch_nb` 抛 `std::logic_error`（配置错误尽早暴露），`take_retired_delivery()`
-恒为 false。时间不经过后端：两个后端的 `shuttle::now_fs()` 都是 `weave::now()`，分辨率就是
-weave 后端 tick（这里两种后端都是 1 ps）。
+恒为 false。时间不经过后端，也不经过 shuttle：`Meta::time_fs` 与所有超时算术都读
+`weave::now()`，分辨率就是 weave 后端 tick（这里两种后端都是 1 ps）。
 broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV 相关代码（`svdpi/` 目录、`ext_*`
 的调用方、跨语言用例）在 systemc 构建中**根本不参与编译**。
 
@@ -914,7 +914,7 @@ topic 开了 retained"不会毒化后续请求（仍不推荐）。
 + meta.corr_id` 发布回执（SV 的 `shuttle_pub::reply` 同样走 `shuttle_c_publish_now`）。
 由此得到一条可测的性质：**响应者用 `nb(handler)` 时，整条往返在请求方栈上跑完**——
 `send_now()` 返回时回执已经在 `Call` 里（`call.queued() == 1`），中间不切任务、不消耗仿真时间
-（`requester_tests::case11` 用 `now_fs()` 前后相等钉住）。`defer` 只是兜底：万一回执 topic 上
+（`requester_tests::case11` 用 `weave::now()` 前后相等钉住）。`defer` 只是兜底：万一回执 topic 上
 还残留 blocking 订阅者（在标记之前就注册了），那一份交给串行链，nonblocking 目标（包括请求方）
 仍然就地完成。也正因如此，回执不再排在 topic 链尾后面：**旁观者的慢回调咬不动请求方**。
 
