@@ -1,5 +1,5 @@
 // svdpi backend: the SV-side import surface (`shuttle_c_*`; definitions in
-// docs/dpi_protocol.md).
+// docs/backends.md).
 //
 // Only "DPI-C type ↔ C++ type" translation and error reporting happen here;
 // no broker state is held. The broker-side external entry facade is `ext_*` /
@@ -46,7 +46,7 @@ using shuttle::detail::WaitStatus;
 using shuttle::detail::wire;
 
 // On-wire strategy code → NowPolicy. The numeric values are protocol constants
-// (docs/dpi_protocol.md pins NowPolicy::reject/skip/defer to SHUTTLE_NOW_* 0/1/2),
+// (docs/backends.md pins NowPolicy::reject/skip/defer to SHUTTLE_NOW_* 0/1/2),
 // so the code is the enum; anything else falls back to the default, defer.
 shuttle::NowPolicy now_policy_of(int v) {
   switch (static_cast<shuttle::NowPolicy>(v)) {

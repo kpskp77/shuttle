@@ -34,7 +34,7 @@ module shuttle_tests;
 
   // ── Message classes: counterpart of `struct XMsg + SHUTTLE_REFLECT(XMsg, addr, data)` on the C++ side ──
   // {>>{...}} equals the C++ Writer's big-endian wire order byte for byte (verified on VCS; see the
-  // "Simulator constraints" section of docs/dpi_protocol.md).
+  // "Simulator constraints" section of docs/backends.md).
   class XMsg;
     int unsigned addr;
     int unsigned data;

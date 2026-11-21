@@ -45,7 +45,7 @@
 // ── Scope ───────────────────────────────────────────────────────────────
 // This is C++-side sugar; the SV side participates by subscribing to the request
 // topic and answering with `pub.reply(resp, meta)`, which echoes meta.corr_id into the
-// response frame (see docs/dpi_protocol.md). Request and response topics must differ: a
+// response frame (see docs/backends.md). Request and response topics must differ: a
 // responder publishes the response from inside its request callback, and using the same
 // topic would put that frame behind the very callback that publishes it.
 

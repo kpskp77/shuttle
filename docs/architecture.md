@@ -1,559 +1,238 @@
-# shuttle 架构
+# shuttle architecture
 
-本文描述 shuttle 的**实现结构**：三条发布路径、入口模型、数据结构、记账契约与后端边界。
-面向需要修改 `src/` 或排查投递行为的读者；只使用 API 请先读
-[`README.md`](../README.md)。
+For people who need to understand or modify the shuttle implementation — the broker model, the
+three publish paths, and why the code is shaped this way. The operational invariant checklist a
+diff is checked against lives in [AGENTS.md](../AGENTS.md); the svdpi/systemc backend boundary and
+the full DPI protocol live in [backends.md](backends.md); positioning and usage live in the
+[README](../README.md).
 
-| 文档 | 职责 |
-| --- | --- |
-| [`README.md`](../README.md) | 能力、用法、选型 |
-| 本文 | 实现结构与不变量 |
-| [`dpi_protocol.md`](dpi_protocol.md) | C++ ↔ SV 边界的权威定义（函数表、常量、线上格式、仿真器约束） |
-| [`AGENTS.md`](AGENTS.md) | 改动本仓库必须守住的硬约束清单 |
+## The model everything derives from
 
-## 1. 定位
+**A simulation process is a coroutine, not an OS process** (inherited from weave): at any instant
+exactly one process runs C++-side code, it is never preempted, and it suspends only at explicit
+weave blocking points. Every guarantee in this document follows from that model; a reader who holds
+it can derive rules that are not written down.
 
-shuttle 是**仿真进程内**的类型化发布-订阅框架：C++ 组件之间、SV 组件之间、C++ ↔ SV
-跨语言，三种通信共用同一个 broker、同一套类型系统与同一套投递语义。
+The second half of the model is what shuttle adds on top: **publishing is snapshot plus scheduled
+handoff**. A publish call locks in the payload and the target set at that instant (an immutable
+*frame*), and every target's frame is then handed to a callback entry whose capability was fixed at
+registration. Nothing about a frame changes after the call; the only question the framework answers
+is when and through which entry each target's callback runs, and what terminal state the attempt
+reached. Simulation time is the scarce resource, so the interesting design decisions are all about
+which callbacks may consume it and where they are allowed to run.
 
-核心命题：**仿真进程里，难的不是"发消息"，而是每条消息"何时、经哪条入口、以什么结局"
-到达订阅者。** 仿真时间是全进程共享的资源：回调能否消耗仿真时间，决定了它能在谁的调用栈里
-执行；发布方是否等待、后台投递按什么顺序推进、退订如何作用于在途帧——这些调度语义在传统
-验证代码里随每条通知通道各自实现，零散且不一致。shuttle 把它们收敛为一次注册、一次发布：
-发布方只认 topic；订阅关系与入口能力在注册时确定；发布瞬间快照目标集与消息；每个目标的
-结局——投递、失败、退订跳过、策略跳过——在句柄上全部可数。三种通信方式（C++ 内部、
-SV 内部、C++ ↔ SV）只是同一套语义的三个使用者，跨语言不是存在的理由，是自然结果。
+Consequences that are used everywhere below:
 
-边界：
+- Broker state (`topics` / `subs` / `pubs`) is plain data with no locks; any check-modify sequence
+  without a suspension point in between is atomic. `shared_ptr` reference counts crossing the
+  language boundary are safe for the same reason.
+- All "background" delivery runs in weave tasks; the broker introduces no threads. FIFO ordering
+  and cross-subscriber parallelism are properties of the weave scheduler, not of broker code.
+- State that must outlive a suspension has to be consistent *before* the suspension point, because
+  from that instant another process may inspect it.
 
-- **单向通知，非 RPC**：无请求/应答配对，无返回值，发布方不持有订阅方。
-- **进程内，非跨进程**：broker 是进程级单例、状态无锁；该性质继承自 weave 的单活跃进程
-  契约（任一时刻只有一个进程执行记账代码），也是跨语言帧传递方案成立的前提。
-- **定义投递调度，不拥有并发原语**：task / 事件 / 等待由 weave 提供；shuttle 在其上定义
-  调度语义——同步（`now`）、per-topic FIFO（`serial`）、订阅者间并发 + 每个订阅者内部 FIFO
-  （`concurrent`）与条件延迟
-  （`Trigger`）。
-- **不做**：跨机器通信、持久化与重放、UVM 适配层。背压只对 Mailbox（§16）生效：
-  普通订阅没有队列，`SubOptions` 仍被 broker 忽略。
-
-shuttle 自身的职责两层：**broker**（topic 命名空间、通配符路由、topic ↔ 类型绑定、帧序号、
-retained、三种发布方式的目标集快照与调度、逐目标记账与完成跟踪）；**类型化载荷**（类型擦除、
-C++ 内部零拷贝与懒编码、与 SV `{>>{}}` 逐字节一致的线上格式）。与仿真环境的接入方式
-（DPI 桥 / 退化实现）只是这两层在某后端的落地，不构成定位的一部分。文件落点见 §3。
-
-## 2. 术语
-
-| 术语 | 含义 |
-| --- | --- |
-| **帧**（frame） | 一次发布产生的不可变快照：载荷 + `Meta{topic_name, type_tag, topic_seq, time_fs}`。三种方式都先建帧再生效 |
-| **目标**（target） | 本帧匹配到的订阅者之一。目标集合在发布调用瞬间按当时的注册表快照确定 |
-| **入口**（entry） | 订阅者被调用的那一个函数：`blocking`（可消耗仿真时间）或 `nonblocking`（零延时）。一次注册只有一条 |
-| **投递**（delivery） | broker 把一个目标与一帧配对的尝试，结果是终态之一（§9） |
-| **投递单元** | 承载投递的后台执行体：`serial` 为每帧一个 weave task，`concurrent` 为每订阅者一个 task（§5） |
-| **串行链** | 每个 topic 一条 FIFO 链（`Topic::chain`），`serial` 与 `now` 的 `defer` 共用（§6） |
-| **终态** | 目标对本帧的结局：delivered / retired / failed / deferred / skipped（§9） |
-| **记账** | 上述终态在 `PubState`、`Topic`、`Subscriber` 三层的计数 |
-| **topic 名 / 模式** | 发布与声明用的是**名**（不含通配符）；订阅写的是**模式**（可含 `*` / `>`）。两者语法不同，各有一道校验（§8.3） |
-
-术语与两侧枚举同名（`Capability::blocking` / `SHUTTLE_CAP_BLOCKING`）；在 SV 侧
-blocking 入口即 export task，nonblocking 入口即 export function。
-
-## 3. 分层与文件地图
+## Boundaries and contracts
 
 ```
-                      ┌──────────────────────────── 用户代码 ────────────────────────────┐
+                      ┌──────────────────────────── user code ────────────────────────────┐
                       │  C++: Publisher<T> subscribe<T> Publication Subscription Trigger    │
                       │  SV : shuttle_pub#(T) shuttle_subscribe shuttle_sink(_nb) handle    │
-                      └───────────────┬───────────────────────────────┬──────────────────┘
-                                      │ 公开头文件（include/shuttle/*.hpp）│ SV 包（sv/shuttle_pkg.sv）
+                      └───────────────┬───────────────────────────────┬───────────────────┘
+                                      │ public headers (include/shuttle/*.hpp) │ SV package (sv/shuttle_pkg.sv)
         ┌─────────────────────────────▼──────────┐        ┌───────────▼───────────────────┐
-        │  broker 核心（src/broker/）              │        │ shuttle_pkg.sv                │
-        │  Topic 表 / 通配符 / 类型绑定 / seq      │        │  registry / sub / handle       │
-        │  三种发布编排 / retained / 完成状态     │◀──DPI─▶│  trigger / event / pub#(T)     │
-        │  C++ API 与句柄：src/*.cpp              │        │  帧拉取 + {>>{}} 打包约定       │
+        │  broker core (src/broker/)              │        │ shuttle_pkg.sv                │
+        │  Topic table / wildcards / type binding │        │  registry / sub / handle       │
+        │  three publish schedulings / retained   │◀──DPI─▶│  trigger / event / pub#(T)     │
+        │  C++ API and handles: src/*.cpp         │        │  frame pull + {>>{}} packing   │
         └───────┬───────────────────────▲─────────┘        └───────────────────────────────┘
-                │ 后端无关                │ 后端边界
-     ┌──────────────────────┐   ┌──────────────────────┐  ← 同一组 detail::backend 入口
-     │ backend/svdpi/       │   │ backend/systemc/     │     （src/backend/backend.hpp）
-     │  bridge + DPI 面     │   │ 无 SV 桥：dispatch*  │
-     │  FrameContext + 作用域│   │ 抛逻辑错误（裸 BSP） │
-     └──────────┬───────────┘   └──────────────────────┘
-                │               └──────────────────────┘
+                │ backend-agnostic        │ backend boundary (5-entry detail::backend facade,
+     ┌──────────▼─────────┐   ┌──────────┴─────────┐          src/backend/backend.hpp)
+     │ backend/svdpi/     │   │ backend/systemc/   │
+     │ bridge + DPI face  │   │ no SV bridge:      │
+     │ FrameContext+scope │   │ dispatch* throws   │
+     └──────────┬─────────┘   └────────────────────┘
                 ▼
-        weave（task/event/port，svdpi 与 systemc 后端）  ← 并发编排、单活跃进程契约
+        weave (task/event/port; both backends)  ← concurrency, single-active-process contract
 ```
 
-| 目录 | 内容 |
-| --- | --- |
-| `include/shuttle/*.hpp` | 公开 API；`shuttle.hpp` 是伞头，被它暴露的才算公开。`mailbox.hpp`（§16）与 `requester.hpp`（§17）是其中的**纯头文件**组件：无 `.cpp`、无导出符号 |
-| `include/shuttle/detail/abi.hpp` | **第二公开层（稳定 ABI）**：路径与内容随版本管理；公有模板需要 `pub_*` / `sub_*` 的声明，故随包安装；只被 `publisher.hpp` / `subscription.hpp` 间接包含，用户代码不应直接 include |
-| `src/publication.cpp` | 发布侧 ABI：`pub_now` / `pub_serial` / `pub_concurrent`、`topic_declare` / `topic_set_retained` / `topic_retained`，以及 `Publication` 的等待、计数与失败查询 |
-| `src/subscription.cpp` | 订阅侧 ABI：`sub_typed` / `sub_raw` 与 `Subscription` 的私有 Impl、生命周期和诊断方法（Impl 仅在此 TU 定义，故 `sub_*` 不能外移） |
-| `src/introspection.cpp` | `shuttle::broker` 的只读 topic 内省 |
-| `src/broker/model.hpp` | `Subscriber` / `Topic` / `PubState` / `Envelope` 等纯数据模型与帧编码缓存；不依赖后端（不安装） |
-| `src/broker/broker.hpp` | `Broker` 操作声明及 `dispatch_now` / `wait_pub_timed` 共享入口；只声明，不塞函数实现（不安装） |
-| `src/broker/broker.cpp` | 路由与语法、目标集、类型绑定、建帧、单目标投递、retained 和订阅生命周期 |
-| `src/broker/dispatch.cpp` | 三种发布调度、串行链、后台 task、统一完成计数与超时等待 |
-| `src/detail/publication.hpp` | `Publication::Impl` 与 `detail_pub_access`，供 API 和 svdpi 门面包装/反查句柄（不安装） |
-| `src/backend/svdpi/facade.cpp` | 外部门面：`ext_pub_*`（字节帧）/ `ext_sub` / `ext_unsub` / 按 `pub_id` 的 `pub_*` 查询 / `Event` 注册表 / FFI 错误通道。与 dpi.cpp 分层：这里只做 broker 编排，不做 DPI 翻译。**svdpi 专属**（systemc 不编译本文件） |
-| `src/backend/svdpi/bridge.cpp` | `detail::backend` 的 svdpi 实现：`dispatch` / `dispatch_nb` / `note_retired_delivery` + 帧拉取（`frame_len` / `frame_qword`） |
-| `src/backend/svdpi/svdpi_internal.hpp` | svdpi 目录私有头：包名宏、`SvScopeGuard`（只管 `shuttle_pkg`）、`FrameContext` + 外部门面声明（`ext_*` / `pub_*` / `set_last_error`） |
-| `src/backend/svdpi/dpi.cpp` | `shuttle_c_*` 的全部 DPI 导出面（import 被仿真器调用、export 反过来调仿真器） |
-| `src/backend/systemc/bridge.cpp` | systemc 后端：`detail::backend` 的退化实现 |
-| `src/trigger.cpp` | `Trigger` 工厂（`after` / `after_all` / `after_any`） |
-| `src/backend/backend.hpp` | broker ↔ 后端的内部边界：5 个入口（`available` / `dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery`），不安装。**时间不在这个窄口里**：broker 与 `Meta::time_fs` 直接取 `weave::now()`。属于后端边界所以住在 `src/backend/` 内，include 写作 `"backend/backend.hpp"`（`src/` 是包含根） |
-| `src/detail/trigger.hpp` | `detail::TriggerAccess`：供桥接层用任意 `std::function` 构造 `Trigger`（不安装） |
-| `sv/shuttle_pkg.sv` | SV 侧用户 API 与分派注册表 |
-| `tests/`、`examples/` | 测试套件与示例 |
+- The broker core knows nothing about DPI or SystemC. It reaches the outside only through the
+  5-entry `detail::backend` facade in `src/backend/backend.hpp` (`available` / `dispatch` /
+  `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery`). Time is **not** in that
+  facade: `Meta::time_fs` and all timeout arithmetic read `weave::now()` directly.
+- `src/backend/<backend>/` directories never include each other; there are no
+  `SHUTTLE_BACKEND_*` macros. Switching backend = switching directory (selected by
+  `add_files("src/backend/<backend>/**.cpp")` in `xmake.lua`). svdpi is the sole exception to
+  backend isolation: it is the only FFI-carrying backend, and its `facade.cpp` additionally sees
+  broker internals (`broker/broker.hpp`, `detail/publication.hpp`). There will never be a second
+  FFI caller.
+- The C++ ↔ SV boundary itself — payload passing, scope, the import/export tables, the on-wire
+  format — is defined authoritatively in [backends.md](backends.md).
+- `include/shuttle/detail/abi.hpp` is a second public layer (stable ABI): installed and versioned,
+  but user code includes it only indirectly through `publisher.hpp` / `subscription.hpp`, because
+  the public templates (`Publisher<T>` / `subscribe<T>`) must see the `pub_*` / `sub_*`
+  declarations in the user's translation unit.
+- `mailbox.hpp` and `requester.hpp` are header-only components: no `.cpp`, no exported symbols,
+  zero broker state. Their state lives in the header objects themselves.
 
-## 4. 并发模型
+## Terminology
 
-**不变量：任一时刻只有一个进程执行 C++ 侧记账代码；挂起等同于交出调度权。**
-这条契约来自 weave 的 port 模型，shuttle 直接继承：
+| Term | Meaning |
+|---|---|
+| frame | the immutable snapshot one publish produces: payload + `Meta{topic_name, type_tag, topic_seq, time_fs, corr_id}`. All three flavors build the frame first |
+| target | one subscriber this frame matched. The target set is fixed at the publish call from a registry snapshot |
+| entry | the single function a subscriber is invoked through: `blocking` (may consume simulation time) or `nonblocking` (zero-delay) |
+| delivery | the broker's attempt to pair one target with one frame; ends in exactly one terminal state (below) |
+| delivery unit | the background executor of deliveries: one weave task per frame for `serial`, one per subscriber for `concurrent` |
+| chain | the FIFO ordering structure: one per topic (`Topic::chain`, shared by `serial` and `now`'s defer), or one per (topic, subscriber) for `concurrent` (`Topic::sub_chains`) |
+| terminal state | a target's outcome for a frame: delivered / retired / failed / deferred / skipped |
+| bookkeeping | the per-frame / per-subscriber / per-topic counters for those states |
 
-- broker 状态（`topics` / `subs` / `pubs`）是**普通数据结构，无锁**；
-- 一切"检查—修改"只要中间不挂起就是原子的。例如 `pub_state()` 判定与
-  `pub_on_complete()` 注册之间没有挂起点，因此不会漏掉完成通知；
-- `shared_ptr` 的引用计数跨语言边界读写同样受此保护；
-- 唯一需要显式处理的是链尾捕获（§6）：并发发布的"读链尾 + 装新链尾"必须在同一同步段内完成——
-  串行链与 `publish_concurrent` 的 per-订阅者链道理相同。
+The SV enums mirror the C++ ones (`Capability::blocking` ↔ `SHUTTLE_CAP_BLOCKING`); on the SV side
+a blocking entry is an export task and a nonblocking entry is an export function.
 
-进程由 weave 创建：`weave::create_task(name, fn)` 只登记不立即执行；让出控制权
-（`weave::sleep`、`Event::wait`、`Task::await`、等待 SV export task）后才轮到其他 task。
-SV 的 native 进程（`initial` / `always`）在同一套调度内：阻塞在 `weave_sv_wait` 上时同样
-交出控制权。
+## Key design decisions
 
-推论：所有"后台"投递都运行在 weave task 里，因此 `publish_serial` 的 FIFO 与
-`publish_concurrent` 的并发（订阅者之间并行、每个订阅者内部 FIFO）都由 weave 调度器决定，
-broker 不额外引入线程。
+### One registration = one subscriber = one entry
 
-## 5. 三条发布路径
+The entry a subscriber is invoked through is decided by the function called at registration: C++
+`subscribe(fn)` / SV `shuttle_subscribe` = blocking entry; C++ `subscribe(nb(fn))` / SV
+`shuttle_subscribe_nb` = nonblocking entry; `serve(...)` follows the same split. There is no
+runtime `Capability` parameter anywhere in the public API, and a class is never probed (e.g. with
+`$cast` against interface classes) to auto-register both entries.
 
-三种方式的**目标集合相同**，差异只在调度、顺序与完成时机。公共前置步骤是
-`make_envelope[_bytes]`：绑定类型、`++seq`、取 `time_fs`、必要时刷新 retained 快照。
-`time_fs` 来自 `weave::now()`（不是后端接口，也不是 shuttle 的 API）：仿真时间由 weave 的 port
-拥有，broker 只读。
-三条路径最终都落到 `deliver(sub, env)`：走哪条入口见 §7，顺序保证见 §6，
-计数规则见 §9。
+Why: the entry is a property of the *registration*, not of the class, and it must be visible at the
+call site. A runtime parameter would make the entry invisible there and would desynchronise
+`subscriber_count()` / `publish_now` behavior between the two languages. A subscriber that needs
+both entries registers twice. The rejected alternative — auto-registration of both entries per
+class — was removed precisely because it turned capability into a class-level property, which is a
+category error against the C++ model.
 
-### 5.1 `publish_now`
+Observable consequence: `Subscriber` stores exactly one `Capability cap`, and `deliver` reads only
+that. The SV bridge's `caps` argument accepts exactly 1 or 2 and rejects everything else.
 
-```
-publisher 进程
-  │ pub_now ──▶ now_preflight（policy==reject 先判定；拒绝则什么都不发生）
-  │          ──▶ make_envelope（类型绑定 + ++seq + time_fs + retained 快照）
-  │              ─▶ dispatch_now
-  │                    ├─ 建 PubState（target_count = nonblocking 目标数 + 待 defer 数）
-  │                    ├─ 逐个 nonblocking 目标：deliver(sub, env)
-  │                    │     （这些注册的 cap 已是 nonblocking → export function）
-  │                    │     失败 → 记 failures + failed（dropped 的一部分），继续下一个目标
-  │                    │     每个目标结束都 target_finished()；skip（或无 blocking 目标）时
-  │                    │     最后一个目标使 finished == target_count，就地 pub_complete()
-  │                    │     —— Publication 返回前已完成
-  │                    ├─ policy==skip  → 计 skipped（dropped 的 skipped 分量）
-  │                    └─ policy==defer → start_serial(topic, env, {}, blocking_targets)
-  │                                       完成钩子把失败与计数并回本帧，
-  │                                       finished == target_count 时在串行链的 dispatch task
-  │                                       内 pub_complete()——晚于 publish_now 返回
-  └ 返回 Publication（skip：已完成；defer：nonblocking 部分已结束、deferred 部分未结束）
-     └ 同步段出现异常时：以上全部完成后，重抛第一个异常
-```
+### Blocking vs nonblocking describes the callback, not the call
 
-同步段不出现挂起点：`deliver(sub, env)` 的目标全部来自 nonblocking 注册（C++ 直接函数调用、
-SV 侧 export function），blocking 目标根本不在这个循环里。同步段单个回调失败不中止本帧——记入 `failures()` 与
-`first_error` 后继续，`defer` 段照常入链，最后才把第一个异常抛给调用者；SV 侧
-`shuttle_c_publish_now` 把异常转成返回码与 `shuttle_c_last_error()`。
+`blocking` / `nonblocking` state whether the *callback* may consume simulation time — not whether
+the entry blocks its caller. `publish_now`'s synchronous segment invokes only nonblocking entries;
+with the default `defer` policy, blocking targets of the same publish still run, but from the
+background chain, after `publish_now` returns. On the SV side the two entries are an export task
+and an export function.
 
-**重入深度上限**：因为回调在发布者栈上跑，一个订阅者在回调里再 `publish_now` 不会挂起而是递归；
-若两者互相发布（A 的订阅者发 B、B 的订阅者发回 A）就会变成栈溢出且**没有任何诊断**。
-`dispatch_now` 用一个 `thread_local` 深度计数器（`kMaxNowDepth = 8`）把这种环变成
-`PublishError`（"nested deeper than 8 frames"）。它是诊断上界不是策略：合法的嵌套是
-"请求帧 → 响应者 handler → 回执帧"（§17），深度 2~3。
+`NowPolicy` applies only to blocking targets:
 
-### 5.2 `publish_serial`
+| Policy | Behavior | Timing consequence |
+|---|---|---|
+| `reject` | throws `CapabilityError` (C++) / returns null + last_error (SV) | the frame is never published: no `seq`, retained or counter advances |
+| `skip` | drops those targets, counted in `skipped()` | other targets unaffected |
+| `defer` (default) | hands the whole frame to the topic's serial chain | those callbacks run after `publish_now` returns |
 
-```
-publish_serial ─▶ targets 为空 ? 立即 pub_complete（不建单元、不装链尾）
-               ─▶ target_count = targets.size()
-               ─▶ trig.immediate() ? prev/mine 链尾交接（§6，同步段） : 不占链尾
-               ─▶ create_task("shuttle-seq-<topic>")
-                    ├─ wait_trigger(trig)              // 延迟启动条件
-                    ├─ 延迟帧：此刻才做 prev/mine 链尾交接（§6，原子读-改-写）
-                    ├─ prev->wait()                    // 排在上一帧之后
-                    ├─ 逐目标 deliver(sub, env)        // 用该注册的那条入口
-                    │     └─ target_finished()         // ++finished
-                    ├─ 单元级失败 → 未尝试的目标全部记 failed 并补齐
-                    ├─ mine->set()                     // 成败都放行下一帧
-                    └─ finished == target_count 时 pub_complete()
-返回 Publication（立即可用）
-```
+For nonblocking targets `skip` and `defer` are indistinguishable: both complete before
+`publish_now` returns. The hard constraint underneath is DPI: an export *task* may not run inside
+an import *function* call chain (`Error-[DPI-INCDIC]`), so `dispatch_now` partitions targets by
+capability first and the synchronous loop contains only nonblocking ones.
 
-链尾交接为何要区分：immediate 帧在发布调用内占位，顺序就等价于发布顺序且不依赖 task 何时首跑；
-延迟帧则在 `wait_trigger` 返回后才入队。后者不是优化而是正确性要求——`after(Event)` 的延迟是
-无界的，若在发布瞬间就占住链尾，同 topic 后续每一帧（包括根本无触发器的帧）都会被它扣住，
-`publish_serial(...).wait()` 于是永久卡住；当触发器由"排在后面的同 topic 帧的回调"满足时
-更会形成真死锁。`trigger_tests.cpp` 的 case8（延迟帧不阻塞后续 immediate 帧）与 case9
-（后续帧的回调放行前一帧）钉住这两条。
+### The serial chain hands off the tail at publish time — or at trigger time
 
-"单投递单元"意味着订阅者之间串行：前一个订阅者的回调彻底结束（含 SV 侧可阻塞的
-`invoke` task）才开始下一个。
+`publish_serial` and `publish_now(defer)` share one FIFO chain per topic, which yields the
+testable law: **background delivery order on a topic equals enqueue order** — immediate-trigger
+frames enqueue inside the publish call, delayed frames enqueue at their trigger moment.
+`publish_concurrent` uses the same rule on one chain per (topic, subscriber): subscribers run in
+parallel, each subscriber's consecutive frames stay strictly FIFO. The two chains never mix:
+`serial` frames never enter a per-subscriber chain and vice versa, and no cross-flavor ordering is
+promised.
 
-### 5.3 `publish_concurrent`
-
-```
-publish_concurrent ─▶ targets 为空 ? 立即 pub_complete
-                   : 每个订阅者（key = Subscriber::id）
-                          immediate ? 同步段做该订阅者的链尾交接（§6）: 不占链尾
-                          create_task("shuttle-par-<topic>")
-                          ├─ wait_trigger(trig)
-                          ├─ 延迟帧：此刻才做链尾交接（无挂起点，读-改-写原子）
-                          ├─ prev->wait()              // 该订阅者的上一帧
-                          ├─ deliver(sub, env) → unit_finished()
-                          └─ mine->set()               // 成败都放行下一帧
-                   （最后一个完成的 task 使 finished == target_count 时 pub_complete()）
-```
-
-并行性在**订阅者之间**：每个订阅者一条自己的链（`Topic::sub_chains`，按
-`Subscriber::id` 索引），所以 A 慢不会拖住 B；而同一个订阅者收到的连续帧**严格 FIFO**，
-入队顺序与 `publish_serial` 同一套规则（immediate 帧在发布调用内、延迟帧在触发时刻）。
-这是有状态 checker 的前提：否则 `concurrent` 会让 A@t1 与 B@t2 乱序进入同一个回调，
-得出不可复现的错误结论。
-
-链是 per-(topic, 订阅者) 而不是 per-订阅者，因此跨 topic 既没有保序也没有阻塞；
-`publish_concurrent` 与 `publish_serial` 的链互相独立（一帧只进入它自己那条），
-所以跨方式的顺序**不承诺**。
-
-每个 task 独立捕获自己的失败：`failures()` 按完成顺序累积，`result()` 重抛第一个。
-`pub_complete()` 没有独立的汇总 task：它由最后完成的那个投递 task 在 `unit_finished()` 内
-触发，因此谁先谁后取决于回调耗时，与 task 创建顺序无关（顺序承诺只管**进入回调**的次序）。
-
-### 5.4 完整投递路径
-
-```
-                 ┌──────────── C++ 发布 ────────────┐        ┌──── SV 发布 ────┐
-Publisher<T>::publish_now/serial/concurrent         shuttle_pub#(T)::publish_now/serial/concurrent
-                 │                                        │
-        pub_now / pub_serial / pub_concurrent  shuttle_c_publish_{now,serial,concurrent}
-                 │                                        │
-                 └───────────► make_envelope[_bytes] ◄─────┘
-                                  │ 类型绑定 + ++seq + time_fs + retained 快照
-                                  ▼
-                      dispatch_now / start_serial / start_concurrent
-                                  │ 快照目标集：名字匹配 ∩ 类型标签匹配
-                                  │ 每个目标结束都 target_finished()；
-                                  │ finished == target_count 时 pub_complete()
-                                  │ （now 的 defer 段经串行链完成钩子回读本帧后触发）
-                                  ▼
-                               deliver(sub, env)
-                                  │ 入口一律按该注册的 cap（不变量 4）：
-                                  │   cap==nonblocking → dispatch_nb（export function）
-                                  │   cap==blocking    → dispatch（export task）
-                                  │ now 的同步段只含 nonblocking 注册（select 已分拨）
-                     ┌────────────┼───────────────────┐
-                     ▼            ▼                   ▼
-              typed: cb(T&)   bytes: cb_bytes   external: detail::backend::dispatch[_nb]
-                                               └─ FrameContext + 作用域修正
-                                                  → export task/function
-                                                  → shuttle_registry → 用户回调
-                                                  → 拉取帧 → unpack → invoke
-```
-
-## 6. 投递顺序：串行链与 per-订阅者链
-
-`publish_serial` 与 `publish_now(defer)` 共用每个 topic 的一条 FIFO 链，由此得到可测定律：
-**同一 topic 的后台投递顺序等于入队顺序**——immediate 触发帧的入队时刻就是发布调用，
-延迟帧的入队时刻是它的触发时刻（见 §5.2）。`publish_concurrent` 用的是**每个
-(topic, 订阅者)** 一条同类链（`Topic::sub_chains[id]`），因此同一订阅者收到的连续帧也按
-入队顺序进入回调，而不同订阅者之间并行。两条链互不相干：`serial` 帧不进入任何
-per-订阅者链，`concurrent` 帧也不进入 topic 链。
-
-链尾交接的顺序不可交换（immediate 帧在同步段内完成），两种链共用同一个函数
-`chain_join(topic, key, mine)`（`key == 0` = topic 链，`key == Subscriber::id` = 该订阅者的链；
-没有前驱时（该订阅者的首帧）直接拿到一个已 set 的 `prev`）：
+The handoff itself is non-commutative and must happen inside the same non-suspending segment. Each
+frame captures the chain-tail event to wait on and installs its own as the new tail:
 
 ```cpp
-// 立即帧：发布调用内交接（顺序 = 发布顺序，不依赖 task 何时首跑）
-auto prev = std::make_shared<weave::Event>(topics[topic].chain);  // 本帧要等的链尾
-auto mine = std::make_shared<weave::Event>();                     // 本帧要放行的链尾
-topics[topic].chain = *mine;                                      // 安装新链尾
+// immediate frame: handoff inside the publish call
+auto prev = std::make_shared<weave::Event>(topics[topic].chain);  // tail this frame waits on
+auto mine = std::make_shared<weave::Event>();                     // tail this frame releases
+topics[topic].chain = *mine;                                      // install
 
-// 延迟帧：先 wait_trigger，回到 task 后才做同样三步（无挂起点，读-改-写原子）
+// delayed frame: wait_trigger first, then the same three steps inside the task
 ```
 
-投递单元先 `prev->wait()`，结束（无论成败）后 `mine->set()`。若在投递完成时（而不是入队时）才读
-`topics[topic].chain`，并发发布会把其他帧的链尾 set 掉，而本帧该放行的那个永远不置位，
-后续帧随之永久阻塞——表现为仿真时间停在最后一个事件处且无任何报错。
-`mine->set()` 位于 `catch` 之外，保证失败与取消都不会使链停滞。
+A delivery unit waits on `prev` and sets `mine` on completion — success or failure. Reading
+`topics[topic].chain` at *completion* time instead of capturing it at enqueue time was the
+original bug: a concurrent publish installs a different frame's tail, the event this frame should
+have set never fires, and every later frame on the topic blocks forever — observed as simulation
+time frozen at the last event with no error. `mine->set()` sits outside the `catch`, so a failed
+or cancelled unit still releases the chain.
 
-延迟帧为什么不在发布瞬间入队：`after(Event)` / `after(Task)` 的延迟是无界的，占住链尾就会把
-同 topic 后续每一帧（含无触发器的帧）一起扣住，`publish_serial(...).wait()` 永久卡住；
-而若触发器本身要等"排在后面的同 topic 帧的回调"，两者相互等待即真死锁。
-`tests/cpp/trigger_tests.cpp` 的 case8/case9 分别钉住这两条；`publish_concurrent` 的
-per-订阅者链复用同一规则，case10/case11 钉住它（延迟帧不阻住无触发器的后续帧、
-延迟等待期间退订不留下死链）。
+Delayed frames must not hold the tail at publish time. An `after(Event)` delay is unbounded;
+holding the tail would pin every later frame on the topic (including frames with no trigger at
+all) and `publish_serial(...).wait()` deadlocks permanently — worst when the trigger is satisfied
+by a callback of a *later* frame on the same topic. `tests/cpp/trigger_tests.cpp` case8/case9 pin
+both laws; case10/case11 pin the per-subscriber variant.
 
-串行链的代价是跨订阅者的队头阻塞：前一个订阅者的回调彻底结束后才开始下一个。这是
-显式接受的取舍；需要并发时用 `publish_concurrent`（它只保留"同一订阅者内部"的 FIFO，
-所以并行与保序可以同时得到——不需要用户自己加 `weave::Queue`）。
+The price of the serial chain is head-of-line blocking across subscribers: one subscriber's
+callback must fully finish before the next starts. That is an accepted trade-off; the escape hatch
+is `publish_concurrent`, which keeps exactly the per-subscriber FIFO and drops only the
+cross-subscriber ordering.
 
-**禁止用法（两种链都是）**：在回调里对同一 topic 发布帧并 `wait()`。`serial` 下内层帧必须排
-在本帧之后，任何 FIFO 链设计下都死锁；`concurrent` 下同一订阅者收到的内层帧同样排在本帧之后
-（其他订阅者那一份能跑完，但只要目标里包含自己就永远等不到）。判据简单：回调里只发布不
-等待，或改用其他 topic；`Mailbox`（nonblocking 入口 + 自己的队列）也是安全形态。
+The chain tail is a `ChainLink{ev, owner}` held by `shared_ptr`, because a waiter must see the
+*live* value — a by-value copy would freeze `owner` at handoff time. `owner` (the task id that
+will set the event) is written by the delivery unit itself when it starts and cleared to −1 before
+`ev.set()`; the publisher cannot fill it in because it does not know which task will deliver.
+`Broker::remove_sub` erases that subscriber's tail slot so unsubscribing never strands chain-tail
+events in `topics`.
 
-这种自等待**可诊断**（`weave::DeadlockError`），依据是链上的所有权信息而不是"正在投递"标记：
-- 每条链的链尾是一个 `ChainLink{weave::Event ev; int owner;}`，`owner` 是"将会 set 这个事件
-  的任务 id"，由**投递单元自己**在开跑时写入（`mine->owner = current_task().id()`），
-  完成时先清零再 `ev.set()`。发布时不知道投递任务是谁，所以 owner 不能由发布方代填——
-  而等待方在挂起前读到的正是这个字段，晚写也没关系（`PubState::blocked_by` 持有的是
-  `ChainLink` 的 `shared_ptr`，读到的是活值）。
-- 判定放在**等待**处而不是入队处：`detail::check_self_blocked(pub)` 在
-  `Publication::wait()` / `wait(timeout)` / svdpi `shuttle_c_wait_pub` 挂起之前调用，
-  只要 `blocked_by` 里任一 link 的 `owner == current_task()` 就抛。
-  放进入队处会误报——回调里对自己的 topic **只发布不等待**（转发/中继）是合法用法，
-  那时链尾也确实由该回调的投递任务持有。
-- 三种入口都走同一条判定，所以 C++ 与 SV 报出的结论一致：C++ 抛
-  `weave::DeadlockError`（派生自 `std::logic_error`，会被 `catch (const std::exception&)`
-  记成普通 `Failure`），SV 侧 `shuttle_c_wait_pub` 返回 `SHUTTLE_WAIT_FAILED` 并把诊断文本
-  放进 `shuttle_c_last_error()`（`wait_done()` 据此 `$error`）。
-- 覆盖不到的形状：两个**互不相干的任务**互相等待（A 等 B 的帧、B 等 A 的帧）需要等待图，
-  单进程内的链所有权只够判断"自己等自己"。
+### Self-waiting is diagnosed at the wait site, not the enqueue site
 
-## 7. 入口模型与 NowPolicy
+Publishing to the same topic inside a callback and then `wait()`ing on the new frame deadlocks
+under any FIFO design — in `serial` the inner frame queues behind the current one, and in
+`concurrent` the same is true whenever the target set includes the publisher's own registration.
+The diagnosis relies on `ChainLink::owner`: `detail::check_self_blocked` runs *before* the
+suspension in `Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub`, and throws when
+any link in `blocked_by` is owned by the current task.
 
-`blocking` / `nonblocking` 描述**回调能否消耗仿真时间**，不是"入口会不会阻塞调用者"：
-`publish_now` 的同步段只调用 nonblocking 入口，`defer` 时 blocking 入口也在同一次发布中
-被调用，只是已位于后台链上。SV 侧两者分别对应 export task 与 export function。
+Why the wait site: publishing to one's own topic *without* waiting (relay/forward) is legal, and in
+that case the tail really is held by the current callback's delivery task — the same observation
+that must not throw at enqueue time. C++ throws `weave::DeadlockError` (recorded as an ordinary
+`Failure`); SV returns `SHUTTLE_WAIT_FAILED` with the diagnosis in `shuttle_c_last_error()`. What
+stays undiagnosed is a cycle between two *unrelated* tasks — chain ownership only proves
+"waiting for oneself", not an arbitrary wait graph.
 
-| 入口 | C++ 注册 | SV 注册 | 被谁调用 |
-| --- | --- | --- | --- |
-| blocking（`Capability::blocking`） | `subscribe<T>(topic, fn)` | `shuttle_subscribe(topic, obj)`（`SHUTTLE_CAP_BLOCKING`） | `serial` / `concurrent` 的投递单元；`now` 的后台链 |
-| nonblocking（`Capability::nonblocking`） | `subscribe<T>(topic, nb(fn))` | `shuttle_subscribe_nb(topic, obj)`（`SHUTTLE_CAP_NONBLOCKING`） | `now` 的同步段；`serial` / `concurrent`（该注册只有这一条） |
+### Unsubscribe takes effect immediately; in-flight deliveries retire
 
-字节订阅同构：`subscribe_bytes(topic, fn)` = blocking，`subscribe_bytes(topic, nb(fn))` =
-nonblocking。公开注册 API 里**没有**运行时 `Capability` 参数（`serve` / `subscribe_bytes` /
-`subscribe` 一律按参数类型选），枚举只出现在内部 `detail::sub_typed` / `detail::sub_raw` 与
-查询口 `Subscription::capability()`。
+A snapshot guarantees *who was selected*, not *that they will be called*. Both retirement sources
+are recorded as the `retired` terminal state (part of `dropped`, never `delivered`, no `Failure`):
 
-一次注册只有一个订阅者、一条入口，因此 `Subscriber` 只存一个 `Capability cap`，
-`deliver(sub, env)` 也只读它：既没有优先级，也没有二选一，更没有"本次投递"级的入口覆盖。
-SV 桥的 `caps` 参数只接受恰好为 1 或 2，其他值直接拒绝——两位同置的订阅者不可构造。
+- C++ side: `Broker::remove_sub` sets `Subscriber::removed`; `deliver` checks the flag before the
+  kind dispatch. The flag is necessary because the snapshot holds a `shared_ptr` — without the
+  check the removed callback would really run.
+- SV side: `shuttle_registry` drops silently via `retired_[id]` (only never-registered ids
+  `$error`) and calls `shuttle_c_sub_retired`; `Broker::deliver` converts the attempt via
+  `take_retired_delivery()`.
 
-**走哪个 export 由该注册的入口决定**：`cap == blocking` 走 `dispatch`（export task），
-`cap == nonblocking` 走 `dispatch_nb`（export function）。`now` 的同步段之所以不会踩到
-`Error-[DPI-INCDIC]`，靠的是 `dispatch_now` 先按 `cap` 把 blocking 目标摘走（§5.1、§11.3），
-而不是靠某个投递参数临时改写入口。
+The two sources are disjoint and neither replaces the other: the C++ flag cannot see SV-side
+`shuttle_sub::unsubscribe()` (it deletes the registry entry directly), and the SV report cannot
+cover C++ subscribers. Earlier only the SV source produced `retired` while C++ delivered to
+removed callbacks — a backend-specific terminal state, which is a category error. The reverse
+(keeping the frame on the SV side too) was rejected: it requires cross-language in-flight
+reference counting and callbacks running after `unsubscribe()` returned, both worse than dropping
+a frame.
 
-`NowPolicy` 只作用于入口为 blocking 的目标，与 topic 上是否存在 nonblocking 订阅者无关：
+### The target set is name ∩ type, fixed at snapshot; type mismatch is not a target
 
-| 策略 | 行为 | 对时序的影响 |
-| --- | --- | --- |
-| `reject` | 抛 `CapabilityError`（C++）/ 返回 `null` + last_error（SV） | 帧从不发布（`seq`、retained、`published` 均不推进） |
-| `skip` | 跳过这些目标，计入 `skipped()` 与 `dropped()` 的 `skipped` 分量 | 其余目标不受影响 |
-| `defer`（默认） | 整帧交给本 topic 的串行链（与 `serial` 同一条） | 这些回调在 `publish_now` 返回之后执行 |
+Target selection happens once, at the publish call (`Broker::match_subs(topic, tag)` intersecting
+`Subscriber::filter_tag` with the frame's `meta.type_tag`). A type-disjoint subscriber is not a
+target: no `target_count`, no delivery unit, no `dropped`, absent from `subscriber_count()`.
+`deliver` therefore never re-checks the tag.
 
-对 nonblocking 目标，`skip` 与 `defer` 无差别：两者都在 `publish_now` 返回前执行完毕。
+Why: `subscribe<T>("uart.*")` subscribes to *type-T events under `uart.*`*; a frame of another
+type was never its frame. Mis-typed tags are caught earlier, as `TypeMismatchError`, by
+`Broker::check_filter_early` at subscription and `Broker::check_bind_compat` at first bind — the
+latter exists because SV subscribers carry a tag without declaring a binding, and without it a
+wrong tag would silently exclude the subscriber from every frame depending on registration order.
+The last line of defense inside `deliver`: a `raw_ops` frame (unbound topic, pure bytes) hitting a
+typed subscriber throws `PublishError` instead of bit-casting `vector<byte>` to `T`.
 
-## 8. 数据结构
+### Exactly one completion advance point
 
-broker 的状态集中在三处：topic 表、订阅者表与发布表。帧是不可变快照，
-完成跟踪挂在发布表上；其余对象都是这两者的视图。
-
-### 8.1 Topic / Subscriber / Envelope
-
-```cpp
-struct Topic {
-  std::optional<Binding> binding;        // 未绑定 = 只能发纯字节流（三件事是一个东西，所以是一个 optional）
-  // struct Binding { std::string tag;    // C++ SHUTTLE_REFLECT 名 / SV type_tag
-  //                  const detail::TypeOps* ops; };  // raw_ops = 纯字节流
-  std::uint64_t seq;                     // topic 级序号：每个 topic 各自从 1 起（不是全局唯一）
-  std::uint64_t published, delivered, deferred;           // deferred = 被 defer 进链的次数
-  std::uint64_t retired, skipped, failed;                // 未成功投递的三分解，dropped() = 三者之和
-  bool retained_on; std::shared_ptr<const Envelope> retained_env;
-  std::string_view name_view;            // Meta::topic_name 的视图：指向 topics 的 key（只增不删）
-  weave::Event chain;                    // 后台链尾（serial 与 now 的 defer 共用，初始已 set）
-};
-
-struct Subscriber {
-  SubKind kind;                          // typed / bytes / external
-  int id;
-  int handle;                            // kind == external：后端侧不透明句柄（svdpi = SV 注册表编号）
-  std::string pattern, filter_tag;       // filter_tag 空 = 任意类型（参与目标集判定）
-  Capability cap;                        // 该次注册唯一的那条入口（§7）
-  ErasedCallback cb; ByteCallback cb_bytes;
-  const detail::TypeOps* ops;            // typed 订阅者的类型（供字节流物化）
-  std::uint64_t received, retired, skipped, failed;  // dropped() = retired + skipped + failed
-};
-
-struct Envelope {                        // 一帧的不可变快照
-  std::shared_ptr<const void> payload;   // typed: const T；raw: const vector<byte>
-  const detail::TypeOps* ops;
-  mutable std::shared_ptr<const std::vector<std::byte>> encoded;  // 跨语言编码缓存（懒）
-  Meta meta;
-};
-```
-
-`Broker` 是函数内静态单例（`Broker::get()`），持有 `topics`、`subs`、`pubs` 与两个 id 计数器。
-每个进程一份；SV 侧只维护一层注册表，二者共享同一个 broker。
-
-`pubs` 只登记**外部（SV）发布**：SV 句柄里只有 `pub_id`，必须能反查 `PubState`；C++ 的
-`Publication` 自己持有状态，把每一帧都插进 `pubs` 只会让它随帧数无界增长。发布热路径上保留两处
-廉价优化：`Subscriber::literal` 缓存“模式不含通配符”（普通订阅者一次 `string_view` 比较，
-不走逐段 `match`）；`dispatch_now` 用 `std::partition` 原地分组（不再为 blocking / nonblocking
-各建一份快照）。`deliver` 直接接收 `Topic&`，退订跳过时不再二次查表；`make_envelope` 与
-`make_envelope_bytes` 共用同一个建帧函数，字节路径把调用方的缓冲 move 进 `Envelope`。
-
-`Meta.topic_name` / `Meta.type_tag` 的类型是 `std::string_view`，指向 broker 已经拥有、且永不移动的存储
-（topic 表的 key、`Binding::tag`）。建帧因此不再为帧头做堆分配，`Meta` 的拷贝也只是两个
-(指针, 长度) 对（`MailboxItem` 存 `Meta` 时同样受益）。它们**不保证 NUL 结尾**：需要
-`const char*` 的地方（svdpi 的 export 表）在 `src/backend/svdpi/bridge.cpp` 里先物化成
-`std::string` 再 `.c_str()`，所以这条开销只落在 SV 投递路径上，纯 C++ 路径不受影响。用户侧按
-普通字符串用：`meta.topic_name == "dev.tx"`、`std::string s{meta.topic_name};`、
-`s = meta.topic_name;` 都成立；但 `std::string s = meta.topic_name;`（拷贝初始化）不行——
-`string_view → string` 是 explicit 构造，需要写成 `std::string s{meta.topic_name};`。代价是
-**公开头文件的布局变化**（ABI）：`Meta` 不能再由用户用字符串聚合初始化，旧二进制要与新的
-`libshuttle.so` 一起重编；语义不变，`Meta` 仍是由 broker 生成的只读值。
-
-**`Meta.topic_name` 与 `Meta.topic_seq` 是两条正交轴，不能互相替代**：`topic_name` 回答"哪条信道"
-（同一 topic 的所有帧共享它，所以它不标识一帧），`topic_seq` 回答"该信道上第几帧"（每个 topic 从 1 起
-独立递增，所以 `a.1` 与 `b.1` 并存，它不是全局唯一）。`(topic_name, topic_seq)` 合起来才是帧标识
-（broker 生命周期内）。
-
-两个都不能省：
-
-- **只留一个全局序号**：同 topic 相邻两帧的差变成任意值，"a.tx 上我是否漏了第 6 帧"就答不了；
-  而 `published`/`delivered`/`skipped`/`retired` 全部是 per-topic 计数，`topic_seq` 的用途正是与
-  它们对账（跳号 = 中间有帧没到；`serial` 链上应严格递增，可当顺序断言）。
-- **只留 topic_name**：同一 topic 的帧彻底不可区分——retained 重放与实时帧无法分辨，日志里也指认
-  不出"第几帧"。注意 retained 复用同一个 `Envelope`（§6），晚注册的订阅者会先看到**旧**的
-  `topic_seq`（如 5），随后实时帧从 6 继续，这个跳变正是"补发的历史帧"的信号。
-- **名字本身省不掉**：通配符订阅一次注册可命中多个具体名（`a.*` 同时收 `a.tx` 与 `a.rx`），
-  回调里必须知道具体来源；类型绑定、retained 槽、错误消息与 `topic_info` 都以名字为索引，
-  `topics` 就是 `std::map<std::string, Topic>`。帧里永远只有**具体名**，订阅模式（含 `*`/`>`）
-  从不进入 `Meta`（§10）。
-
-`topic_seq` 原样过 DPI（`shuttle_sv_dispatch` 的 `longint topic_seq`），所以 C++ 日志与 SV `$display`
-可以用 `(topic_name, topic_seq)` 对齐到同一帧；但它**不能**当请求-响应关联 id 用——发布方看不到
-自己那帧的 `topic_seq`（§17）。字段名带作用域前缀就是为了不让读者以为它是全局序号（`seq` 这个名字
-曾被误读成"全局唯一"）。
-
-### 8.2 PubState（完成跟踪）
-
-```cpp
-struct PubState {
-  int id;
-  std::size_t target_count, finished;         // 单位是"订阅者"，不是"投递单元"
-  std::size_t skipped, deferred, retired;  // 见 §9
-  bool done_flag; weave::Event done_ev;
-  std::vector<Publication::Failure> failures; std::string first_error;
-  std::vector<std::function<void()>> on_complete;   // 完成瞬间钩子（SV wait_done 用）
-};
-```
-
-`pubs` 只随外部（SV）发布增长且只增不减（`pub_id` 不复用，仅随进程结束回收）；C++ 发布不进表。
-长时间跑 SV 侧高频发布的回归仍需要周期性清理策略。
-
-### 8.3 topic 名与订阅模式的语法
-
-通配符**只属于订阅模式**。发布、类型声明（`topic_declare`）、retained（`topic_set_retained`）
-拿到的都是具体名字，两侧用同一套规则校验，违反即抛 `TopicPatternError`：
-
-| 场合 | 写法 | 拒绝 |
-| --- | --- | --- |
-| topic 名（发布 / 声明 / retained） | `uart`、`uart.rx`、`uart.rx.0` | 含 `*` 或 `>`、空串、空段（`uart..rx`） |
-| 订阅模式 | 普通段、`*`（独占一段）、`>`（独占一段且必须末段） | `a.>.b`、`a.rx*`、空段、空串 |
-
-发布侧为什么必须拒绝：路由是字符串比对，允许 `publish_serial("uart.*")` 就等于在 `topics` 表里
-立起一个名字带 `*` 的幻影 topic——它有自己的 `seq`、类型绑定与 retained 槽，并且**真的会**
-投给 `uart.*`、`uart.>`、`>` 三类订阅者。看起来像"往整棵树广播"，实际只是名字碰巧撞上了模式；
-而 `uart0.*` 的订阅者反倒收不到。更糟的是 `check_bind_compat` 会跳过通配符订阅者，于是这类
-误用连"标签写错"都不会暴露。
-
-订阅侧为什么也要校验：`match` 一旦遇到模式端的 `>` 就放行剩余模式，所以 `a.>.b` 会静默退化成
-`a.>`；`a.rx*` 则只能匹配字面量 `a.rx*`。两者都是"注册成功、永远收不到"的沉默错误。
-
-校验点在**建任何状态之前**：发布走 `make_envelope` / `make_envelope_bytes`（`now` 还多一道
-`now_preflight`，且先于策略判定——同一个非法名字不该因为 `NowPolicy` 不同而换一种报错），
-topic 级写入走 `topic_declare` / `topic_set_retained`，注册走 `sub_typed` / `sub_raw` / `ext_sub`。
-只读查询（如 `topic_retained`）不校验，非法名一律当"没绑过"返回。
-
-## 9. 记账契约
-
-三种发布方式共用同一套记账规则，这是本实现最重要的契约。
-
-### 9.1 五种终态
-
-每个目标对本帧只有五种互斥且穷尽的结局：
-
-| 终态 | 含义 | 计数落点 |
-| --- | --- | --- |
-| `delivered` | 回调执行完毕（SV 侧 = export 返回） | `Topic::delivered`、`Subscriber::received` |
-| `retired` | 未进入回调，且无人出错：快照之后、回调之前被退订（**订阅者的决定**；C++ 的 `Subscriber::removed` 或 SV 注册表丢弃，§9.1.1） | `Publication::retired()`、`Topic::retired`、`Subscriber::retired` |
-| `failed` | 投递没有成功收尾：回调抛异常（内容已送到、回调里抛出）/ 帧未能物化 / 投递被取消 / 单元级失败（未尝试的目标也补齐计数） | `Topic::failed`、`Subscriber::failed`、`failures()` |
-| `deferred` | 返回时尚未开始（仅 `now` 的 `defer` 段），之后必落入前三种之一 | `Publication::deferred()`（标记） |
-| `skipped` | 未进入回调，且无人出错：被策略摘出**帧级**目标集（**发布者的决定**，仅 `now` 的 `skip`；仍计入订阅者级 `dropped` 的 `skipped` 分量，§9.2） | `Publication::skipped()`、`Topic::skipped`、`Subscriber::skipped` |
-
-`reject` 不产生终态：它在建帧之前判定（`Broker::now_preflight`，§5.1），被拒绝的帧不推进
-类型绑定、`seq`、retained 快照与 `published`，等价于从未发布。
-
-`PubState` 的字段即上表的帧级投影：
-
-```cpp
-target_count;  // 目标数（不含 skipped）
-finished;  // 已达终态的目标数 = delivered + retired + failed
-skipped;   // 被 skip 跳过的目标数（不进 target_count）
-deferred;  // 转到后台链、返回时尚未开始的目标数（标记，不回零）
-retired;   // 快照后被退订而跳过、但计入 finished 的目标数（不分语言，§9.1.1）
-```
-
-#### 9.1.1 目标集 = 名字 ∩ 类型
-
-**类型不匹配不是一种终态，因为它不是目标。** 目标集的判定在快照时一次做完
-（`Broker::match_subs(topic, tag)`：`Subscriber::filter_tag` 与帧的 `meta.type_tag` 相交）：
-类型不相交的订阅者不进 `target_count`、不建投递单元、不动 `dropped`、也不出现在
-`subscriber_count()` 里。`deliver` 因此不看类型标签（§5 的时序图里"快照目标集"一步就是全部）。
-
-原因很直接：`subscribe<T>("uart.*")` 订阅的是 `uart.*` 下**类型 T** 的事件，类型不相交的帧
-本来就不是它的。标签写错这种真错误不靠投递期筛选，而由两条前置校验拦成 `TypeMismatchError`：
-订阅时 `Broker::check_filter_early`、首次绑定时 `Broker::check_bind_compat`（§10.3）。
-测试：`tests/cpp/publish_tests.cpp` case15、`tests/cpp/broker_tests.cpp` case11。
-
-快照只保证**谁被选中**，不保证**一定被调用**（"退订即生效"，两种语言同一口径）。两个来源，
-覆盖全部窗口：
-
-| 来源 | 机制 | 覆盖的窗口 |
-| --- | --- | --- |
-| C++ 侧 `Subscriber::removed` | `Broker::remove_sub` 置位；`deliver` 在入口检查（kind 分支之前），因为快照持有 `shared_ptr`、对象还活着，不查就会真的调进回调 | 快照 → 投递之间的任意时刻 |
-| SV 注册表回告 | `shuttle_registry` 在退订时删除 sink 并置 `retired_[id]`，随后的在途 dispatch 静默丢弃并调 `shuttle_c_sub_retired` → `Broker::deliver` 里 `take_retired_delivery()` | 同上，但退订发生在 SV 侧，C++ 无法本地观察 |
-
-两个来源互不重叠也互不替代：C++ 的标记看不到 SV 侧的 `shuttle_sub::unsubscribe()`（它直接
-删注册表条目），SV 的回告也覆盖不到 C++ 订阅者。曾经只有 SV 一侧会产生 `retired`（C++ 侧
-按"快照语义"照常回调），这与后端隔离的方向矛盾——后端不该有专属终态，故统一为两来源。
-
-反向（让 SV 也保帧）不可行：`shuttle_sub` 退订后 sink 已不在注册表里，要保帧就得让注册表
-一直持有到本帧结束，即跨语言的在途引用计数（C++ 还得回告"帧 X 完成"），并让
-`unsubscribe()` 之后仍被调用——比丢一帧糟得多。
-
-测试：`tests/cpp/broker_tests.cpp` case12（同帧内 B 退订 A → A 记 retired）、
-`tests/cpp/trigger_tests.cpp` case7（触发等待期间退订）、`tests/sv/shuttle_tests.sv` 的
-`case_retired`。
-
-### 9.2 不变量
-
-1. `done()` 当且仅当 `finished() == subscriber_count()`，三种方式无例外；
-2. `subscriber_count() + skipped() == 本帧的目标订阅者数`（名字 ∩ 类型，且未被策略跳过）；
-3. `finished()` 只累计 delivered + retired + failed；`deferred` 完成后必落入这三者之一，
-   因此 `finished() ≤ subscriber_count()`；
-4. 订阅者级 `received() + dropped() == 本帧名字∩类型命中它的次数`（失败、退订丢弃、策略
-   跳过都计入 `dropped`，回调异常亦然；`dropped() == retired + skipped + failed`）。
-   注意两级的"目标"口径差一步：帧级 `subscriber_count()` 不数被 `skip` 的，订阅者级
-   `dropped()` 数它们——所以 `received + dropped` 的分母是"命中次数"而不是 `subscriber_count`；
-5. 同一事件在 topic 级与订阅者级 `dropped` 中的口径一致（退订丢弃、策略跳过、失败三类）；
-   两级的三个分量都恒有 `dropped == retired + skipped + failed`（`broker::TopicInfo` 三个字段同口径）。
-
-### 9.3 唯一推进入口
-
-`finished` 只由 `Broker::target_finished()` 递增：
+`Publication::finished()` means "targets that reached a terminal state", and the only place that
+advances it is `Broker::target_finished()`:
 
 ```cpp
 void target_finished(const std::shared_ptr<PubState>& pub) {
@@ -561,415 +240,267 @@ void target_finished(const std::shared_ptr<PubState>& pub) {
 }
 ```
 
-三种方式的每个目标结束都走这里——串行链单元、并发单元、`now` 的同步段，以及
-`now` 的 defer 段（由串行链的完成钩子按目标数并回）。不存在"整个单元一次性把
-`finished` 置成 `target_count`"的分支，否则 §9.2 的第 1 条在部分失败时会失真。
+Every path — successful delivery, retired skip, callback exception, a serial unit's unit-level
+failure (unattempted targets are still counted) — goes through it. There is no branch that sets
+`finished = target_count` wholesale at unit end; that shape would make `done()` true before
+delivery actually finished. `pub_complete()` runs hooks before setting `done_ev`, so a waiter
+woken by the event never observes the "SV process not yet woken" intermediate state. A publish
+with zero targets completes immediately (`publish_serial` short-circuits too). Everything that
+"did not arrive" is countable: policy `skip` lands in `skipped()`, snapshot-time unsubscribe in
+`retired()`, type-disjoint frames never enter the target set.
 
-`pub_complete()` 的顺序固定：置 `done_flag` → 依次执行并清空 `on_complete` 钩子
-（异常吞掉，不影响投递结果）→ `done_ev.set()`。钩子先于事件触发，因此被 `done_ev`
-唤醒的等待者不会观察到"SV 进程尚未被唤醒"的中间状态。
+The five terminal states:
 
-### 9.4 三层的读取方式
+| State | Meaning | Counted at |
+|---|---|---|
+| delivered | callback ran to completion (SV: export returned) | `Topic::delivered`, `Subscriber::received` |
+| retired | never entered the callback, nobody at fault: unsubscribed after snapshot, before callback | `Publication::retired()`, `Topic::retired`, `Subscriber::retired` |
+| failed | delivery did not complete cleanly: callback threw, frame failed to materialize, cancelled, unit-level failure | `Topic::failed`, `Subscriber::failed`, `failures()` |
+| deferred | not yet started at return time (only `now`'s defer segment); later falls into one of the three above | `Publication::deferred()` (a marker) |
+| skipped | never entered the callback, nobody at fault: removed from the frame-level target set by policy (only `now` + `skip`) | `Publication::skipped()`, `Topic::skipped`, `Subscriber::skipped` |
 
-| 层 | API | 语义 |
-| --- | --- | --- |
-| 帧 | `Publication::subscriber_count()/finished()/skipped()/deferred()/retired()` | 本帧的可见性计数 |
-| 订阅者 | `Subscription::received()/dropped()` | 该注册在生命周期内的累计（细分项在 topic 级 `TopicInfo` 上读，口径相同） |
-| topic | `broker::topic_info().published/delivered/dropped/retired/skipped/failed/deferred` | 该 topic 的累计（`dropped = retired + skipped + failed`；`deferred` 只统计 `now` 的 defer 段） |
+Accounting invariants (`dropped = retired + skipped + failed` at both topic and subscriber level):
 
-SV 侧同名方法经 `shuttle_c_pub_stat(pub_id, kind)` 读取，`kind` 0/1/2/3/4 分别对应
-目标 / 已结束 / 策略跳过 / deferred / 退订跳过（见 `dpi_protocol.md` 的 import 表）。
+1. `done()` iff `finished() == subscriber_count()`, all three flavors, no exceptions;
+2. `subscriber_count() + skipped()` = this frame's target-subscriber count (name ∩ type, minus policy-skipped);
+3. `finished()` counts only delivered + retired + failed; hence `finished() ≤ subscriber_count()`;
+4. subscriber-level `received() + dropped()` counts every frame whose name ∩ type matched it — note the frame-level/subscriber-level denominator differs by the `skip` step: `dropped()` counts policy-skipped frames, `subscriber_count()` does not.
 
-## 10. 类型系统与载荷
+### Wildcards belong to subscription patterns only
 
-### 10.1 类型擦除边界
+Publish, `topic_declare` and `topic_set_retained` take concrete names; `>` must stand alone in the
+last segment of a pattern, `*` alone in any segment; empty segments and empty strings are rejected
+on both sides (`TopicPatternError`). Validation runs **before any state is built**.
 
-`include/shuttle/detail/abi.hpp` 是唯一不知道 `T` 的地方：
+Why publish-side rejection matters: routing is string comparison, so allowing
+`publish_serial("uart.*")` would erect a phantom topic named `uart.*` in the `topics` table — with
+its own `seq`, binding and retained slot — and it would really fan out to `uart.*`, `uart.>` and
+`>` subscribers. It looks like broadcasting to a subtree; it is a name coincidence, and `uart0.*`
+subscribers would not receive it. Worse, `check_bind_compat` skips wildcard subscribers, so the
+misuse would not even surface a wrong tag. Why subscription-side validation matters: `match`
+accepts the rest of the pattern once it sees `>`, so `a.>.b` silently degenerates to `a.>`; `a.rx*`
+only matches the literal `a.rx*`. Both are "registered successfully, never receives" silences.
 
-```cpp
-struct TypeOps {
-  const char* tag;                                                        // 类型标签
-  std::vector<std::byte> (*encode)(const void*);                          // 无 codec 时为 nullptr
-  std::shared_ptr<const void> (*decode)(const std::vector<std::byte>&);   // 同上
-};
-template <typename T> const TypeOps* type_ops();   // 每个 T 一份静态实例
+Read-only queries (`topic_retained`) do not validate: an illegal name simply reads as "never
+bound". In `now_preflight`, name validation precedes the policy decision — the same illegal name
+must not change its error with `NowPolicy`.
+
+### `topic_name` and `topic_seq` are two orthogonal axes, and the publisher cannot see its own seq
+
+`Meta::topic_name` answers "which channel" (shared by all frames of a topic, so it does not
+identify a frame); `Meta::topic_seq` answers "which frame on that channel" (per-topic, from 1, so
+`a.1` and `b.1` coexist). The pair identifies a frame within the broker's lifetime. Neither can go:
+
+- a single global seq makes the gap between adjacent frames on one topic meaningless, while all
+  counters are per-topic and `topic_seq` exists precisely to be reconciled with them (a gap means a
+  missed frame; on the `serial` chain it must be strictly increasing);
+- name alone makes frames indistinguishable — a retained replay could not be told from a live
+  frame (a late subscriber first sees the *old* `topic_seq`, then live frames continue: the jump is
+  the "replayed history" signal);
+- the name itself cannot go: a wildcard registration matches several concrete names, so a callback
+  must learn the concrete source; the `topics` table is keyed by it. Frames always carry the
+  concrete name; patterns never enter `Meta`.
+
+`topic_seq` crosses the DPI boundary as-is (`longint topic_seq`), so C++ logs and SV `$display`
+align on `(topic_name, topic_seq)`. It can never serve as a request-response correlation id,
+because the publisher cannot see its own frame's `topic_seq` (see the correlation decision below).
+The field names carry their scope prefix precisely because a bare `seq` was misread as global.
+
+### `publish_now` has a reentrancy bound
+
+Because callbacks run on the publisher's stack, a subscriber that `publish_now`s again recurses
+rather than suspends; two mutually-publishing subscribers overflow the stack with no diagnosis.
+`dispatch_now` carries a `thread_local` depth counter (`kMaxNowDepth = 8`) turning the cycle into
+a `PublishError`. The bound is a diagnostic ceiling, not a policy: legitimate nesting
+(request frame → responder handler → reply frame) reaches depth 2–3. Within the synchronous
+segment a single callback failure does not abort the frame — it is recorded in `failures()` and
+`first_error`, the loop continues, and the first exception is rethrown to the caller only after
+all targets finished. On the SV side `shuttle_c_publish_now` converts the exception into a return
+code plus `shuttle_c_last_error()`.
+
+### Responses travel on `publish_now`, and the response topic rejects blocking observers
+
+`Requester` and `serve` mark the response topic as a response channel (`Topic::carries_responses`);
+any *blocking*-entry registration on that topic is then rejected at registration time by
+`Broker::check_response_topic` (`CapabilityError`, wildcard patterns judged by match — a blocking
+`dev.>` observer on `dev.resp` fails too). The reason: a blocking observer holds the topic's
+serial chain, every later reply queues behind it, and the requester cannot distinguish "the
+responder died" from "the reply is queued behind a slow observer" — the timeout would lie.
+Registration-time rejection is the early-failure counterpart of the entry decision above; a
+delivery-time check would be too late. The name itself stays public (`resp_topic()`,
+hardcoded cross-language strings are legal), publishing to the topic by hand is legal; only
+blocking *observation* is banned. Blocking observers registered before the mark are not
+retro-rejected — the `publish_now` path makes them harmless.
+
+Replies use `detail::pub_now` (SV `shuttle_pub::reply` likewise), never `publish_serial`: with a
+`nb(handler)` responder and `send_now()`, the entire round trip runs on the requester's stack —
+`send_now()` returns with the reply already in the `Call` (`call.queued() == 1`), zero RTT, no
+simulation time consumed. `NowPolicy::defer` is only the fallback for a blocking responder
+registered before the mark. Because replies never join the chain tail, a slow observer cannot
+delay a requester even where one exists.
+
+### The correlation id lives in the frame header, not the payload
+
+`Meta::corr_id` is the request-response correlation id: allocated by the requester, echoed back
+by the responder, used to route a reply to its `Call`. It is the only business-writable field of
+`Meta` (the rest are broker-filled); `0` means "not a correlated exchange". The public publish
+trio does not expose it — `Publisher::publish_*` always sends `corr_id = 0`; only `Requester::send_*`,
+`serve` and SV `shuttle_pub::reply` write it (via the trailing argument of the internal
+`detail::pub_*`).
+
+Why not in the payload, in three load-bearing arguments:
+
+- the publisher cannot see its own `topic_seq`, so a seq-derived id could not be written into the
+  payload before publishing;
+- ordering requires the id to be in the table *before* the publish: `send_now` + nonblocking entry
+  means the responder replies on the publisher's stack synchronously — one step late and the reply
+  is stale (`stale_responses()` grows);
+- `topic_seq` is per-topic bookkeeping (`a.req` and `b.req` both start at 1, and `serve` supports
+  wildcard request topics), so exposing it would collide ids and turn a diagnostic field into an
+  ABI contract.
+
+The counter is a process-level plain `static` (sound under the single-active-process model), so
+two `Requester` instances sharing a response topic do not collide. The reply table holds
+`weak_ptr`s; the `Call` holds the only strong reference, so dropping the handle (or `cancel()`)
+releases the slot and late replies land in `stale_responses()` — countable, never silently
+misdelivered. Without the id, out-of-order replies misassign (two in-flight requests, FIFO order,
+swapped answers are undetectable when values coincide — pinned by `requester_tests::case2`), a
+3-target request cannot answer "how many replies remain", a late reply from a timed-out request
+poisons the next one, and SV responders have no integer to echo back.
+
+`wait_all()`'s expected reply count is a convention, not knowledge: the framework defaults to
+"each target of the request frame replies exactly once" (`publication().subscriber_count()`);
+with non-replying observer subscribers, use `wait_for(n)` / `recv`. Request and response topics
+must differ — the responder publishes its reply inside the request callback, and a shared topic
+would queue the reply behind the callback that published it; the constructors throw
+`std::invalid_argument`.
+
+### Mailbox is a subscriber plus a queue, not a new delivery mechanism
+
+`Mailbox<T>` composes two existing capabilities: a subscriber identity via the ordinary
+`detail::sub_typed` / `sub_raw` registration with a **fixed nonblocking entry**, and its own
+`std::deque` + `weave::Event`. The broker gains no state and no exported symbols — hence the
+header-only implementation. The entry must be nonblocking because the mailbox's callback only
+copies into the queue, and it runs inside `publish_now`'s synchronous segment (publisher's stack);
+a blocking mailbox callback would deadlock the publisher. The useful corollary: `publish_now`
+fills a mailbox synchronously, so a request to a purely nonblocking peer completes with zero RTT.
+
+Bounded mailboxes must pick `drop_oldest` / `drop_newest` / `reject` at construction;
+`OverflowPolicy::block` is rejected because blocking the deliverer deadlocks the publisher.
+`overflowed()` ("accepted by the queue, then dropped") and `Subscription::dropped()` ("never
+delivered to this subscriber") are two different ledgers; `reject` reuses the normal `Failure`
+channel rather than inventing a new one. Closing is idempotent (unsubscribe + wake waiters), and
+the queue stays readable after `close()`. The SV mailbox (`shuttle_pkg::shuttle_mailbox`) is pure
+SV over `shuttle_subscribe_nb` and weave's `weave_sv_wait` / `weave_sv_trigger` — no new DPI
+entries; SV has no exceptions, so only `drop_oldest` / `drop_newest` exist there.
+
+The mailbox is a timing primitive, not an RPC primitive: a single-responder exchange without a
+correlation id can be built on it (and the demo shows exactly that), but `Requester` is its
+*sibling*, not its user — the requester reuses the same subscription primitives directly and does
+not include `mailbox.hpp`.
+
+### Cross-language frames pass the payload by reverse pull
+
+C++→SV delivery does not pass the payload as a DPI argument: the C++ side parks the encoded frame
+in a process-level `FrameContext` (an RAII save/restore stack, nesting-safe), and the SV export
+body pulls it with `shuttle_c_frame_len()` + `shuttle_c_frame_qword(i)`. The trigger was VCS
+2018.09's `svdpi.h` lacking `svCreateArray` — C++ cannot construct an open array — plus the
+lifetime problem of caller-stack arguments. The safety premise is the single-active-process
+contract: while the export executes, no other process can overwrite the parked frame. The full
+protocol — import/export tables, on-wire format, scope rules — is [backends.md](backends.md)'s
+subject; the decision recorded here is only that the bridge depends on the port contract, never
+the other way round.
+
+### Delayed triggers name an edge, they never pass an event id
+
+`SHUTTLE_TRIG_EDGE`'s `trig_name` is a weave edge *name*; the C++ side does
+`weave::sv::Edge(name)` find-or-insert in weave's own name table, so both sides share one id.
+Shuttle holds no event objects and offers no by-id restoration — the earlier
+`shuttle_event` + `shuttle_c_event_*` + `SHUTTLE_TRIG_EVENT` shadow event system was deleted and
+must not return: an id crossing DPI forces someone to own an "id → event" table, losing early
+failure and single ownership. Waits go through `Edge::wait()` / `Pulse::wait()` rather than raw
+`weave_sv_wait`, inheriting weave's suspension bookkeeping (cancellation injection, the wait
+graph, and "no current task while suspended" — the last one is what makes the self-wait diagnosis
+above sound). Edge semantics are edge, not latch: a `fire()` before the wait registers is lost (use
+`after(weave::Event&)` for latching). VCS 2018.09 reserves `edge`, so the SV field is `edge_name`.
+
+### `Meta` strings are views, and `pubs` holds only external publishes
+
+`Meta::topic_name` / `Meta::type_tag` are `std::string_view`s into storage the broker already
+owns and never moves (the `topics` key and `Binding::tag`), so building a frame costs no header
+allocation and copying `Meta` is two (pointer, length) pairs. They are not NUL-terminated:
+DPI export tables need `const char*`, so `src/backend/svdpi/bridge.cpp` materializes
+`std::string` only on the SV delivery path; pure C++ usage is unaffected. Users write `meta.topic_name == "dev.tx"` and `std::string s{meta.topic_name}`
+— copy-initialization `std::string s = meta.topic_name;` does not compile (the `string_view` →
+`string` constructor is explicit). The price is ABI: `Meta` can no longer be aggregate-initialized
+from strings by user code, and old binaries must be recompiled against a new `libshuttle.so`.
+
+The `pubs` table registers only *external* (SV) publishes, because an SV handle knows just a
+`pub_id` and must resolve it back to `PubState`; C++ `Publication`s hold their state and inserting
+every frame would grow `pubs` without bound. It grows monotonically (`pub_id` is never reused);
+long-running SV-side high-frequency regressions still need a periodic cleanup policy.
+
+### Handle lifetimes
+
+`Publication` is a copyable `shared_ptr<Impl>`. `Subscription` is a `shared_ptr<Impl>` whose
+*last* destruction unsubscribes (`Impl::~Impl` → `Broker::remove_sub`); `unsubscribe()` is
+idempotent. The SV `shuttle_sub` is an id pair plus an `active_` flag, does not unsubscribe on
+destruction (SV has no deterministic destruction), and the SV `shuttle_handle` mirrors
+`Publication`'s methods over `pub_id`. "Unsubscribe takes effect immediately" means both: later
+frames no longer select the subscriber, and already-snapshotted frames skip it as retired.
+
+## Layering of the public surface
+
+Dependencies point downwards; `shuttle.hpp` is the umbrella and defines what is public:
+
+```
+shuttle/types.hpp        Capability / SubKind / NowPolicy / OverflowPolicy / errors
+shuttle/meta.hpp         Meta{topic_name, topic_seq, type_tag, time_fs, corr_id}
+shuttle/codec.hpp        Writer / Reader (big-endian) + SHUTTLE_REFLECT
+shuttle/trigger.hpp      Trigger + after/after_all/after_any factories
+shuttle/publisher.hpp    Publisher<T> (pub_* ABI visible here; pulls detail/abi.hpp)
+shuttle/subscription.hpp subscribe<T> / subscribe_bytes / Subscription (pulls detail/abi.hpp)
+shuttle/publication.hpp  Publication (handle over shared Impl)
+shuttle/mailbox.hpp      Mailbox<T> — header-only, no broker state
+shuttle/requester.hpp    Requester / Call / serve — header-only, no broker state
+shuttle/broker.hpp       read-only introspection (shuttle::broker::topic_info …)
+shuttle.hpp              umbrella
 ```
 
-- C++ 内部投递零拷贝：`make_shared<const T>(msg)` 作为 `Envelope::payload`，
-  typed 订阅者直接 `cb(payload.get(), meta)`；
-- 只有存在字节订阅者（SV 订阅者或 `subscribe_bytes`）或帧本身来自 SV 时才编码，
-  结果缓存在 `Envelope::encoded`，一帧多订阅者只编一次。
-
-### 10.2 编解码
-
-`include/shuttle/codec.hpp` 提供 `Writer` / `Reader`（大端，越界抛 `DecodeError`）、
-`Codec<T>` 及其标量/字符串/枚举/容器特化，`SHUTTLE_REFLECT(Type, 字段...)` 为聚合类型生成
-特化（`tag()` 返回 `#Type`，字段按声明序编码，上限 16 个）。线上格式见
-`dpi_protocol.md` 的线上格式一章；SV 侧必须用 `{>>{...}}`（声明序、每字段高位在前）。
-
-读写的边界检查按整型宽度一次完成（`Writer::put_be` 一次 `resize`，`Reader` 每整数一次
-`take`），不再逐字节递归；字符串/vector 解码在用长度前缀分配之前先用 `Reader::remaining()`
-校验（损坏的长度不可能触发巨额预分配），编码侧也按已知长度预留缓冲。
-
-### 10.3 类型绑定
-
-topic 首次被声明时绑定类型标签，之后所有发布与订阅都必须一致，否则
-`TypeMismatchError`。绑定来源有四个：
-
-1. C++ `Publisher<T>` 构造 → `topic_declare(topic, ops)`；
-2. C++ `subscribe<T>` 且 pattern 不含通配符 → 立即 `topic_declare`（支持"SV 先发布、
-   C++ 后订阅"的时序）；
-3. SV 发布 → `make_envelope_bytes` 按 `type_tag` 绑定；
-4. SV 先发布、topic 尚未绑定、但已有匹配的 typed C++ 订阅者 → `make_envelope_bytes`
-   用该订阅者的 `ops` 绑定，否则这一帧只能是 `raw_ops`。
-
-前三种绑定发生时（`make_envelope` / `make_envelope_bytes` 的 `!t.bound` 分支）会跑
-`Broker::check_bind_compat`：若已有“模式恰好是该 topic 且标签不同”的订阅者，直接抛
-`TypeMismatchError`，**通配符订阅者跳过**（它们本就横跨类型，只在目标集快照时相交）。
-这一步是 `check_filter_early` 的镜像，专门覆盖 SV 侧“只带标签、不声明绑定”的订阅者：
-否则同一个标签写错，topic 先绑定则订阅时就报错，订阅先发生则此后每帧都悄无声息地不属于
-目标集——错误能不能被发现取决于注册顺序。
-
-防线：`deliver` 的 typed 分支遇到 `env.ops == &raw_ops` 直接抛 `PublishError`。
-缺少这条防线时，`raw_ops` 帧会被当成 `vector<byte>` 强转成 `T`，读到堆内存垃圾。
-
-通配符订阅无法预绑定，参与每帧的目标集判定（`Subscriber::filter_tag` ∩ 帧的
-`meta.type_tag`，§9.1.1），不匹配的帧不算目标，因此不产生任何计数。
-
-## 11. svdpi 后端
-
-### 11.1 两个方向与载荷传递
-
-| 方向 | 入口 | 载荷如何过边界 |
-| --- | --- | --- |
-| SV → C++ | `shuttle_c_publish_now` / `_serial` / `_concurrent`（import function） | `byte payload[]` open array → `svGetArrElemPtr1` 逐字节拷贝 |
-| C++ → SV | `shuttle_sv_dispatch`（export task）/ `shuttle_sv_dispatch_nb`（export function） | **不走形参**：C++ 先把帧放进 `g_frame`（进程级全局），SV 在 export 体内用 `shuttle_c_frame_len()` + `shuttle_c_frame_qword(i)`（每块 8 字节）拉取 |
-
-反向拉取的原因：VCS 2018.09 的 `svdpi.h` 没有 `svCreateArray`，C++ 无法构造 open array，
-且以参数传递时载荷生命周期落在调用者栈帧上。拉取安全的前提是 §4 的单活跃进程不变量：
-export 执行期间没有其他进程能修改 `g_frame`。`FrameContext` 是 RAII 的保存/恢复栈，
-支持嵌套调用。
-
-### 11.2 作用域修正
-
-```cpp
-class SvScopeGuard { ... };                  // 我们的包级 export：进入前 svSetScope(shuttle_pkg)
-```
-
-- 同一 SV 进程内调用过返回 `string` 的 import（如 `shuttle_c_last_error`）之后，
-  包级 export 会变得不可见，VCS 报 `Error-[DPI-DXFNF]`。因此 `dispatch` / `dispatch_nb`
-  进入时切换到 `shuttle_pkg`，返回时还原调用者作用域；
-- **weave 的 export 我们一次都不直接调**：weave ≥ 1.2.0 的 DPI 后端给每个*自己的* import
-  套了 `DpiScopeGuard`（进入时 `svSetScope(weave_pkg)`，返回时还原调用者的），所以我们一律
-  走 weave 的 C++ API（`weave::now()` / `create_task` / `Event::wait()` / `sleep` …），由
-  weave 自己负责它的包。早期的 `WeaveScopeGuard`、`SHUTTLE_WEAVE_SV_PACKAGE` 以及
-  `dpi.cpp` 里那 5 个 "weave 导出的 DPI 函数" 的 `import` 声明都已删除，不要再加回来：
-  **直接用 `import "DPI-C"` 引 weave 的 export 会绕过 weave 后端的那层 guard**，那时才需要
-  自己切作用域（VCS 报 `Error-[DPI-DXFNF]`），而这正是我们要避免的耦合；
-- 不涉及任何 export 的入口无需 guard：`shuttle_c_set_retained` 与只读查询
-  （`pub_done` / `pub_stat` / `pub_error` / `detail::backend::frame_len` /
-  `detail::backend::frame_qword` —— 后两件只在 svdpi 后端存在，声明在
-  `src/backend/svdpi/svdpi_internal.hpp`，不进 `backend/backend.hpp`：只有 export 体内够得着它们）。
-
-外部门面声明在 `svdpi_internal.hpp`、实现在同目录 `facade.cpp`，按**谁在调**分成两段：
-
-- `ext_*`（`ext_pub_now` / `ext_pub_serial` / `ext_pub_concurrent` / `ext_sub` / `ext_unsub`）：
-  外部调用方进来的动作——字节帧发布、外部订阅者注册。它描述的是「帧从外面来、订阅者在外面」；
-- `pub_*`，首参是 `pub_id`（`pub_id` / `pub_done` / `pub_stat` / `pub_error` / `pub_wait` /
-  `pub_state` / `pub_on_complete`）：按发布 id 读句柄的通用查询/等待。
-
-门面整体是 svdpi 后端的一部分（永不会有第二个 FFI 调用方），但它刻意不认识 DPI：
-只经 `broker/broker.hpp` 的 `Broker` 编程，svdpi 语义全留在 dpi.cpp。由此得到知识不对称
-规则：**svdpi 目录可见 broker 内部，systemc 后端只经 `backend/backend.hpp` 窄口**。
-systemc 构建根本不编译 facade.cpp（外部门面 + FFI 错误通道都是它的死代码），
-不对称没有运行时后果，只是文档里要说实话。
-
-包名可用 `-DSHUTTLE_SV_PACKAGE=` 覆盖（weave 的包名由 weave 自己管）。
-
-### 11.3 export/import 的时序约束
-
-DPI `function` import 的调用链内不允许出现 export **task**（`Error-[DPI-INCDIC]`）。
-因此 `publish_now` 的同步段只能碰 nonblocking 入口的注册：`dispatch_now` 先按 `cap` 分拨，
-同步循环里只有它们（C++ 直接函数调用、SV 侧 `shuttle_sv_dispatch_nb`）。入口为 blocking 的
-目标不进同步段：`defer` 转后台（此时已脱离 import 调用链，可走 `shuttle_sv_dispatch`
-export task），`skip` 直接不投递，`reject` 前置抛错。
-
-### 11.4 SV 侧注册表与分派
-
-DPI export 名称必须静态，无法"每订阅者一个 export 函数"，因此 SV 侧有一层间接：
-
-```
-C++ 只持有整数 handle（= SV 注册表编号 sv_sid）──▶ shuttle_sv_dispatch(task) / _nb(function)
-                              └─▶ shuttle_registry::dispatch / dispatch_nb
-                                    ├─ sinks_[id].invoke(payload, meta)        (blocking 入口)
-                                    └─ sinks_nb_[id].invoke_nb(payload, meta)  (nonblocking 入口)
-```
-
-- `sv_sid` 由 SV 注册表分配、C++ 原样透传；`pub_id` 相反，由 C++ 分配、SV 存在句柄里；
-- `shuttle_frame_bytes(output byte b[])` 在 export 体内把帧拉成动态数组
-  （VCS 不接受函数返回 unpacked 数组）；
-- 退订后的在途投递：`retired_[id]` 静默丢弃并调 `shuttle_c_sub_retired` 回告，
-  C++ 把该次投递记为 retired（计入 `dropped` 的 `retired` 分量，不计 `delivered`）。未登记过的 id 仍报
-  `$error`，保留真实缺陷的可见性；
-- SV 侧 `$error` 不会传播回 C++，import 仍返回成功；需要严格错误通道时由回调显式返回错误。
-
-### 11.5 `wait_done` 如何挂起普通 SV 进程
-
-```
-SV: h.wait_done() ─▶ import task shuttle_c_wait_pub(pub_id, timeout_fs, status)
-      C++: pub_state(pub_id)
-             ├─ 已完成 → 直接给结论
-             └─ 进行中 → weave::Event wake
-                        pub_on_complete(pub_id, [wake]{ wake->set(); })
-                        timeout_fs > 0 ? create_task("shuttle-pub-deadline",
-                                          sleep(d); wake->set())     ← 只负责超时腿
-                        wake->wait()        ← weave 的 ownerless 叶子等待，挂起调用者这个 SV 进程
-                        deadline.cancel()   ← 赢家之外的那条腿被收掉
-                        status = pub_state 仍未完成 ? 超时 : (有失败 ? FAILED : OK)
-```
-
-`shuttle_c_wait_pub` 是**唯一**需要挂起普通 SV 进程的地方，而它现在只用 weave 的公开 API：
-`weave::Event::wait()` 允许在没有 task 身份时作叶子等待（weave 1.2.0 起；普通 `initial`
-进程正是这种上下文），超时腿要有东西可取消，所以给它一个自己的任务。不用
-`weave::timeout()`：它内部 `wait_for()` 需要一个会挂起调用者的 task 上下文。
-
-## 12. systemc 后端
-
-`src/backend/systemc/bridge.cpp` 实现同一组 `detail::backend` 入口，但 `available() == false`：
-`dispatch` / `dispatch_nb` 抛 `std::logic_error`（配置错误尽早暴露），`take_retired_delivery()`
-恒为 false。时间不经过后端，也不经过 shuttle：`Meta::time_fs` 与所有超时算术都读
-`weave::now()`，分辨率就是 weave 后端 tick（这里两种后端都是 1 ps）。
-broker 不感知后端差异，纯 C++ 用法在两种后端下行为一致；SV 相关代码（`svdpi/` 目录、`ext_*`
-的调用方、跨语言用例）在 systemc 构建中**根本不参与编译**。
-
-## 13. 句柄与生命周期
-
-| 对象 | 语义 |
-| --- | --- |
-| `Publication` | `shared_ptr<Impl>`，可拷贝；`done()/wait()/wait(timeout)/finished()/subscriber_count()/skipped()/deferred()/retired()/failures()/result()` |
-| `Subscription` | `shared_ptr<Impl>`，**最后一份副本析构即退订**（`Impl::~Impl` → `Broker::remove_sub`）；`unsubscribe()` 幂等 |
-| `shuttle_sub`（SV） | `id_` + `active_`，`unsubscribe()` 幂等；销毁不退订（SV 无确定性析构） |
-| `shuttle_handle`（SV） | 持 `pub_id`，方法名与 `Publication` 对应：`wait_done(timeout_fs)` / `done()` / `subscriber_count()` / `finished()` / `skipped()` / `deferred()` / `retired()` / `first_error()` |
-
-退订即生效：它立刻把订阅者移出目标集（此后的帧不再选中它），也让**已快照**但尚未投递的帧
-跳过它——这些投递记 `retired`（不是失败，也不是 `delivered`）。两种语言同一口径；实现与来源
-见 §9.1.1。
-
-## 14. 延迟触发
-
-`Trigger` 是对"一次可等待信号"的类型擦除：`std::function<void()>` 表示"等到条件满足"，
-空表示立即满足。
-
-| 工厂 | 语义 |
-| --- | --- |
-| 空 `Trigger` | 立即 |
-| `after(weave::duration)` | `weave::sleep(d)`，与其他触发单元互不影响 |
-| `after(weave::Event&)` | 等待该事件置位（闩锁语义；**仅 C++**：`weave::Event` 是 C++ 侧对象，事件 id 不过 DPI 边界） |
-| `after(weave::Pulse&)` | 等待脉冲（边沿语义，fire 早于登记即丢失；纯进程内，不占名字表） |
-| `after(weave::sv::Edge&)` | 等待命名跨语言边沿：SV 侧同一个对象是 `weave_edge`，两侧共享 weave 的名字表（**只有名字过 DPI**） |
-| `after(const weave::Task&)` | 等待任务到达终态（不重抛其异常） |
-| `after_all(vector<Trigger>)` | 依次等待；任一子触发器抛异常（取消除外）立即中断，后续不再等待 |
-| `after_any(vector<Trigger>)` | 每个子触发器各建 task 竞速，先落定者置位（取消与失败也算落定）；空集合立即满足 |
-
-SV 侧 `shuttle_trigger` 打包为 `(trig_kind, trig_arg)` 并额外带一个 `trig_name` 过 DPI：
-`NONE` / `DELAY(fs)` / `PUB(pub_id)` / `EDGE(trig_name)`（其余 kind 的 `trig_name` 为 `""`）。等待
-发生在投递单元内部（`wait_trigger`），因此触发等待期间可以继续发布、订阅与退订；帧内容与目标
-集合在发布瞬间已快照。例外是 `after_any`：竞速 task 在 `after_any()` 调用点即创建，它们只等子
-触发器、不接触帧。
-
-**`EDGE` 过界的是名字，不是 id**。SV 侧 `shuttle_trigger::after_edge(weave_edge e)` 只把 `e.name`
-交出去；C++ 侧 `weave::sv::Edge(trig_name)` 在 weave 自己的名字表里 find-or-insert（`src/core/sv.cpp`
-的 `registry()`），于是两侧拿到同一个 id，而 shuttle **不持有任何事件对象、也没有按 id 恢复的
-接口**（`shuttle_event` + `shuttle_c_event_*` + `SHUTTLE_TRIG_EVENT` 曾经是一个影子事件系统，
-已删）。等待走 `Edge::wait()` 而不是原始 `weave_sv_wait`，从而继承 weave 的挂起记账：取消注入、
-等待图、以及"挂起时无当前任务"（`current_task()` 为空）——最后一条正是不变 5 的自等待检出
-所需要的。
-
-边沿语义由 weave 定义（`fire()` 早于等待登记即丢失，不闩住），因此同一个触发单元在 `fire()`
-之前不会放行，帧保持 pending 直到下一次 `fire()`；要"闩住"用 `after(weave::Event&)` /
-`after_pub`。`after(weave::sv::Edge&)` 与后端无关：`Edge::fire()` 走 port，所以 C++ 自己 fire 时
-systemc 后端也成立，只有"必须由 SV 侧 fire"才依赖 svdpi。
-
-纯 SV 的等价配方（不需要触发语义时更省一层：目标集合与载荷在 fire 时刻才快照）：
-
-```systemverilog
-weave_edge e = new("uart0.mon.edge");          // 一条边沿，run 内不销毁，C++ 侧可按名共享
-fork begin e.wait_edge(); pub.publish_serial(tx); end join_none
-```
-
-两种写法的差别只在快照点：`after_edge` 在**发布调用**时锁定目标集合与载荷（因此发布之后才注册
-的订阅者不是本帧目标，且能进 `after_all`/`after_any`、拿得到 `shuttle_handle`），上面的配方在
-**fire 时刻**发布。延迟帧本来就在触发时刻入队（不变 12），"同 topic 的后台顺序 = 入队顺序"两种
-写法都不受影响。
-
-## 15. 诊断与已知限制
-
-| 手段 | 用途 |
-| --- | --- |
-| `broker::topics()` / `topic_info(name)` | 每个 topic 的 `type_tag`、订阅者数、retained、`published` / `delivered` / `dropped`（含 `retired` / `skipped` / `failed` 分解）/ `deferred` |
-| `Publication` 的计数 | 本帧目标 / 已结束 / 策略跳过 / 转后台 / 退订跳过（§9） |
-| `Publication::failures()` / `result()` | 失败记录 `Failure{subscriber, error}`；`subscriber` 是描述串（`cpp sub N` / `sv sid N` / `<trigger>` / `<delivery>`），文本取自 `error.what()` |
-| `shuttle_c_last_error()` / `last_error()` | 立即型 import 的失败原因（进程级全局，仿真内唯一） |
-| `AGENTS.md` | 改动前必读的硬约束清单 |
-
-已知限制与后续方向：
-
-- `pubs` 只登记外部（SV）发布且只增不减（C++ 发布由 `Publication` 句柄持有，不进表）；
-  长时间运行的 SV 高频发布回归仍需周期性清理策略（或按 `pub_state` 惰性回收）；
-- SV 侧 `$error` 不回流 C++（协议决定），需要严格错误通道时应扩展 `dispatch` 的返回值；
-- 跨语言载荷只支持值语义与声明序字段子集，没有变体、指针、引用与句柄引用；
-- 背压只对 Mailbox 生效（§16）：普通订阅在 `SubOptions` 里的 `max_pending` / `OverflowPolicy`
-  仍被忽略——broker 不存待投递帧，`serial` 的 topic 链与 `concurrent` 的 per-订阅者链只是
-  一串 `weave::Event`（"排到哪了"），排队本身由 weave 的 task 调度承担；
-- `TopicInfo::deferred`（topic 累计）与 `Publication::deferred()`（帧级）同名不同粒度，
-  读取时注意区分。
-
-## 16. 邮箱（Mailbox）：订阅者 + 队列
-
-`include/shuttle/mailbox.hpp` 的 `Mailbox<T>` 把"等下一帧"变成一个可等待的对象——它是**计时基元**
-（timing primitive），不是请求-响应的基元：单响应者、无需关联 id 时它足以拼出一次问答（本节末尾就是
-这个用法），但 §17 的 `Requester` 并不建立在它之上，两者是**兄弟**（见 `mailbox.hpp` 头部注释）。
-它**不是新的投递机制**，而是两层现成能力拼起来的东西：
-
-| 组成 | 复用 | 说明 |
-| --- | --- | --- |
-| 订阅者身份 | `detail::sub_typed` / `sub_raw`，入口固定为 **nonblocking** | 与 `subscribe<T>(topic, nb(fn))` 完全同一条注册路径：进目标集、计入 `Publication::subscriber_count()`、参与通配符匹配与 retained 回放 |
-| 队列与唤醒 | 一个 `std::deque<MailboxItem<T>>` + `weave::Event` | broker 侧零改动：队列属于邮箱，不属于 broker |
-| 超时 | `weave::wait_for` 竞速一个一次性的等待 task | 与 `wait_pub_timed` 同一手法；取消等待者**不消费**任何元素，因此超时不丢帧 |
-
-因此 C++ 侧是**纯头文件**：不新增 broker 状态、不新增导出符号（`detail::sub_typed` 与
-`type_ops<T>` 都在已安装的 `detail/abi.hpp` 里）。
-
-```cpp
-shuttle::Mailbox<Resp> box("dev.resp");        // 无界
-auto item = box.recv(1_ms);                    // optional：超时给 nullopt，帧不丢
-auto now  = box.try_recv();                    // 非阻塞
-box.close();                                   // 幂等：退订 + 唤醒等待者
-```
-
-**为什么入口必须是 nonblocking**：邮箱的内部回调只做一次拷贝入队，它在
-`publish_now` 的同步段（发布者栈内）也会被调用。由此得到一个有用的推论：
-**`publish_now` 能同步填邮箱**，纯非阻塞对端的请求-响应可以零 RTT。
-
-**容量与溢出**（`SubOptions.max_pending` / `OverflowPolicy`，见 §15）：`max_pending == 0`
-无界；有界时必须显式选 `drop_oldest` / `drop_newest` / `reject`，`block` 在构造时被拒绝
-（阻塞投递者会死锁发布者）。溢出计数 `overflowed()` 与 `Subscription::dropped()` 是两件事：
-后者是"帧没投到该订阅者"，前者是"已投到、但被队列丢弃"；`reject` 则表现为一次正常的投递
-`Failure`（进 `Publication::failures()` 与 `failed` 计数），不发明新的记账通道。
-
-**语义边界**：邮箱回答"帧到了"，`Publication` 回答"所有订阅者回调都结束了"。邮箱顺序 =
-回调被调用的顺序（`serial` 入队顺序、`concurrent` 每个订阅者各自的链顺序（即发布顺序）、
-`now` 注册顺序），跨方式不承诺。
-
-**SV 侧是纯 SV 实现**（`shuttle_pkg::shuttle_mailbox`）：它同样通过 `shuttle_subscribe_nb`
-注册，队列是 SV 队列，唤醒用 `weave_pkg` 的 `weave_sv_wait` / `weave_sv_trigger`——
-**不新增任何 DPI 入口**。因此 `shuttle_pkg` 需要 `import weave_pkg::*`（编译顺序本来就保证
-`weave_pkg.sv` 在前）。SV 没有异常，故 `reject` 策略不提供，只有 `drop_oldest` /
-`drop_newest`。
-
-## 17. 请求-响应糖（Requester / Call / serve）
-
-`include/shuttle/requester.hpp` 与 §16 的邮箱是**兄弟**而非上下层：它不 include `mailbox.hpp`，
-而是复用同一套订阅原语（`detail::sub_typed` + nonblocking 入口），再加上一个请求 topic + 一个回执
-topic + 帧头里的关联号（`Meta::corr_id`）。同样是**纯头文件**，不新增 broker 状态与导出符号。
-
-```cpp
-// 响应者（可以有多个，C++ 或 SV）
-shuttle::serve<Req, Resp>("dev.req", "dev.resp",
-                          [](const Req& r, const shuttle::Meta&) { return Resp{business(r)}; });
-
-// 请求者：三种发送方式与 `Publisher` 同名同参（send_serial / send_concurrent / send_now）
-shuttle::Requester<Req, Resp> client("dev.req", "dev.resp");
-auto call = client.send_serial(Req{21});
-for (const auto& resp : call.wait_all(1_ms)) use(resp);
-```
-
-**关联号是帧头字段，不是载荷字段**：先明确名字——`corr_id` 是**请求-响应关联号**（请求方分配、
-响应者原样回填、用来把回执路由回对应的 `Call`），**不是** PCIe 的 Requester ID（那是
-bus/device/function）。它由发布方在 `publish_*` 的最后一个参数给出，broker 原样抄进
-`Meta::corr_id` 并跨语言透传（`shuttle_sv_dispatch` 的 `int unsigned corr_id`），`0` 表示
-"不是一次关联请求"。**公开的发布三件套不暴露这个参数**——`Publisher::publish_now` /
-`publish_serial` / `publish_concurrent` 的参数与以前完全相同（也因此总是发出 `corr_id = 0` 的
-非关联帧）：关联是请求-响应概念，只有 `Requester::send_*`、`serve` 与 SV 的
-`shuttle_pub::reply` 写它（它们走内部发布通道 `detail::pub_*` 的尾部实参）。`serve` 自动回填请求的
-号，用户代码从头到尾看不到它——因此**载荷类型不需要任何握手字段**，
-第三方类型（不是你的结构体、不能改）也能直接当请求/回执载荷，编码布局就是用户声明的那几个字段。
-
-不放进载荷的三个理由：
-- **收件人拿不到自己的序号**：`Meta.topic_seq` 由 broker 分配且对发布方不可见
-  （`Publication` 只有计数与失败），放在载荷里就没法在发布前把号写进去；
-- **顺序要求"发布前就有号"**：`send_impl` 必须**先**把 `corr_id` 入表**再**发布——`send_now` +
-  nonblocking 入口时响应者就在发布者栈上同步回执，晚一步就丢（`stale_responses()` 会涨）。
-  让号来自 `topic_seq` 只能"发布后读回"，正好踩中这个洞；要修就得给 broker 加"预约序号"API，
-  等于新增 DPI 入口，只为一个糖组件；
-- **`topic_seq` 是 per-topic 内部记账**：`a.req` 与 `b.req` 都从 1 开始，`serve` 又支持通配符请求
-  topic，一公开就撞号，还会把诊断字段变成 ABI 契约。
-
-计数器是**进程级**的普通 `static`（单活跃进程模型，无需原子；见 AGENTS.md 不变 1），因此两个
-`Requester` 实例共用同一个回执 topic 也不会串号。
-
-**没有关联号会怎样（逐条）**：一个 `Requester` 只有**一条回执订阅**（一个 topic、一条入口、
-一个回调 `ResponseTable::deliver`），所有请求的回执都从这一个回调进来。帧里只有 `{TResp, Meta{}}`，
-而 `Meta.topic_seq` 是**回执 topic 自己的**发布序号、与请求帧的序号无关。于是没有关联号时：
-
-- **乱序即错配**：A(op=1)、B(op=2) 两个在途请求，答案 101/102，若 B 的回执先到，FIFO 会把 101
-  分给 B（`requester_tests::case2` 钉的就是这条：`rb.at(0).data == 102` 会失败）。两次问同一地址
-  时值相同，交换后**完全无法察觉**；
-- **多响应者无法计数**：一个请求命中 3 个目标产生 3 条回执，`wait_for(n)` / `wait_all` 依赖
-  "这条属于哪个 Call" 才能判断"还差几条"；
-- **迟到的回执污染下一次请求**：请求 A 超时（或 `cancel()`）后被丢弃，5ms 后它的回执到达——没有
-  关联号时正好落进下一个请求 B 的队列，B 拿到 A 的答案（类型/取值都合法，静默错）。有关联号时
-  `ResponseTable::deliver` 的 `inflight.find(corr_id)` 找不到，记 `stale_responses()`（不是黑洞，可数）；
-- **跨语言无法对齐**：SV 响应者必须把同一个整数抄回来，C++ 侧才能认领。
-
-关联号因此由**请求方**生成（它要建表，必须自己知道这个号），broker 只负责透传；它是
-`Meta` 里唯一的"业务可写"字段（其余四个由 broker 填），两侧 `Meta` 结构同名同序，
-线上位置在 `topic_seq` / `time_fs` 之后。
-
-**回执计数是显式的**：框架不知道"该有几个回执"。`wait_for(n, timeout)` 等最多 n 条；
-`wait_all(timeout)` 采用默认约定"请求帧的每个目标订阅者恰好回一条"（n =
-`publication().subscriber_count()`）。有只看不回的旁观订阅者时用 `wait_for`/`recv`。
-
-**slot 生命周期**：`Requester` 的回执表存 **weak_ptr**，`Call` 持有唯一强引用——丢掉句柄
-（或 `cancel()`）即释放 slot，此后到达的回执计入 `stale_responses()` 并被丢弃。这也让"回执
-topic 开了 retained"不会毒化后续请求（仍不推荐）。
-
-**request/response topic 必须不同**：响应者是在请求回调里发布回执的，同 topic 会让回执排在
-"发布它的那个回调"之后——`Requester`/`serve` 构造时直接抛 `std::invalid_argument`。
-
-**入口选择**：和 `subscribe` 完全一致——裸 handler 注册 blocking 入口（响应者通常要消耗
-仿真时间），`nb(handler)` 注册 nonblocking 入口。**刻意不提供运行时 `Capability` 参数**：
-一次注册 = 一个入口，入口必须写在调用处（不变 4）。SV 侧同一区分由函数名承担
-（`shuttle_subscribe` / `shuttle_subscribe_nb`），C++ 侧由参数类型承担，两者都不靠"运行时枚举"。
-
-**回执走 `publish_now`，不是 `publish_serial`**：响应者用 `detail::pub_now(..., NowPolicy::defer) 
-+ meta.corr_id` 发布回执（SV 的 `shuttle_pub::reply` 同样走 `shuttle_c_publish_now`）。
-由此得到一条可测的性质：**响应者用 `nb(handler)` 时，整条往返在请求方栈上跑完**——
-`send_now()` 返回时回执已经在 `Call` 里（`call.queued() == 1`），中间不切任务、不消耗仿真时间
-（`requester_tests::case11` 用 `weave::now()` 前后相等钉住）。`defer` 只是兜底：万一回执 topic 上
-还残留 blocking 订阅者（在标记之前就注册了），那一份交给串行链，nonblocking 目标（包括请求方）
-仍然就地完成。也正因如此，回执不再排在 topic 链尾后面：**旁观者的慢回调咬不动请求方**。
-
-**回执 topic 是"响应通道"**：`Requester` 构造时与 `serve` 注册时都会调用
-`detail::topic_mark_responses(resp_topic)`，把该 topic 标成响应通道（`Topic::carries_responses`）。
-此后任何 **blocking 入口**在该 topic 上注册都会被 `Broker::check_response_topic` 当场拒绝
-（`CapabilityError`），通配符 pattern 按**匹配**判定——`serve("dev.*.req", ...)` 的响应者想用
-`dev.>` 挂一个 blocking 旁观者会直接失败。理由：blocking 旁观者持有该 topic 的串行链，
-会让后续每一帧回执排队，而请求方无法区分"响应者死了"与"回执排在别人后面"——超时会说谎。
-在注册处报错 = 早失败（不变 4 的口径）。**名字本身仍然公开**：`resp_topic()` 照旧返回它，
-手工往回执 topic 发布仍然合法（外部工具/VIP），要看回执就用 `nb()` 注册；
-标记前就已注册的 blocking 订阅者不会被追溯拒绝（也不危险：见上面的 `publish_now` 路径）。
-
-## 18. 构建
-
-```bash
-just build                # 按当前后端构建
-xmake f --backend=svdpi   # 默认：libshuttle.so + SV 桥（add_requires("svdpi")）
-xmake f --backend=systemc # 纯 C++：add_requires("systemc")，无 SV 桥
-```
-
-核心与后端分别枚举，不靠宏：`add_files("src/*.cpp")` + `add_files("src/broker/*.cpp")` +
-`add_files("src/backend/<backend>/**.cpp")`；后端仍**按目录二选一**。
-换后端 = 换一个目录，两个后端目录互不相见（因此也无需 `#if` 包住整个 TU）；`SHUTTLE_BACKEND_*`
-宏已删除，不再有任何东西外传给使用者。公开 API 与 broker 逻辑在两种后端下完全相同，
-差异只有 `detail::backend` 的实现与「有没有 SV 桥」。
+The installed `include/shuttle/detail/` carries `abi.hpp` (the stable second layer the templates
+need), `wait.hpp` (`detail::deadline_after` / `detail::wait_wake`, shared by the three
+event-or-timeout races in mailbox / requester / `Publication::wait`), and the reflection support.
+`xmake.lua`'s header glob must stay `include/(shuttle/**.hpp)`: a narrower glob silently drops
+`detail/abi.hpp` from installed packages and user code including `publisher.hpp` fails to compile.
+
+## Scope
+
+Shuttle provides typed publish-subscribe delivery scheduling inside a simulation process, in C++,
+in SystemVerilog, and across the DPI boundary. Deliberately not provided:
+
+- RPC pairing in the base model (the request-response sugar of the mailbox/requester sections is
+  a composition, and request/reply topics are a convention, not broker knowledge);
+- cross-machine communication, persistence and replay;
+- a UVM adaptation layer;
+- backpressure for plain subscriptions (`SubOptions::max_pending` / `OverflowPolicy` are honored
+  only by `Mailbox`);
+- shuttle's own clock — simulation time is weave's (`weave::now()`), and there is deliberately no
+  `shuttle::now_fs()`-style forwarding wrapper (one existed, and was removed).
+
+Known limitations: SV-side `$error` does not propagate back to C++ (a protocol consequence; a
+strict error channel would extend `dispatch`'s return value); cross-language payloads are
+value-semantics with a declared-field subset — no variants, pointers, references or handles;
+`TopicInfo::deferred` (topic-cumulative) and `Publication::deferred()` (per-frame) share a name
+across two granularities.
+
+## Design philosophy for large language models
+
+Shuttle assumes an LLM knows pub-sub messaging and asyncio-style scheduling, but not EDA
+simulation semantics; the framework's job is to make the simulation-specific part — which
+callbacks may consume simulation time, and what "delivery order" can mean when there is exactly
+one CPU — explicit and countable. Generalisation to reach: *never* introduce a second
+communication mechanism when a composition of entry capability + queue + topic convention
+expresses the need; *never* let a terminal state exist that is not visible in the counters; and
+*never* add broker state for a header-only component. Every past violation of these three grew a
+shadow system (a parallel event table, a backend-specific terminal state, a duplicate clock) that
+later had to be deleted.

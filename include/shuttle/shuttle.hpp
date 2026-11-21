@@ -26,7 +26,7 @@
 //
 // Backends: svdpi (full cross-language feature set) / systemc (automatically
 // degrades to pure C++; API unchanged).
-// The DPI protocol reference is docs/dpi_protocol.md.
+// The DPI protocol reference is docs/backends.md.
 
 #include <shuttle/broker.hpp>
 #include <shuttle/codec.hpp>

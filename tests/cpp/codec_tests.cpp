@@ -1,7 +1,7 @@
 // Codec semantics self-checks: wire format (big-endian, length prefixes, declaration order)
 //
 // The golden-byte assertions are the anchor of the cross-language contract: the expected
-// bytes in this file must match byte for byte the "Wire format" section of docs/dpi_protocol.md
+// bytes in this file must match byte for byte the "Wire format" section of docs/backends.md
 // and the SV-side examples/sv/shuttle_demo.sv ({>>{...}} packing); any change on either side fails
 // here first.
 

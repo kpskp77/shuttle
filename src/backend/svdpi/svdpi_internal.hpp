@@ -14,7 +14,7 @@
 // here too — its dependency on broker internals (broker/broker.hpp) is an
 // explicitly accepted, permanent asymmetry (the systemc backend still knows
 // the broker only through the `backend/backend.hpp` narrow port).
-// The protocol definition is docs/dpi_protocol.md.
+// The protocol definition is docs/backends.md.
 
 #include <svdpi.h>
 
@@ -103,7 +103,7 @@ std::uint64_t frame_qword(int index);
 // ── On-wire codes ────────────────────────────────────────────────────────
 // SV asks for these with bare ints, so every family gets a name on this side
 // too: the numbers are part of the DPI protocol (constant table in
-// docs/dpi_protocol.md) and must not drift. Convert once at the boundary,
+// docs/backends.md) and must not drift. Convert once at the boundary,
 // compare enums inside. Codes that already have a public enum in shuttle
 // (`NowPolicy`, `Capability`) use that one instead of a second spelling — the
 // protocol table pins their numeric values.
@@ -173,7 +173,7 @@ void ext_unsub(int handle);
 bool pub_done(int pub_id);
 
 // Publication counter query kinds: the values correspond 1:1 to the on-wire
-// kinds 0-4 (see the constant table in docs/dpi_protocol.md, invariant across
+// kinds 0-4 (see the constant table in docs/backends.md, invariant across
 // DPI). The enum lets the compiler check switch exhaustiveness.
 enum class PubStatKind { target_count = 0, finished = 1, skipped = 2, deferred = 3, retired = 4 };
 

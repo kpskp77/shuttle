@@ -3,7 +3,7 @@
 //
 // Depends on: weave_pkg (../weave/sv/weave_pkg.sv, compiled by the simulation
 // scripts along with this file). The DPI protocol reference is
-// docs/dpi_protocol.md; the direction convention matches weave:
+// docs/backends.md; the direction convention matches weave:
 //   import (provided by C++): shuttle_c_*  — publish / subscribe registration /
 //                                            completion wait / frame pull
 //   export (provided by SV) : shuttle_sv_* — subscriber callback dispatch + sim time
@@ -102,7 +102,7 @@ package shuttle_pkg;
   export "DPI-C" task shuttle_sv_dispatch;
   export "DPI-C" function shuttle_sv_dispatch_nb;
 
-  // ── Constants: strictly aligned with the C++ enums (docs/dpi_protocol.md §constants) ──
+  // ── Constants: strictly aligned with the C++ enums (docs/backends.md §constants) ──
   // Subscription entries (caps argument of shuttle_c_subscribe): one
   // registration can only ever be one of them (the same object registered
   // twice = two subscribers — only then can both values be in play)
