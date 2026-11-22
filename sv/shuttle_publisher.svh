@@ -1,5 +1,5 @@
-`ifndef SHUTTLE_PUB_SVH
-`define SHUTTLE_PUB_SVH
+`ifndef SHUTTLE_PUBLISHER_SVH
+`define SHUTTLE_PUBLISHER_SVH
 
 // ── Shared wire helpers ────────────────────────────────────────────────
 // Used by shuttle_publisher and shuttle_requester: both need the same conversion to
@@ -135,4 +135,4 @@ class shuttle_publisher #(type T = byte);
 
 endclass
 
-`endif  // SHUTTLE_PUB_SVH
+`endif  // SHUTTLE_PUBLISHER_SVH
