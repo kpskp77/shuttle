@@ -55,6 +55,27 @@ struct Wide {
 };
 SHUTTLE_REFLECT(Wide, flag, u8, i16, u64, f32, f64, mode, name, vec, arr, nested)
 
+// Three levels of nesting (used by case10): the codec recursion has no depth limit and every
+// level expands inline, field order = declaration order, no per-level headers
+struct NestL1 {
+  std::int8_t v = 0;
+};
+SHUTTLE_REFLECT(NestL1, v)
+
+struct NestL2 {
+  std::uint16_t tag = 0;
+  NestL1 a;
+  NestL1 b;
+};
+SHUTTLE_REFLECT(NestL2, tag, a, b)
+
+struct NestL3 {
+  std::uint8_t head = 0;
+  NestL2 body;
+  NestL1 tail;
+};
+SHUTTLE_REFLECT(NestL3, head, body, tail)
+
 // A type with no codec (used by the static-capability probe)
 struct NotReflected {
   int x = 0;
@@ -219,6 +240,23 @@ WEAVE_TEST(codec_tests) {
     const shuttle::detail::TypeOps* ops = shuttle::detail::type_ops<NotReflected>();
     expect(ops->encode == nullptr && ops->decode == nullptr,
            "without a codec, encode/decode are null");
+  });
+
+  // case10: three levels of nesting — flattened inline at every level, decoded back field by field
+  run_case(__func__, "case10", [] {
+    NestL3 in;
+    in.head = 0x7F;
+    in.body.tag = 0xBEEF;
+    in.body.a.v = -5;
+    in.body.b.v = 3;
+    in.tail.v = -1;
+    // 1 + (2 + 1 + 1) + 1 = 6 bytes, no per-level headers
+    expect_bytes(shuttle::encode(in), hex({0x7F, 0xBE, 0xEF, 0xFB, 0x03, 0xFF}),
+                 "three-level nesting flattens inline");
+    const NestL3 back = shuttle::decode<NestL3>(shuttle::encode(in));
+    expect(back.head == in.head && back.body.tag == in.body.tag && back.body.a.v == in.body.a.v &&
+               back.body.b.v == in.body.b.v && back.tail.v == in.tail.v,
+           "three-level nesting round trip");
   });
 
   report(__func__);

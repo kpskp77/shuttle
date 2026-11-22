@@ -17,6 +17,8 @@
 //   the middle of the outer delivery; weave <= 1.1.0 came back from it with no current task and the
 //   next blocking C++ callback threw "weave: blocking primitive outside task context" (fixed by
 //   keying task identity per simulation process in weave v1.2.0).
+//   6. case7 covers nested message types (struct XPoint inside struct XTrack): C++ → SV decode via
+//   the SV-side three-piece macros, SV → C++ decode via Codec<XTrack> recursing Codec<XPoint>.
 //
 // After both sides finish their assertions, run_cpp_tests in tests/shuttle_tests.sv renders the
 // verdict.
@@ -66,6 +68,24 @@ struct XMsg {
 };
 SHUTTLE_REFLECT(XMsg, addr, data)
 
+// Nested message types for case7: a track is two points plus an id. SHUTTLE_REFLECT recurses
+// per field (Codec<XTrack> delegates to Codec<XPoint> for the point fields), so the wire format
+// is fields in declaration order with the nested structs expanded inline — no length prefix. The
+// SV mirror is class XPoint/XTrack in tests/shuttle_tests.sv, registered through the three-piece
+// macros with `shuttle_field(origin, XPoint)`: the field's codec is the nested class itself.
+struct XPoint {
+  std::int32_t x = 0;
+  std::int32_t y = 0;
+};
+SHUTTLE_REFLECT(XPoint, x, y)
+
+struct XTrack {
+  std::uint32_t id = 0;
+  XPoint origin;
+  XPoint dest;
+};
+SHUTTLE_REFLECT(XTrack, id, origin, dest)
+
 namespace {
 
 constexpr const char* kReadyTopic = "xlang.sv_ready";      // SV → C++ ready broadcast (retained)
@@ -75,6 +95,9 @@ constexpr const char* kMixedTopic = "xlang.mixed.tx";      // mixed target set: 
 constexpr const char* kMixedMonTopic = "xlang.mixed.mon";  // published by the SV sink itself
 constexpr const char* kMixedReadyTopic =
     "xlang.mixed.ready";  // SV → C++ ready broadcast (retained)
+constexpr const char* kNestReadyTopic = "xlang.nest.ready";    // SV → C++ ready (retained)
+constexpr const char* kNestToSvTopic = "xlang.nest.cpp2sv";    // C++ → SV, nested types
+constexpr const char* kNestFromSvTopic = "xlang.nest.sv2cpp";  // SV → C++, nested types
 
 // State shared across cases (subscription handles must outlive the test, so they live in a heap
 // holder)
@@ -94,6 +117,13 @@ struct XlangState {
   weave::Event mixed_ready_ev;
   std::size_t mixed_hits = 0;      // the C++ subscriber that blocks after the SV sink ran
   std::size_t mixed_mon_hits = 0;  // receives the frame the SV sink publishes from its callback
+
+  // case7 state: nested message types (XPoint inside XTrack)
+  shuttle::Subscription nest_ready;
+  shuttle::Subscription nest_from_sv;
+  weave::Event nest_ready_ev;
+  std::vector<XTrack> nest_got;
+  std::vector<std::string> nest_tags;
 };
 
 }  // namespace
@@ -252,6 +282,57 @@ WEAVE_TEST(xlang_tests) {
     auto info = shuttle::broker::topic_info(kMixedTopic);
     expect(info.has_value(), "the mixed topic should be registered");
     expect_eq(static_cast<long long>(info->delivered), 2, "both targets were served");
+  });
+
+  // case7: nested message types — a struct containing two structs of another reflected type,
+  // crossing the language boundary in both directions. The C++ frame is decoded by the SV-side
+  // XTrack class (whose `shuttle_field(origin, XPoint)` entries delegate to XPoint's generated
+  // codec); the SV response is decoded here by Codec<XTrack> recursing Codec<XPoint>. Handshake:
+  // the SV side subscribes first and announces readiness with a retained frame, so the C++
+  // publish below always has its target. Negative coordinates check two's-complement decoding on
+  // both sides; the ready frame's 20-byte wire length checks the inline nested layout
+  // (u32 id + 2 x (i32 x + i32 y), no length prefix).
+  run_case(__func__, "case7", [st] {
+    st->nest_ready =
+        shuttle::subscribe_bytes(kNestReadyTopic, [st](const std::vector<std::byte>& bytes,
+                                                       const shuttle::Meta& meta) {
+          expect(bytes.size() == 20, "the nested ready frame wire length should be 20 bytes");
+          expect(meta.type_tag == "XTrack",
+                 "the nested ready frame type tag comes from the SV class XTrack");
+          st->nest_ready_ev.set();
+        });
+    for (int i = 0; i < 2000 && !st->nest_ready_ev.is_set(); ++i) weave::sleep(100_us);
+    expect(st->nest_ready_ev.is_set(), "never saw the SV-side ready broadcast (xlang.nest.ready)");
+
+    st->nest_from_sv =
+        shuttle::subscribe<XTrack>(kNestFromSvTopic, [st](const XTrack& t, const shuttle::Meta& meta) {
+          st->nest_got.push_back(t);
+          st->nest_tags.push_back(std::string(meta.type_tag));
+        });
+
+    shuttle::Publisher<XTrack> pub(kNestToSvTopic);
+    XTrack out;
+    out.id = 0xC0FFEE01u;
+    out.origin = XPoint{-100, 200};
+    out.dest = XPoint{300, -400};
+    auto h = pub.publish_serial(out);
+    expect_eq(static_cast<long long>(h.subscriber_count()), 1,
+              "the SV side should have 1 blocking subscriber");
+    h.wait();
+    expect(h.done() && h.failures().empty(), "the SV-side nested decode should not fail");
+
+    for (int i = 0; i < 200 && st->nest_got.size() < 1; ++i) weave::sleep(100_us);
+    expect_eq(static_cast<long long>(st->nest_got.size()), 1,
+              "one nested frame should come back SV → C++");
+    if (!st->nest_got.empty()) {
+      const XTrack& t = st->nest_got[0];
+      expect_eq(static_cast<long long>(t.id), 2, "the id field decoded from the SV publish");
+      expect_eq(static_cast<long long>(t.origin.x), 1, "origin.x from the SV publish");
+      expect_eq(static_cast<long long>(t.origin.y), -2, "origin.y negative from the SV publish");
+      expect_eq(static_cast<long long>(t.dest.x), -3, "dest.x negative from the SV publish");
+      expect_eq(static_cast<long long>(t.dest.y), 4, "dest.y from the SV publish");
+      expect(st->nest_tags[0] == "XTrack", "type_tag is the XTrack declared on the SV side");
+    }
   });
 
   report(__func__);

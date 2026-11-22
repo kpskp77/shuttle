@@ -27,6 +27,33 @@ module shuttle_demo;
     `shuttle_reflect_end
   endclass
 
+  // ── Nested message class: counterpart of `struct UartBurst` in basic_demo.cpp ──
+  // `shuttle_field(first, UartTx)` makes the nested class itself the field codec: the macro
+  // generates UartTx::pack_obj(q, o.first) / UartTx::unpack_into(b, pos, o.first) — the same
+  // recursion Codec<UartBurst> → Codec<UartTx> runs on the C++ side, inline, no length prefix.
+  // The frame is published retained, so this subscriber receives it no matter which side of the
+  // DPI boundary subscribes first.
+  class UartBurst;
+    byte   count;
+    UartTx first = new();
+    UartTx last  = new();
+    `shuttle_reflect_begin(UartBurst)
+      `shuttle_field(count, shuttle_u8)
+      `shuttle_field(first, UartTx)
+      `shuttle_field(last, UartTx)
+    `shuttle_reflect_end
+  endclass
+
+  class BurstRec implements shuttle_sink;
+    int       count = 0;
+    UartBurst last;
+    virtual task invoke(input byte payload[], input shuttle_meta meta);
+      UartBurst b = UartBurst::unpack(payload);
+      count++;
+      last = b;
+    endtask
+  endclass
+
   // ── Subscriber: multiple interface-class implementations, no single-inheritance slot spent ────────────────────
   // implements shuttle_sink     → blocking entry (export task), registered via shuttle_subscribe:
   //                              invoked by the delivery units of `serial`/`concurrent` and the defer section of `publish_now`;
@@ -114,6 +141,25 @@ module shuttle_demo;
       end
       if (mon.last.addr !== 32'h15)
         $error("multi-publisher did not deliver");
+    end
+
+    // ── Nested message types: decode the retained UartBurst published by basic_demo.cpp ──
+    // Both entries in one scope: the sink decodes with the generated nested codec; the assertions
+    // run silently — a wrong nested field fails the demo through $error, like everywhere above.
+    begin
+      automatic BurstRec              brec = new();
+      automatic shuttle_sub           bsub = shuttle_subscribe("uart0.burst", brec, UartBurst::type_tag);
+      // The C++ demo publishes retained, but stay bounded: a broken handshake must fail loudly,
+      // not hang the demo.
+      for (int i = 0; i < 5000 && brec.count < 1; i++) #(10us);
+      if (brec.count != 1) $error("nested burst was not delivered");
+      if (brec.last != null) begin
+        if (brec.last.count !== 2) $error("nested burst: count field wrong");
+        if (brec.last.first.addr !== 32'h21 || brec.last.first.data !== 32'hAA)
+          $error("nested burst: first transaction wrong");
+        if (brec.last.last.addr !== 32'h22 || brec.last.last.data !== 32'hBB)
+          $error("nested burst: last transaction wrong");
+      end
     end
 
     // ── Mailbox: a subscription with a queue attached ("wait for the next frame") ─────────────────

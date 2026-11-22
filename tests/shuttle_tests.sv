@@ -9,6 +9,8 @@
 //                       multiple publishers, unsubscribe, entry routing, seq semantics, snapshot semantics);
 //   · case_xlang     — cross-language round trip, paired with tests/xlang_tests.cpp;
 //   · case_xlang_mixed — one topic whose target set mixes an SV blocking entry with C++ ones
+//   · case_xlang_nested — nested message types (XPoint inside XTrack) in both directions,
+//     paired with case7 of tests/xlang_tests.cpp;
 //                       (task identity must survive the nested frame; weave v1.2.0);
 //   · run_cpp_tests  — launches the C++-side tests (WEAVE_TEST in tests/*.cpp) via weave_run;
 //                       both sides share one broker, so they see each other.
@@ -71,6 +73,43 @@ module shuttle_tests;
     `shuttle_reflect_begin(XRqResp)
       `shuttle_field(data, shuttle_u32)
     `shuttle_reflect_end
+  endclass
+
+  // ── Nested message types (mirror XPoint/XTrack in tests/xlang_tests.cpp case7) ──
+  // A track is two points plus an id. The three-piece macros recurse per field:
+  // `shuttle_field(origin, XPoint)` generates XPoint::pack_obj(q, o.origin) /
+  // XPoint::unpack_into(b, pos, o.origin) — the field's codec is the nested class itself, inline,
+  // no length prefix, byte-for-byte the C++ Codec<XTrack> recursion into Codec<XPoint>. The
+  // nested handles get field initializers so packing an unset track cannot dereference null.
+  class XPoint;
+    int x;
+    int y;
+    `shuttle_reflect_begin(XPoint)
+      `shuttle_field(x, shuttle_i32)
+      `shuttle_field(y, shuttle_i32)
+    `shuttle_reflect_end
+  endclass
+
+  class XTrack;
+    int unsigned id;
+    XPoint       origin = new();
+    XPoint       dest   = new();
+    `shuttle_reflect_begin(XTrack)
+      `shuttle_field(id, shuttle_u32)
+      `shuttle_field(origin, XPoint)
+      `shuttle_field(dest, XPoint)
+    `shuttle_reflect_end
+  endclass
+
+  // ── Nested-type sink: decodes the C++-side XTrack (negative coordinates included) ──
+  class NestRec implements shuttle_sink;
+    int    count = 0;
+    XTrack last;
+    virtual task invoke(input byte payload[], input shuttle_meta meta);
+      XTrack t = XTrack::unpack(payload);
+      count++;
+      last = t;
+    endtask
   endclass
 
   // Responder: answers op*2+1 and hands the request's frame header to `pub.reply`, which echoes
@@ -559,6 +598,52 @@ module shuttle_tests;
     end
   endtask
 
+  // ── Cross-language nested message types: C++ side in tests/xlang_tests.cpp case7 ─────────
+  // The C++ publisher sends one XTrack with negative coordinates; we decode it with the generated
+  // nested codec, verify every field, and answer with another XTrack so the C++ side exercises
+  // Codec<XTrack> recursing Codec<XPoint> on the way back. Handshake: we subscribe first and
+  // announce readiness with a retained frame, so the C++ publish always has its target.
+  task automatic case_xlang_nested();
+    automatic NestRec               rec       = new();
+    automatic shuttle_sub           sub       = shuttle_subscribe("xlang.nest.cpp2sv", rec, "XTrack");
+    automatic shuttle_pub #(XTrack) ready_pub = new("xlang.nest.ready");
+    automatic shuttle_pub #(XTrack) to_cpp    = new("xlang.nest.sv2cpp");
+    automatic XTrack                m         = new();
+    automatic shuttle_handle        h;
+    automatic bit                   ok;
+
+    check(sub.id() != 0, "xlang.nest.subscribed");
+
+    // ready broadcast (retained): the C++ side subscribes after this and gets the frame replayed
+    ready_pub.set_retained(1);
+    m.id = 1;
+    h = ready_pub.publish_serial(m);
+    h.wait_done();
+    ok = (h.first_error() == "");
+    check(ok, "xlang.nest.ready_no_failure");
+
+    // wait for the C++-side nested frame; bounded so a broken handshake fails loudly
+    for (int i = 0; i < 5000 && rec.count < 1; i++) #(10us);
+    check(rec.count == 1, "xlang.nest.count");
+    if (rec.last != null) begin
+      check(rec.last.id == 32'hC0FFEE01, "xlang.nest.id");
+      check(rec.last.origin.x == -100 && rec.last.origin.y == 200, "xlang.nest.origin");
+      check(rec.last.dest.x == 300 && rec.last.dest.y == -400, "xlang.nest.dest");
+    end
+
+    // answer with another nested frame; wait_done returning means the C++ callback has finished
+    m = new();
+    m.id = 2;
+    m.origin.x = 1;
+    m.origin.y = -2;
+    m.dest.x = -3;
+    m.dest.y = 4;
+    h = to_cpp.publish_serial(m);
+    h.wait_done();
+    ok = (h.first_error() == "");
+    check(ok, "xlang.nest.no_failure");
+  endtask
+
   // A wait_pub deadline: the timeout leg fires, the frame stays pending and completes later.
   // Exercised through shuttle_c_wait_pub directly because shuttle_handle::wait_done() turns a
   // timeout into $error by design (this file never calls $error).
@@ -791,6 +876,7 @@ module shuttle_tests;
     case_mailbox();
     case_xlang();
     case_xlang_mixed();
+    case_xlang_nested();
     g_sv_done = 1;
     $display("[sv] %0d passed, %0d failed", g_pass, g_fail);
   end

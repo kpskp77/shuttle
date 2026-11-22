@@ -21,8 +21,8 @@ SV 监视器订阅的 `uart0.tx` 同样会收到 C++ 发布，C++ 订阅者也�
 
 | 文件 | 语言 | 覆盖的 API 面 |
 |---|---|---|
-| `basic_demo.cpp` | C++ | publisher + typed 订阅（blocking 与 `nb`）、三种发布方式、retained topic、通配符模式、`subscribe_bytes`、introspection、多 publisher、失败/超时边界 |
-| `shuttle_demo.sv` | SV | `shuttle_pub`/`shuttle_sub`/`shuttle_subscribe_nb`、一个类挂两个入口、`publish_now`/`publish_serial`/`publish_concurrent`、邮箱（纯 SV）、多 publisher、退订；并经 `weave_run` 启动 C++ 演示 |
+| `basic_demo.cpp` | C++ | publisher + typed 订阅（blocking 与 `nb`）、三种发布方式、retained topic、通配符模式、`subscribe_bytes`、introspection、多 publisher、嵌套消息类型、失败/超时边界 |
+| `shuttle_demo.sv` | SV | `shuttle_pub`/`shuttle_sub`/`shuttle_subscribe_nb`、一个类挂两个入口、`publish_now`/`publish_serial`/`publish_concurrent`、邮箱（纯 SV）、多 publisher、嵌套消息类型、退订；并经 `weave_run` 启动 C++ 演示 |
 | `mailbox_demo.cpp` | C++ | 邮箱即订阅者、`recv(timeout)` 排空、有界队列（`drop_oldest`/`drop_newest`/`reject`）、构造时拒绝 `OverflowPolicy::block`、拷贝共享同一队列、`close()`、无关联号的请求/应答 |
 | `request_response_demo.cpp` | C++ | `Requester`/`serve` 与 `corr_id` 去复用、并发在途调用、旁观者与响应者之分（`wait_for(n)`）、响应方超时、抛异常的响应者落为 `Failure` |
 | `trigger_demo.cpp` | C++ | `Trigger`：`after(Event)` / `after(duration)` / `after(Task)` / `after_all`，句柄完成与触发解耦 |

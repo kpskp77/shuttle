@@ -32,6 +32,18 @@ struct UartTx {
 };
 SHUTTLE_REFLECT(UartTx, addr, data)
 
+// Nested message type: SHUTTLE_REFLECT recurses per field, so Codec<UartBurst> delegates to
+// Codec<UartTx> for the two transaction fields. The wire format is the fields in declaration
+// order with the nested structs expanded inline (no length prefix); the SV mirror is class
+// UartBurst in examples/shuttle_demo.sv, whose `shuttle_field(first, UartTx)` entries make the
+// nested class itself the field codec.
+struct UartBurst {
+  std::uint8_t count;
+  UartTx first;
+  UartTx last;
+};
+SHUTTLE_REFLECT(UartBurst, count, first, last)
+
 WEAVE_TEST(basic_demo) {
   // ── Subscription: both callback capabilities ─────────────────────────
   // Blocking capability (delivered by `serial`/`concurrent`): the callback runs
@@ -117,6 +129,21 @@ WEAVE_TEST(basic_demo) {
   shuttle::Publisher<UartTx> other_pub("uart0.tx");
   other_pub.publish_now(UartTx{0x15, 0x55}, shuttle::NowPolicy::skip);
   if (last.addr != 0x15) throw std::logic_error("basic_demo: multi-publisher did not deliver");
+
+  // ── Nested message types: a message containing two messages of another reflected type ──
+  // Retained so the SV demo decodes the same frame whenever it subscribes (the demo is compiled
+  // only on the svdpi backend); on the systemc backend the typed subscriber below is the only
+  // target. The assertions run silently — a wrong nested field throws, matching this demo's
+  // "assertion by exception" style.
+  UartBurst burst_last{};
+  auto burst_sub = shuttle::subscribe<UartBurst>(
+      "uart0.burst", [&burst_last](const UartBurst& b, const shuttle::Meta&) { burst_last = b; });
+  shuttle::Publisher<UartBurst> burst_pub("uart0.burst");
+  burst_pub.set_retained(true);
+  burst_pub.publish_serial(UartBurst{2, UartTx{0x21, 0xAA}, UartTx{0x22, 0xBB}}).wait();
+  if (burst_last.count != 2 || burst_last.first.addr != 0x21 || burst_last.first.data != 0xAA ||
+      burst_last.last.addr != 0x22 || burst_last.last.data != 0xBB)
+    throw std::logic_error("basic_demo: nested message round trip failed");
 
   // ── Edge cases: `publish_now` with a blocking-entry subscriber → CapabilityError; wait timeout
   // ── Isolated on a separate topic so the delayed frame does not disturb the FIFO observation

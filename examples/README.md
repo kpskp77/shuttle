@@ -22,8 +22,8 @@ subscriber receives the SV publish. The systemc backend runs only the C++ demos,
 
 | File | Language | API surface exercised |
 |---|---|---|
-| `basic_demo.cpp` | C++ | publisher + typed subscribe (blocking and `nb`), all three publish flavors, retained topics, wildcard patterns, `subscribe_bytes`, introspection, multi-publisher, failure/timeout edges |
-| `shuttle_demo.sv` | SV | `shuttle_pub`/`shuttle_sub`/`shuttle_subscribe_nb`, both entries on one class, `publish_now`/`publish_serial`/`publish_concurrent`, mailbox (pure SV), multi-publisher, unsubscribe; also launches the C++ demos via `weave_run` |
+| `basic_demo.cpp` | C++ | publisher + typed subscribe (blocking and `nb`), all three publish flavors, retained topics, wildcard patterns, `subscribe_bytes`, introspection, multi-publisher, nested message types, failure/timeout edges |
+| `shuttle_demo.sv` | SV | `shuttle_pub`/`shuttle_sub`/`shuttle_subscribe_nb`, both entries on one class, `publish_now`/`publish_serial`/`publish_concurrent`, mailbox (pure SV), multi-publisher, nested message types, unsubscribe; also launches the C++ demos via `weave_run` |
 | `mailbox_demo.cpp` | C++ | mailbox as subscriber, `recv(timeout)` drain, bounded queues (`drop_oldest`/`drop_newest`/`reject`), `OverflowPolicy::block` rejected at construction, copies sharing one queue, `close()`, request/response without a correlation id |
 | `request_response_demo.cpp` | C++ | `Requester`/`serve` with `corr_id` demultiplexing, concurrent in-flight calls, observer vs responder (`wait_for(n)`), responder timeout, a throwing responder surfacing as a `Failure` |
 | `trigger_demo.cpp` | C++ | `Trigger`: `after(Event)` / `after(duration)` / `after(Task)` / `after_all`, handle completion orthogonal to trigger firing |
