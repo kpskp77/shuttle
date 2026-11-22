@@ -24,14 +24,16 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── Test message types: plain aggregates, reflected macro-free (reflect.hpp) ──
+// ── Test message types (SHUTTLE_REFLECT can only be used at global scope) ──
 struct RqReq {
   std::uint32_t op = 0;
 };
+SHUTTLE_REFLECT(RqReq, op)
 
 struct RqResp {
   std::uint32_t data = 0;
 };
+SHUTTLE_REFLECT(RqResp, data)
 
 WEAVE_TEST(requester_tests) {
   // case1: one responder round trip. The requester allocates the corr_id, serve() copies it into

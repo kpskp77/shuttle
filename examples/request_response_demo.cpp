@@ -37,11 +37,13 @@ using namespace weave::literals;
 struct RegReq {
   std::uint32_t addr = 0;
 };
+SHUTTLE_REFLECT(RegReq, addr)
 
 struct RegResp {
   std::uint32_t status = 0;
   std::uint32_t value = 0;
 };
+SHUTTLE_REFLECT(RegResp, status, value)
 
 // ── Responder component: a register block ────────────────────────────────
 // It only knows its own address window and its own topics. It does not know who

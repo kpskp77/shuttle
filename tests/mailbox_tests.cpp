@@ -23,14 +23,16 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── Test message types: plain aggregates, reflected macro-free (reflect.hpp) ──
+// ── Test message types (SHUTTLE_REFLECT can only be used at global scope) ──
 struct MbxReq {
   std::uint32_t op = 0;
 };
+SHUTTLE_REFLECT(MbxReq, op)
 
 struct MbxResp {
   std::uint32_t data = 0;
 };
+SHUTTLE_REFLECT(MbxResp, data)
 
 WEAVE_TEST(mailbox_tests) {
   // case1: a mailbox is a nonblocking subscriber, so publish_now fills it synchronously on the

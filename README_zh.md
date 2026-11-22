@@ -91,8 +91,8 @@ shuttle 的 API 语义沿用主题式发布-订阅（NATS 风格的 topic、MQTT
 ```cpp
 #include <shuttle/shuttle.hpp>
 
-struct UartTx { std::uint32_t addr, data; };    // 聚合类型无需注册：
-                                                // 编解码器和 "UartTx" 标签自动推导
+struct UartTx { std::uint32_t addr, data; };
+SHUTTLE_REFLECT(UartTx, addr, data)              // 类型标签 + 编解码
 
 shuttle::Publisher<UartTx> pub("uart0.tx");      // 绑定该 topic 的类型
 auto mon = shuttle::subscribe<UartTx>("uart0.tx",

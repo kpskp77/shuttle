@@ -406,7 +406,7 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 ```
 shuttle/types.hpp        Capability / SubKind / NowPolicy / OverflowPolicy / errors
 shuttle/meta.hpp         Meta{topic_name, topic_seq, type_tag, time_fs, corr_id}
-shuttle/codec.hpp        Writer / Reader（大端）+ 免宏聚合编解码（reflect.hpp）
+shuttle/codec.hpp        Writer / Reader（大端）+ SHUTTLE_REFLECT
 shuttle/trigger.hpp      Trigger + after/after_all/after_any 工厂
 shuttle/publisher.hpp    Publisher<T>（此处可见 pub_* ABI；拉入 detail/abi.hpp）
 shuttle/subscription.hpp subscribe<T> / subscribe_bytes / Subscription（拉入 detail/abi.hpp）

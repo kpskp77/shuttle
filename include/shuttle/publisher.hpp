@@ -21,7 +21,7 @@
 // concurrently, and arbitrarily many subscribers (many-to-many); each
 // Publisher instance publishes exactly one topic. Multiple Publishers may be
 // bound to different types (one instance per type) — the type_tag is decided
-// by the C++ codec (type name), not bound to `this`.
+// by SHUTTLE_REFLECT on the C++ side, not bound to `this`.
 //
 // Snapshot semantics: all three flavors copy the message and lock in the
 // subscriber set at the moment of the call; later subscribe/unsubscribe calls

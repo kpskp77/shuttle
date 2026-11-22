@@ -20,17 +20,19 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── Test message types: plain aggregates, reflected macro-free (reflect.hpp) ──
+// ── Test message types (SHUTTLE_REFLECT can only be used at global scope) ──
 // The type name doubles as the cross-language type_tag, so each test file uses distinct names (to
 // avoid ODR conflicts).
 struct BkrTx {
   std::uint32_t addr = 0;
   std::uint32_t data = 0;
 };
+SHUTTLE_REFLECT(BkrTx, addr, data)
 
 struct BkrOther {
   std::uint16_t v = 0;
 };
+SHUTTLE_REFLECT(BkrOther, v)
 
 namespace {
 
@@ -180,7 +182,7 @@ WEAVE_TEST(broker_tests) {
     const auto info = shuttle::broker::topic_info("bkr.info");
     expect(info.has_value(), "topic_info returns the bound topic");
     expect(info->name == "bkr.info", "topic name");
-    expect(info->type_tag == "BkrTx", "type tag is the struct name");
+    expect(info->type_tag == "BkrTx", "type tag comes from SHUTTLE_REFLECT");
     expect_eq(static_cast<long long>(info->subscriber_count), 1, "subscriber count");
     expect(info->published >= 1, "published counter");
     expect(info->delivered >= 1, "delivered counter");

@@ -22,7 +22,7 @@ using namespace weave::literals;
 
 // ── Message type ─────────────────────────────────────────────────────────
 // User-defined struct; member types must belong to the codec subset (see
-// include/shuttle/codec.hpp). Macro-free reflection generates the serialization
+// include/shuttle/codec.hpp). SHUTTLE_REFLECT generates the serialization
 // support (required for cross-language delivery) and the type tag "UartTx";
 // the SV side must define a message class with the same fields in the same
 // order and a matching type_tag (see examples/shuttle_demo.sv).
@@ -30,6 +30,7 @@ struct UartTx {
   std::uint32_t addr;
   std::uint32_t data;
 };
+SHUTTLE_REFLECT(UartTx, addr, data)
 
 WEAVE_TEST(basic_demo) {
   // ── Subscription: both callback capabilities ─────────────────────────
@@ -106,7 +107,7 @@ WEAVE_TEST(basic_demo) {
                 static_cast<unsigned long long>(info->published),
                 static_cast<unsigned long long>(info->delivered));
     if (info->type_tag != "UartTx")
-      throw std::logic_error("basic_demo: type tag does not match the struct name");
+      throw std::logic_error("basic_demo: type tag does not match SHUTTLE_REFLECT");
   }
 
   // ── One-to-many: multiple Publisher instances on one topic deliver to the same subscribers ──

@@ -22,18 +22,20 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── Message types (private to publish_tests): plain aggregates, reflected macro-free
+// ── Message types (private to publish_tests): SHUTTLE_REFLECT must be used at global scope;
 // the type name is the cross-language type_tag, so each test file uses distinct names to avoid ODR
 // conflicts.
 struct PubMsg {
   std::uint32_t v = 0;
 };
+SHUTTLE_REFLECT(PubMsg, v)
 
 // Another type, used to verify "type not in the target set" (a different type_tag is not a target
 // of this frame)
 struct PubMsgOther {
   std::uint32_t v = 0;
 };
+SHUTTLE_REFLECT(PubMsgOther, v)
 
 WEAVE_TEST(publish_tests) {
   // case1: `publish_now` is synchronous — the nb callback has already run before publish_now

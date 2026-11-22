@@ -22,17 +22,20 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── Test message types: plain aggregates — the codec is reflected macro-free
-//    (include/shuttle/reflect.hpp), no registration step
+// ── Test message types (SHUTTLE_REFLECT can only be used at global scope: it expands into
+//    `namespace shuttle { template <> struct Codec<T> }`, which requires reopening the global
+//    shuttle namespace)
 struct UartTx {
   std::uint32_t addr = 0;
   std::uint32_t data = 0;
 };
+SHUTTLE_REFLECT(UartTx, addr, data)
 
 struct Inner {
   std::uint16_t a = 0;
   std::int8_t b = 0;
 };
+SHUTTLE_REFLECT(Inner, a, b)
 
 enum class Mode : std::uint8_t { idle = 1, run = 2 };
 
@@ -50,12 +53,11 @@ struct Wide {
   std::array<std::uint8_t, 3> arr{};
   Inner nested;
 };
+SHUTTLE_REFLECT(Wide, flag, u8, i16, u64, f32, f64, mode, name, vec, arr, nested)
 
 // A type with no codec (used by the static-capability probe)
-// A payload type that cannot cross the language boundary: one of its fields
-// has no codec, so it does not gain one automatically.
-struct NotEncodable {
-  int* p = nullptr;
+struct NotReflected {
+  int x = 0;
 };
 
 namespace {
@@ -206,16 +208,15 @@ WEAVE_TEST(codec_tests) {
   // case9: type tags and capability probe
   run_case(__func__, "case9", [] {
     expect(shuttle::type_tag_of<UartTx>() == "UartTx",
-           "type tag is the struct name");
+           "type tag taken from the SHUTTLE_REFLECT name");
     expect(shuttle::type_tag_of<Wide>() == "Wide", "tag of the second type");
     expect(shuttle::has_codec_v<std::uint32_t>, "scalars have a codec");
     expect(shuttle::has_codec_v<std::string>, "string has a codec");
-    // a type with a non-encodable field has no codec
-    expect(!shuttle::has_codec_v<NotEncodable>, "an unencodable type has no codec");
+    expect(!shuttle::has_codec_v<NotReflected>, "an unreflected type has no codec");
     expect(!shuttle::has_codec_v<int*>, "pointers have no codec");
-    // such a type provides no encode/decode function pointers (cross-language delivery is
+    // an unreflected type provides no encode/decode function pointers (cross-language delivery is
     // rejected)
-    const shuttle::detail::TypeOps* ops = shuttle::detail::type_ops<NotEncodable>();
+    const shuttle::detail::TypeOps* ops = shuttle::detail::type_ops<NotReflected>();
     expect(ops->encode == nullptr && ops->decode == nullptr,
            "without a codec, encode/decode are null");
   });

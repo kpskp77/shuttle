@@ -22,6 +22,7 @@ using namespace weave::literals;
 struct Alarm {
   std::uint32_t code;
 };
+SHUTTLE_REFLECT(Alarm, code)
 
 WEAVE_TEST(trigger_demo) {
   shuttle::Publisher<Alarm> pub("soc.alarm");
