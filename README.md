@@ -96,8 +96,8 @@ wildcards and introspection):
 ```cpp
 #include <shuttle/shuttle.hpp>
 
-struct UartTx { std::uint32_t addr, data; };
-SHUTTLE_REFLECT(UartTx, addr, data)              // type tag + codec
+struct UartTx { std::uint32_t addr, data; };    // aggregates need no registration:
+                                                // the codec + "UartTx" tag are derived
 
 shuttle::Publisher<UartTx> pub("uart0.tx");      // binds the topic's type
 auto mon = shuttle::subscribe<UartTx>("uart0.tx",

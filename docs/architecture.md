@@ -456,7 +456,7 @@ Dependencies point downwards; `shuttle.hpp` is the umbrella and defines what is 
 ```
 shuttle/types.hpp        Capability / SubKind / NowPolicy / OverflowPolicy / errors
 shuttle/meta.hpp         Meta{topic_name, topic_seq, type_tag, time_fs, corr_id}
-shuttle/codec.hpp        Writer / Reader (big-endian) + SHUTTLE_REFLECT
+shuttle/codec.hpp        Writer / Reader (big-endian) + macro-free aggregate codecs (reflect.hpp)
 shuttle/trigger.hpp      Trigger + after/after_all/after_any factories
 shuttle/publisher.hpp    Publisher<T> (pub_* ABI visible here; pulls detail/abi.hpp)
 shuttle/subscription.hpp subscribe<T> / subscribe_bytes / Subscription (pulls detail/abi.hpp)

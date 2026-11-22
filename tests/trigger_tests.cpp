@@ -23,13 +23,12 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── Message type (private to trigger_tests): SHUTTLE_REFLECT must be used at global scope;
+// ── Message type (private to trigger_tests): plain aggregate, reflected macro-free
 // the type name is the cross-language type_tag; each test file uses distinct names to avoid ODR
 // conflicts.
 struct TrigMsg {
   std::uint32_t v = 0;
 };
-SHUTTLE_REFLECT(TrigMsg, v)
 
 WEAVE_TEST(trigger_tests) {
   // case1: after(duration) — nothing is delivered before the deadline; after it, delivery happens

@@ -29,7 +29,6 @@ struct Sample {
   std::uint32_t ch = 0;
   std::uint32_t data = 0;
 };
-SHUTTLE_REFLECT(Sample, ch, data)
 
 WEAVE_TEST(mailbox_demo) {
   // ── A mailbox is an ordinary subscriber ────────────────────────────────

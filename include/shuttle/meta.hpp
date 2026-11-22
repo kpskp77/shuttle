@@ -14,7 +14,7 @@ namespace shuttle {
 struct Meta {
   std::string_view topic_name;  // the concrete topic the frame was published to (never a wildcard
                                 // pattern: a wildcard subscription is told the real name here)
-  std::string_view type_tag;    // message type tag (SHUTTLE_REFLECT name / typeid name)
+  std::string_view type_tag;    // message type tag (struct name / typeid name)
   std::uint64_t topic_seq;  // index of this frame within its topic: a per-topic counter starting at
                             // 1, assigned by the broker, identical across languages. (topic_name,
                             // topic_seq) identifies a frame -- neither field does on its own

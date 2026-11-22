@@ -44,27 +44,24 @@ using shuttle_test::report;
 using shuttle_test::run_case;
 
 // Request/response payloads for the Requester ↔ SV-responder case (the SV mirror is
-// SvRqReq/SvRqResp in tests/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT
-// names). Only domain data here: the correlation id rides in the frame header, so neither side
+// SvRqReq/SvRqResp in tests/shuttle_tests.sv; the type_tag must match the C++
+// struct names). Only domain data here: the correlation id rides in the frame header, so neither side
 // needs a handshake field in its payload.
 struct XRqReq {
   std::uint32_t op = 0;
 };
-SHUTTLE_REFLECT(XRqReq, op)
 
 struct XRqResp {
   std::uint32_t data = 0;
 };
-SHUTTLE_REFLECT(XRqResp, data)
 
-// Message type (SHUTTLE_REFLECT must be used at global scope).
+// Message type (plain aggregate; the codec is reflected macro-free).
 // Byte-for-byte counterpart of `class XMsg` in tests/shuttle_tests.sv:
 //   {>>{addr, data}} — two unsigned 32-bit values, big-endian; both tags are "XMsg".
 struct XMsg {
   std::uint32_t addr = 0;
   std::uint32_t data = 0;
 };
-SHUTTLE_REFLECT(XMsg, addr, data)
 
 namespace {
 

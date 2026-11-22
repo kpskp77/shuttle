@@ -34,7 +34,7 @@ namespace detail {
 struct TypeOps {
   const char* tag;  // type tag: the type-binding identity of a topic (consistent across languages)
 
-  // nullptr means the type is not cross-language capable (no SHUTTLE_REFLECT):
+  // nullptr means the type is not cross-language capable (not a reflectable aggregate):
   // delivering to an SV subscriber or a byte subscriber (subscribe_bytes)
   // throws PublishError — `publish_now` throws straight to the caller;
   // `serial`/`concurrent` record it as that subscriber's Failure (rethrown at

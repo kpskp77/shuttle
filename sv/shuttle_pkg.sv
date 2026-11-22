@@ -5,9 +5,9 @@
 // fragments (`include`d below, one concern per file — dpi / constants /
 // meta / subscribe / mailbox / publication / pub / dispatch / codec), so
 // each part can be read and reviewed on its own. Compile THIS file only;
-// the fragments are not standalone compilation units. The SHUTTLE_REFLECTn
-// macros (sv/shuttle_reflect.svh) are included after `endpackage` because
-// `define has compilation-unit scope.
+// the fragments are not standalone compilation units. The shuttle_reflect_begin
+// / shuttle_field / shuttle_reflect_end macros (sv/shuttle_reflect.svh) are
+// included after `endpackage` because `define has compilation-unit scope.
 //
 // Depends on: weave_pkg (../weave/sv/weave_pkg.sv, compiled by the simulation
 // scripts along with this file). The DPI protocol reference is
@@ -38,7 +38,7 @@
 //   class Txn;
 //     int unsigned addr;
 //     int unsigned data;
-//     localparam string type_tag = "Txn";         // must equal the C++ SHUTTLE_REFLECT name
+//     localparam string type_tag = "Txn";         // must equal the C++ struct name
 //     function automatic void pack(output byte q[$]);
 //       q = {>>{addr, data}};   // ← must use {>>{...}} (1-bit slices, MSB first)
 //     endfunction
@@ -53,13 +53,17 @@
 // Wire-order hint: {>>{...}} yields "field declaration order + each field
 //           MSB-first", exactly the C++ Writer's big-endian layout; {<<{...}}
 //           reverses the entire bit stream — never mix them up.
-// The recommended route is the generated codec instead — `SHUTTLE_REFLECTn
-// (sv/shuttle_reflect.svh) expands to this same convention plus the nested /
+// The recommended route is the generated codec instead — the three-piece
+// shuttle_reflect_begin / shuttle_field / shuttle_reflect_end macros
+// (sv/shuttle_reflect.svh) expand to this same convention plus the nested /
 // string / vector codecs, byte-for-byte equal to the C++ wire format:
 //   class Txn;
 //     logic [31:0] addr;                 // field type is free; the codec name
 //     string       tag;                  // carries the width contract
-//     `SHUTTLE_REFLECT2(Txn, addr, shuttle_u32, tag, shuttle_string)
+//     `shuttle_reflect_begin(Txn)
+//       `shuttle_field(addr, shuttle_u32)
+//       `shuttle_field(tag, shuttle_string)
+//     `shuttle_reflect_end
 //   endclass
 // ============================================================================
 `ifndef SHUTTLE_PKG_SV

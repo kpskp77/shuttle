@@ -12,26 +12,19 @@ module shuttle_demo;
   timeunit 1ns; timeprecision 1ps;
   import shuttle_pkg::*;
 
-  // ── Message class: counterpart of `struct UartTx + SHUTTLE_REFLECT(UartTx, addr, data)` on the C++ side ──
-  // Convention (see the header of sv/shuttle_pkg.sv):
-  //   · member types belong to the codec subset, field order matches the C++ side;
-  //   · pack()/unpack() stream with {>>{...}} (declaration order, each field MSB first),
-  //     byte-for-byte identical to the C++ Writer's big-endian wire order;
-  //   · localparam type_tag equals the SHUTTLE_REFLECT type name and is validated at publish time.
+  // ── Message class: counterpart of `struct UartTx { uint32_t addr; uint32_t data }` on the C++ side ──
+  // The three-piece macros (sv/shuttle_reflect.svh) generate the whole message-class convention:
+  //   · localparam string type_tag = "UartTx" — must equal the C++ struct name, validated at publish time;
+  //   · pack()/unpack() byte-for-byte equal to the C++ Writer's big-endian wire order;
+  //   · each shuttle_field is a (field, codec) pair; the codec name carries the width/encoding
+  //     contract while the field keeps whatever SV type you prefer (see sv/shuttle_codec.svh).
   class UartTx;
     int unsigned addr;
     int unsigned data;
-    localparam string type_tag = "UartTx";
-
-    function automatic void pack(output byte q[$]);
-      q = {>>{addr, data}};
-    endfunction
-
-    static function automatic UartTx unpack(byte b[]);
-      UartTx t = new();
-      {>>{t.addr, t.data}} = b;
-      return t;
-    endfunction
+    `shuttle_reflect_begin(UartTx)
+      `shuttle_field(addr, shuttle_u32)
+      `shuttle_field(data, shuttle_u32)
+    `shuttle_reflect_end
   endclass
 
   // ── Subscriber: multiple interface-class implementations, no single-inheritance slot spent ────────────────────

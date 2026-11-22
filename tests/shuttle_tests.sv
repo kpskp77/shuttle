@@ -32,66 +32,54 @@ module shuttle_tests;
   int unsigned g_fail = 0;
   bit          g_sv_done = 0;
 
-  // ── Message classes: counterpart of `struct XMsg + SHUTTLE_REFLECT(XMsg, addr, data)` on the C++ side ──
-  // {>>{...}} equals the C++ Writer's big-endian wire order byte for byte (verified on VCS; see the
+  // ── Message classes: counterpart of `struct XMsg { uint32_t addr; uint32_t data; }` on the C++ side ──
+  // All message classes use the generated codec (sv/shuttle_reflect.svh three-piece macros), which is
+  // byte-for-byte the C++ Writer's big-endian wire order (verified on VCS; see the
   // "Simulator constraints" section of docs/backends.md).
   class XMsg;
     int unsigned addr;
     int unsigned data;
-    localparam string type_tag = "XMsg";
-
-    function automatic void pack(output byte q[$]);
-      q = {>>{addr, data}};
-    endfunction
-
-    static function automatic XMsg unpack(byte b[]);
-      XMsg m = new();
-      {>>{m.addr, m.data}} = b;
-      return m;
-    endfunction
+    `shuttle_reflect_begin(XMsg)
+      `shuttle_field(addr, shuttle_u32)
+      `shuttle_field(data, shuttle_u32)
+    `shuttle_reflect_end
   endclass
 
   // Another type: only used by the subscribe-before-bind tag-conflict case (any type_tag different from XMsg)
   class YMsg;
     int unsigned addr;
-    localparam string type_tag = "YMsg";
-
-    function automatic void pack(output byte q[$]);
-      q = {>>{addr}};
-    endfunction
+    `shuttle_reflect_begin(YMsg)
+      `shuttle_field(addr, shuttle_u32)
+    `shuttle_reflect_end
   endclass
 
   // ── Cross-language request/response payloads (mirror XRqReq/XRqResp in tests/xlang_tests.cpp) ──
-  // One uint32 field each; type_tag must equal the C++ SHUTTLE_REFLECT name so that type-matched
+  // One uint32 field each; type_tag must equal the C++ struct name so that type-matched
   // delivery works across languages. The correlation id is NOT part of the payload: it travels in
   // the frame header (shuttle_meta::corr_id), so these classes hold only domain data.
-  class SvRqReq;
+  class XRqReq;
     int unsigned op;
-    localparam string type_tag = "XRqReq";
-
-    static function automatic SvRqReq unpack(byte b[]);
-      SvRqReq r = new();
-      {>>{r.op}} = b;
-      return r;
-    endfunction
+    // The macro generates both pack and unpack; this class only ever decodes C++-side requests.
+    `shuttle_reflect_begin(XRqReq)
+      `shuttle_field(op, shuttle_u32)
+    `shuttle_reflect_end
   endclass
 
-  class SvRqResp;
+  class XRqResp;
     int unsigned data;
-    localparam string type_tag = "XRqResp";
-
-    function automatic void pack(output byte q[$]);
-      q = {>>{data}};
-    endfunction
+    // Only ever published from SV; the C++ requester decodes it.
+    `shuttle_reflect_begin(XRqResp)
+      `shuttle_field(data, shuttle_u32)
+    `shuttle_reflect_end
   endclass
 
   // Responder: answers op*2+1 and hands the request's frame header to `pub.reply`, which echoes
   // meta.corr_id for us — the response never mentions the id itself.
   class SvRqSink implements shuttle_sink;
     virtual task invoke(input byte payload[], input shuttle_meta meta);
-      SvRqReq                 req  = SvRqReq::unpack(payload);
-      SvRqResp                resp = new();
-      shuttle_pub #(SvRqResp) pub = new("rq.xlang.resp");
+      XRqReq                 req  = XRqReq::unpack(payload);
+      XRqResp                resp = new();
+      shuttle_pub #(XRqResp) pub = new("rq.xlang.resp");
       resp.data = req.op * 2 + 1;
       pub.reply(resp, meta);
     endtask

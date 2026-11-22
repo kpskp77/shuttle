@@ -1,4 +1,4 @@
-// SV-side message codec: the SHUTTLE_REFLECT counterpart for SystemVerilog.
+// SV-side message codec: the C++-style message reflection counterpart for SystemVerilog.
 //
 // Wire format: byte-for-byte the C++ side (include/shuttle/codec.hpp) —
 //   · fields encoded in declaration order; no names, no padding;
@@ -14,11 +14,14 @@
 //   class Txn;
 //     logic [31:0] addr;
 //     string       tag;
-//     `SHUTTLE_REFLECT2(Txn, addr, shuttle_u32, tag, shuttle_string)
+//     `shuttle_reflect_begin(Txn)
+//       `shuttle_field(addr, shuttle_u32)
+//       `shuttle_field(tag, shuttle_string)
+//     `shuttle_reflect_end
 //   endclass
 //
-// The macro generates the message-class convention shuttle_pub#(T) expects:
-//   localparam string type_tag = "Txn";   // must equal the C++ SHUTTLE_REFLECT name
+// The macros generate the message-class convention shuttle_pub#(T) expects:
+//   localparam string type_tag = "Txn";   // must equal the C++ struct name
 //   function automatic void pack(output byte q[$]);
 //   static function automatic Txn unpack(const ref byte b[]);   // whole-frame (sinks)
 // plus the codec-surface entry points used when this class appears as a
@@ -83,7 +86,7 @@
 //     endfunction
 //   endclass
 // This file is `include`d INSIDE package shuttle_pkg (see sv/shuttle_pkg.sv);
-// the SHUTTLE_REFLECTn macros it documents live in sv/shuttle_reflect.svh
+// the three-piece macros it documents live in sv/shuttle_reflect.svh
 // (included after `endpackage`, since `define has compilation-unit scope).
 // Use via `import shuttle_pkg::*;` alongside the rest of the framework.
 `ifndef SHUTTLE_CODEC_SVH
