@@ -10,11 +10,11 @@ SV 的跨语言通信，都走同一个 broker、同一套类型系统和同一�
 flowchart TB
     subgraph SIM["shuttle"]
         direction TB
-        CP["<b>C++ 发布</b>"]
-        SP["<b>SV 发布</b>"]
+        CP["<b>C++ publish</b>"]
+        SP["<b>SV publish</b>"]
         B["<b>broker</b>"]
-        CS["<b>C++ 订阅</b>"]
-        SS["<b>SV 订阅</b>"]
+        CS["<b>C++ subscribe</b>"]
+        SS["<b>SV subscribe</b>"]
     end
 
     CP -->|"publish"| B
@@ -85,7 +85,7 @@ shuttle 的 API 语义沿用主题式发布-订阅（NATS 风格的 topic、MQTT
 
 ## 快速上手
 
-最小端到端示例，裁剪自 [`examples/cpp/basic_demo.cpp`](examples/cpp/basic_demo.cpp)
+最小端到端示例，裁剪自 [`examples/basic_demo.cpp`](examples/basic_demo.cpp)
 （已与真实示例核对；完整文件另含另外两种发布方式、retained、通配符与 introspection）：
 
 ```cpp
@@ -119,8 +119,8 @@ h.wait_done();                                               // 挂起本 SV 进
 端到端跑一遍（SV 演示从 SV 侧跑同一情景；两侧在同一个 broker 上汇合）：
 
 ```bash
-just sc       # systemc 后端本地跑；末行 "WEAVE TEST PASSED"
-just vcs      # svdpi 后端 + 真实 VCS；以 "SHUTTLE CPP DEMO PASSED" 为判据
+just example-sc    # systemc 后端本地跑；末行 "WEAVE TEST PASSED"
+just example-vcs   # svdpi 后端 + 真实 VCS；以 "SHUTTLE CPP DEMO PASSED" 为判据
 ```
 
 预期输出中两侧交错——SV 订阅者收到 SV 发布和 C++ 发布各一帧，C++ 订阅者收到 C++ 发布，
@@ -131,7 +131,7 @@ broker 计数收尾：
 [monitor] seq=4 addr=0x00000011 data=0x0000005a   ← SV 订阅者收到 C++ 发布
 [async]   seq=4 addr=0x00000011 data=0x0000005a   ← C++ 订阅者收到 C++ 发布
 [raw] topic=uart0.tx payload=8 bytes
-[broker] topic=uart0.tx type=UartTx subs=5 published=8 delivered=15
+[broker] topic=uart0.tx type=UartTx subs=6 published=8 delivered=20
 SHUTTLE CPP DEMO PASSED
 ```
 
@@ -155,16 +155,18 @@ SHUTTLE CPP DEMO PASSED
 
 ## 依赖与 xmake 集成
 
-shuttle 及其全部链接项都在同一个仓库
-[`kpskp77/xmake-repo`](https://github.com/kpskp77/xmake-repo) 里以 xmake 包发布：
+shuttle 及其全部依赖项都在同一个仓库 [`kpskp77/xmake-repo`](https://github.com/kpskp77/xmake-repo)
+里以 xmake 包发布。先注册仓库（全局注册一次，或在 `xmake.lua` 里按项目注册）：
 
-| 包 | 提供什么 | 谁引入 |
-|---|---|---|
-| `shuttle` | `include/shuttle/*.hpp` 与 `libshuttle.so` | 你 |
-| `weave` | 并发编排与仿真时间 | `shuttle` 公开链接，依赖 shuttle 即可 |
-| `simlog` | 诊断背后的日志 | `weave` |
-| `svdpi` | SystemVerilog DPI-C 头文件 | `weave`（backend = "svdpi"，默认） |
-| `systemc` | Accellera SystemC 类库 | `weave`（backend = "systemc"） |
+```console
+$ xrepo add-repo eda https://github.com:kpskp77/xmake-repo.git
+```
+
+```lua
+add_repositories("eda https://github.com:kpskp77/xmake-repo.git")  -- 也可以写 https:// 地址，不必配 SSH key
+```
+
+然后依赖 weave：`backend` 配置决定它针对哪个内核构建，并顺带把对应的包拉进来：
 
 ```lua
 add_requires("shuttle 0.1.0", { configs = { backend = "svdpi" } })  -- 或 backend = "systemc"
@@ -188,21 +190,17 @@ target("my_test")
   `libshuttle.so` 的东西——包括 `simv`——都要能找到它们：用 `xmake run` 启动（它把包
   目录放进搜索路径），或自行导出这些目录。不要把库拷到 simv 旁边。
 
-逐后端集成细节（DPI 协议、SystemC 引导、ABI 说明）：
-[backends](docs/backends.md)。
-
 ## 构建与验证本仓库
 
 ```bash
-just build      # 按当前后端构建库与示例
-just sc         # systemc 后端本地跑；末行 "WEAVE TEST PASSED"
-just vcs        # svdpi 后端 + 真实 VCS；以 "SHUTTLE CPP DEMO PASSED" 为判据
-just test       # 两个后端各跑一遍示例
-just test-all   # 完整测试套件（systemc + VCS）
+just example-sc    # systemc 后端本地跑；末行 "WEAVE TEST PASSED"
+just example-vcs   # svdpi 后端 + 真实 VCS；以 "SHUTTLE CPP DEMO PASSED" 为判据
+just example-all   # 两个后端各跑一遍示例
+just test-all      # 完整测试套件（systemc + VCS）
 ```
 
-没有 VCS 的机器上 `tests/svdpi/run.sh` 打印 `[svdpi-test] skipped` 并以 0 退出，所以
-`just vcs` 在那类环境下降级为仅编译通过——这算通过，不算失败。
+没有 VCS 的机器上 `tests/run-eda.sh` 打印 `[svdpi-test] skipped` 并以 0 退出，所以
+`just example-vcs`（以及 `just test-vcs`）在那类环境下降级为仅编译通过——这算通过，不算失败。
 
 ## 语言标准：C++17 起
 
@@ -223,7 +221,7 @@ src/backend/        后端边界（backend.hpp，5 入口）+ 恰好一个后端
                     （svdpi：桥 + DPI 面 + facade；systemc：退化桥）
 sv/                 shuttle_pkg.sv——SV 侧包（在 weave_pkg.sv 之后编译）
 examples/           覆盖整个公开 API 的逐特性演示，含两种语言与预期输出
-tests/              测试套件（tests/cpp 断言体、tests/sv、VCS 运行器 tests/svdpi/run.sh）
+tests/              测试套件（tests/*.cpp 断言体、tests/shuttle_tests.sv、VCS 运行器 tests/run-eda.sh）
 docs/               architecture.md / backends.md 及中文孪生（README_zh.md、docs/*_zh.md）
 ```
 

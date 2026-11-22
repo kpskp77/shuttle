@@ -6,8 +6,8 @@
 //   · systemc backend: compiled into the shuttle_examples_sc executable, run locally;
 //   · svdpi backend:   compiled into libshuttle_examples_svdpi.so, loaded by the
 //                      simulator via -sv_lib and started by weave_pkg::weave_run
-//                      (see examples/sv/shuttle_demo.sv).
-// The SV-side counterpart is examples/sv/shuttle_demo.sv.
+//                      (see examples/shuttle_demo.sv).
+// The SV-side counterpart is examples/shuttle_demo.sv.
 
 #include <cstdint>
 #include <cstdio>
@@ -25,7 +25,7 @@ using namespace weave::literals;
 // include/shuttle/codec.hpp). SHUTTLE_REFLECT generates the serialization
 // support (required for cross-language delivery) and the type tag "UartTx";
 // the SV side must define a message class with the same fields in the same
-// order and a matching type_tag (see examples/sv/shuttle_demo.sv).
+// order and a matching type_tag (see examples/shuttle_demo.sv).
 struct UartTx {
   std::uint32_t addr;
   std::uint32_t data;

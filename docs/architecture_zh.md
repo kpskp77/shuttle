@@ -147,7 +147,7 @@ topics[topic].chain = *mine;                                      // 安装
 延迟帧不许在发布瞬间占住链尾。`after(Event)` 这类延迟是无界的；占住链尾会把同 topic
 后续的每一帧（包括根本没有触发器的帧）一起扣住，`publish_serial(...).wait()` 因此永
 久死锁——最糟的情况是触发器由*排在后面的同 topic 帧的回调*满足，构成真死锁。
-`tests/cpp/trigger_tests.cpp` 的 case8/case9 钉住这两条定律；case10/case11 钉住
+`tests/trigger_tests.cpp` 的 case8/case9 钉住这两条定律；case10/case11 钉住
 per-订阅者变体。
 
 串行链的代价是跨订阅者的队头阻塞：一个订阅者的回调必须完全跑完，下一个才开始。这是

@@ -2,15 +2,15 @@
 // shuttle_tests.sv — SV-side test suite of shuttle (on a real simulator, VCS)
 //
 // Compile order: weave_pkg.sv (../weave/sv) → shuttle_pkg.sv (../../sv) → this file.
-// Run: xmake run shuttle_tests_svdpi_vcs (compiled and executed by tests/svdpi/run.sh).
+// Run: xmake run shuttle_tests_svdpi_vcs (compiled and executed by tests/run-eda.sh).
 //
 // Composition:
 //   · sv_cases       — all in-SV cases (`now`/`serial`/`concurrent`, triggers, retained,
 //                       multiple publishers, unsubscribe, entry routing, seq semantics, snapshot semantics);
-//   · case_xlang     — cross-language round trip, paired with tests/cpp/xlang_tests.cpp;
+//   · case_xlang     — cross-language round trip, paired with tests/xlang_tests.cpp;
 //   · case_xlang_mixed — one topic whose target set mixes an SV blocking entry with C++ ones
 //                       (task identity must survive the nested frame; weave v1.2.0);
-//   · run_cpp_tests  — launches the C++-side tests (WEAVE_TEST in tests/cpp) via weave_run;
+//   · run_cpp_tests  — launches the C++-side tests (WEAVE_TEST in tests/*.cpp) via weave_run;
 //                       both sides share one broker, so they see each other.
 //
 // Verdict: SV case failures accumulate into g_fail; a C++-side failure makes weave_run return a non-zero status.
@@ -61,7 +61,7 @@ module shuttle_tests;
     endfunction
   endclass
 
-  // ── Cross-language request/response payloads (mirror XRqReq/XRqResp in tests/cpp/xlang_tests.cpp) ──
+  // ── Cross-language request/response payloads (mirror XRqReq/XRqResp in tests/xlang_tests.cpp) ──
   // One uint32 field each; type_tag must equal the C++ SHUTTLE_REFLECT name so that type-matched
   // delivery works across languages. The correlation id is NOT part of the payload: it travels in
   // the frame header (shuttle_meta::corr_id), so these classes hold only domain data.
@@ -482,7 +482,7 @@ module shuttle_tests;
     check(sub.id() != 0, "rq_xlang.responder_registered");
   endtask
 
-  // ── Cross-language round trip: C++ side in tests/cpp/xlang_tests.cpp ────────────────────
+  // ── Cross-language round trip: C++ side in tests/xlang_tests.cpp ────────────────────
   task automatic case_xlang();
     automatic Rec                 rec       = new();
     automatic shuttle_sub         sub       = shuttle_subscribe("xlang.cpp2sv", rec, "XMsg");
@@ -539,7 +539,7 @@ module shuttle_tests;
     endtask
   endclass
 
-  // Cross-language mixed target set (C++ side: case6 in tests/cpp/xlang_tests.cpp). The SV sink
+  // Cross-language mixed target set (C++ side: case6 in tests/xlang_tests.cpp). The SV sink
   // registers before the C++ subscriber does, so the frame's target list is
   // [SV blocking entry, C++ blocking subscriber] - the ordering that used to break the identity.
   task automatic case_xlang_mixed();

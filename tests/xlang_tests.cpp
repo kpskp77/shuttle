@@ -1,7 +1,7 @@
 // Cross-language round-trip self-checks (svdpi backend only): C++ → SV and SV → C++
 // publish/subscribe interoperability.
 //
-// Paired with the xlang section of tests/sv/shuttle_tests.sv; the handshake order is:
+// Paired with the xlang section of tests/shuttle_tests.sv; the handshake order is:
 //   1. the SV side first subscribes for C++→SV, then publishes one frame on "xlang.sv_ready"
 //   (retained);
 //   2. the C++ side subscribes to "xlang.sv_ready" (retained guarantees delivery even if SV
@@ -18,7 +18,7 @@
 //   next blocking C++ callback threw "weave: blocking primitive outside task context" (fixed by
 //   keying task identity per simulation process in weave v1.2.0).
 //
-// After both sides finish their assertions, run_cpp_tests in tests/sv/shuttle_tests.sv renders the
+// After both sides finish their assertions, run_cpp_tests in tests/shuttle_tests.sv renders the
 // verdict.
 
 #include <cstdint>
@@ -44,7 +44,7 @@ using shuttle_test::report;
 using shuttle_test::run_case;
 
 // Request/response payloads for the Requester ↔ SV-responder case (the SV mirror is
-// SvRqReq/SvRqResp in tests/sv/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT
+// SvRqReq/SvRqResp in tests/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT
 // names). Only domain data here: the correlation id rides in the frame header, so neither side
 // needs a handshake field in its payload.
 struct XRqReq {
@@ -58,7 +58,7 @@ struct XRqResp {
 SHUTTLE_REFLECT(XRqResp, data)
 
 // Message type (SHUTTLE_REFLECT must be used at global scope).
-// Byte-for-byte counterpart of `class XMsg` in tests/sv/shuttle_tests.sv:
+// Byte-for-byte counterpart of `class XMsg` in tests/shuttle_tests.sv:
 //   {>>{addr, data}} — two unsigned 32-bit values, big-endian; both tags are "XMsg".
 struct XMsg {
   std::uint32_t addr = 0;
@@ -175,7 +175,7 @@ WEAVE_TEST(xlang_tests) {
   });
 
   // case5: cross-language request/response — a C++ Requester calls the SV responder registered by
-  // case_rq_xlang in tests/sv/shuttle_tests.sv (it registers first and broadcasts readiness as a
+  // case_rq_xlang in tests/shuttle_tests.sv (it registers first and broadcasts readiness as a
   // retained frame). The SV side copies meta.corr_id into its response frame, so the C++ reply
   // table can match the answer across the language boundary.
   run_case(__func__, "case5", [] {

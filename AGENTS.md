@@ -81,14 +81,13 @@ After **every** change run the narrowest recipe that covers it, and `just test-a
 core, dispatch, the DPI surface or a public header changed:
 
 ```bash
-just build      # build the library and examples for the current backend
-just test       # both example runs (sc local, vcs under the simulator)
-just test-all   # full suites: systemc (tests/cpp) + VCS (tests/cpp + tests/sv)
+just example-all   # examples on both backends (systemc locally, VCS under the simulator)
+just test-all      # full suites, both backends: tests/*.cpp + tests/shuttle_tests.sv
 ```
 
 - Broker core, dispatch, public headers, or DPI surface changed → `just test-all`, both backends.
-- Example-only changes → `just test` suffices.
-- Without VCS, `tests/svdpi/run.sh` printing `[svdpi-test] skipped` and returning 0 counts as a
+- Example-only changes → `just example-all` suffices.
+- Without VCS, `tests/run-eda.sh` printing `[svdpi-test] skipped` and returning 0 counts as a
   compile-only pass.
 - Run simv only through `xmake run`; never add `add_rpathdirs` / `LD_LIBRARY_PATH` hacks and never
   copy/symlink `libweave`/`libsimlog`/`libspdlog` into a build directory.
@@ -110,8 +109,8 @@ just test-all   # full suites: systemc (tests/cpp) + VCS (tests/cpp + tests/sv)
 | New internal data model | `src/broker/model.hpp` only (backend-independent) |
 | New DPI entry | `src/backend/svdpi/dpi.cpp` + `sv/shuttle_pkg.sv` + the tables in `docs/backends.md` |
 | New backend | `src/backend/<name>/` implementing the 5 entries of `backend.hpp` + the `add_files` line in `xmake.lua` + a chapter in `docs/backends.md` |
-| New example | `examples/cpp/` or `examples/sv/` (globbed) + a row in `examples/README.md` |
-| New test case | `tests/cpp/<suite>.cpp` as `caseN` + SV assertions in `tests/sv/shuttle_tests.sv` |
+| New example | `examples/<name>.cpp` or `examples/<name>.sv` (globbed) + a row in `examples/README.md` |
+| New test case | `tests/<suite>.cpp` as `caseN` + SV assertions in `tests/shuttle_tests.sv` |
 | New rule / guarantee | this file (imperative, diff-checkable); its *why* goes to `docs/architecture.md` |
 | Positioning, mapping, quick start | `README.md` (+ `README_zh.md`) |
 
@@ -132,12 +131,13 @@ downwards only.
 
 ## Tests
 
-- One `caseN` per case in the matching `tests/cpp/<suite>.cpp`, failing with
+- One `caseN` per case in the matching `tests/<suite>.cpp`, failing with
   `throw std::logic_error("caseN: ...")`; the suites are pinned by name in `docs/architecture.md`,
   so renaming a case is a doc change too.
-- SV assertions live in `tests/sv/shuttle_tests.sv`, run by the same VCS pass.
-- Assertion bodies stay backend-agnostic in `tests/cpp/`; anything svdpi-only belongs in
-  `tests/svdpi/` and must not compile into the systemc suite.
+- SV assertions live in `tests/shuttle_tests.sv`, run by the same VCS pass.
+- Assertion bodies stay backend-agnostic in `tests/*.cpp`; anything svdpi-only belongs in a file
+  excluded from the systemc target by `remove_files` in `xmake.lua` (as `tests/xlang_tests.cpp`
+  is) and must not compile into the systemc suite.
 - A cross-language behavior needs coverage on both sides (C++ suite entry + SV assertion) before
   the broker code that enables it lands.
 

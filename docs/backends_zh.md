@@ -28,10 +28,10 @@ SystemVerilog DPI 边界，回答"边界为什么长这样"与"到底什么穿�
   systemc 下只有一个 `bridge.cpp`，`facade.cpp`、`dpi.cpp` 与
   `sv/shuttle_pkg.sv` 完全不参与构建。
 
-用真实仿真器跑 svdpi 后端走 `tests/svdpi/run.sh`——唯一的 VCS 运行器，由两个 phony
-xmake 目标 `shuttle_examples_svdpi_vcs` 与 `shuttle_probe_vcs` 驱动（后者接受
-`SHUTTLE_SV_PKG` / `SHUTTLE_SV_TB` / `SHUTTLE_PROBE_LIB` 覆盖，用于兼容性探针）。
-脚本经 `VCS_HOME`/`PATH` 定位 vcs，编译 `weave_pkg.sv` + `shuttle_pkg.sv` + 测试平
+用真实仿真器跑 svdpi 后端走 `tests/run-eda.sh`——唯一的 VCS 运行器。两个 phony xmake 目标
+`shuttle_examples_svdpi_vcs` 与 `shuttle_tests_svdpi_vcs` 各自经 `SHUTTLE_SV_TB` 指定测试
+平台、经 `SHUTTLE_PASS_MARKER` 指定通过标记（`SHUTTLE_SV_PKG` 可换包，供兼容性探针
+用）。脚本经 `VCS_HOME`/`PATH` 定位 vcs，编译 `weave_pkg.sv` + `shuttle_pkg.sv` + 测试平
 台，通过 `-sv_root`/`-sv_lib` 带载荷库运行 simv，以输出标记加 `Error-[`/`^Error`
 行的缺席判定通过；`PATH` 上没有 vcs 时打印 `[svdpi-test] skipped` 并以 0 退出。simv
 一律经 `xmake run` 启动，因为 xmake 准备好的运行时搜索路径让 simv 能找到
@@ -232,7 +232,7 @@ weave 任务上下文内经 `done_ev` / `wait_pub_timed` 回答。
 - docker shim 的 vcs 容器会吞掉 simv 的 stderr：调试用 `$display` 或写进仓库 `build/`
   下的日志，不要盯着 stderr 看。
 - 容器 identity-mount `~/workspace`，`/tmp` 对仿真器不可见；探针与运行目录（如
-  `svdpi_work_*`）放在仓库内，`tests/svdpi/run.sh` 已安排好。
+  `svdpi_work_*`）放在仓库内，`tests/run-eda.sh` 已安排好。
 - docker shim 经 xmake 准备好的环境解析共享库；手工拼 `LD_LIBRARY_PATH` 跑 simv，或把
   `libweave`/`libsimlog`/`libspdlog` 拷/软链到 simv 旁边，只会弄坏解析。`xmake run`
   是受支持的入口。

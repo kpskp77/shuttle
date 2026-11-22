@@ -37,10 +37,11 @@ scheduling, terminal-state accounting, entry selection — live in
   `sv/shuttle_pkg.sv` do not participate in the build at all.
 
 Running the svdpi backend against a real simulator goes through
-`tests/svdpi/run.sh`, the only VCS runner, driven by the phony xmake targets
-`shuttle_examples_svdpi_vcs` and `shuttle_probe_vcs` (the latter takes
-`SHUTTLE_SV_PKG` / `SHUTTLE_SV_TB` / `SHUTTLE_PROBE_LIB` overrides for
-compatibility probing). The script locates vcs via `VCS_HOME`/`PATH`, compiles
+`tests/run-eda.sh`, the only VCS runner. The two phony xmake targets
+`shuttle_examples_svdpi_vcs` and `shuttle_tests_svdpi_vcs` drive it, each passing its own
+testbench through `SHUTTLE_SV_TB` and its own pass marker through `SHUTTLE_PASS_MARKER`
+(`SHUTTLE_SV_PKG` overrides the package for compatibility probing). The script locates
+vcs via `VCS_HOME`/`PATH`, compiles
 `weave_pkg.sv` + `shuttle_pkg.sv` + the testbench, runs simv with the payload
 library through `-sv_root`/`-sv_lib`, and judges pass by the output marker plus
 the absence of `Error-[`/`^Error` lines; without vcs on `PATH` it prints
@@ -295,7 +296,7 @@ weave task context instead.
   stderr.
 - The container identity-mounts `~/workspace`, so `/tmp` is invisible to the
   simulator; probe and run directories (e.g. `svdpi_work_*`) live inside the
-  repo, which `tests/svdpi/run.sh` already arranges.
+  repo, which `tests/run-eda.sh` already arranges.
 - The docker shim resolves shared libraries through the environment xmake
   prepared; running simv by hand with a self-assembled `LD_LIBRARY_PATH`, or
   copying/symlinking `libweave`/`libsimlog`/`libspdlog` next to simv, breaks

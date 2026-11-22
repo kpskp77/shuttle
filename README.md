@@ -89,7 +89,7 @@ Beyond the mapping table there are three structural differences; most misuse ste
 
 ## Quick start
 
-The smallest end-to-end case, trimmed from [`examples/cpp/basic_demo.cpp`](examples/cpp/basic_demo.cpp)
+The smallest end-to-end case, trimmed from [`examples/basic_demo.cpp`](examples/basic_demo.cpp)
 (verified against the real example; the full file adds the other two publish flavors, retained,
 wildcards and introspection):
 
@@ -125,8 +125,8 @@ Run it end to end (the SV demo runs the same scenario from the SV side; both sid
 broker):
 
 ```bash
-just sc       # systemc backend, local run; the last line is "WEAVE TEST PASSED"
-just vcs      # svdpi backend under real VCS; judged by "SHUTTLE CPP DEMO PASSED"
+just example-sc    # systemc backend, local run; the last line is "WEAVE TEST PASSED"
+just example-vcs   # svdpi backend under real VCS; judged by "SHUTTLE CPP DEMO PASSED"
 ```
 
 The expected output interleaves both sides — SV subscriber receiving an SV publish and a C++
@@ -137,7 +137,7 @@ publish, a C++ subscriber receiving the C++ publish, and the broker's counters:
 [monitor] seq=4 addr=0x00000011 data=0x0000005a   ← SV subscriber, C++ publish
 [async]   seq=4 addr=0x00000011 data=0x0000005a   ← C++ subscriber, C++ publish
 [raw] topic=uart0.tx payload=8 bytes
-[broker] topic=uart0.tx type=UartTx subs=5 published=8 delivered=15
+[broker] topic=uart0.tx type=UartTx subs=6 published=8 delivered=20
 SHUTTLE CPP DEMO PASSED
 ```
 
@@ -162,16 +162,20 @@ half-deadlock — compare `finished()` against `subscriber_count()` before trust
 
 ## Dependencies and xmake integration
 
-shuttle and everything it links are published as xmake packages in one repository,
-[`kpskp77/xmake-repo`](https://github.com/kpskp77/xmake-repo):
+shuttle and everything it depends on are published as xmake packages in one repository,
+[`kpskp77/xmake-repo`](https://github.com/kpskp77/xmake-repo). Register the repository
+once — globally, or per project inside `xmake.lua`:
 
-| Package | What it provides | Pulled in by |
-|---|---|---|
-| `shuttle` | `include/shuttle/*.hpp` and `libshuttle.so` | you |
-| `weave` | concurrency orchestration and simulation time | `shuttle` — a public link, so depending on shuttle is enough |
-| `simlog` | the logger behind diagnostics | `weave` |
-| `svdpi` | the SystemVerilog DPI-C headers | `weave` with `backend = "svdpi"` (the default) |
-| `systemc` | the Accellera SystemC class library | `weave` with `backend = "systemc"` |
+```console
+$ xrepo add-repo eda https://github.com:kpskp77/xmake-repo.git
+```
+
+```lua
+add_repositories("eda https://github.com:kpskp77/xmake-repo.git")
+```
+
+Then require shuttle; the `backend` config picks the kernel it is built against and pulls the
+matching package in:
 
 ```lua
 add_requires("shuttle 0.1.0", { configs = { backend = "svdpi" } })  -- or backend = "systemc"
@@ -197,21 +201,18 @@ Two things the package does not cover:
   puts the package directories on the search path, or export those directories yourself. Do not
   copy the libraries next to simv.
 
-Per-backend integration details (DPI protocol, SystemC bootstrap, ABI notes):
-[backends](docs/backends.md).
-
 ## Build and verify this repository
 
 ```bash
-just build      # build the library and examples for the current backend
-just sc         # systemc backend, local run; last line "WEAVE TEST PASSED"
-just vcs        # svdpi backend under real VCS; judged by "SHUTTLE CPP DEMO PASSED"
-just test       # the examples on both backends
-just test-all   # the full test suite (systemc + VCS suites)
+just example-sc    # systemc backend, local run; last line "WEAVE TEST PASSED"
+just example-vcs   # svdpi backend under real VCS; judged by "SHUTTLE CPP DEMO PASSED"
+just example-all   # the examples on both backends
+just test-all      # the full test suite (systemc + VCS suites)
 ```
 
-`tests/svdpi/run.sh` prints `[svdpi-test] skipped` and exits 0 on machines without VCS, so `just
-vcs` degrades to a compile-only pass there — that is a pass, not a failure.
+`tests/run-eda.sh` prints `[svdpi-test] skipped` and exits 0 on machines without VCS, so `just
+example-vcs` (and `just test-vcs`) degrades to a compile-only pass there — that is a pass, not a
+failure.
 
 ## Language standard: C++17 and up
 
@@ -232,7 +233,8 @@ src/backend/        Backend boundary (backend.hpp, 5 entries) + exactly one back
                     (svdpi: bridge + DPI surface + facade; systemc: degenerate bridge)
 sv/                 shuttle_pkg.sv — the SV-side package (compile after weave_pkg.sv)
 examples/           Per-feature demos of the whole public API, both languages + expected output
-tests/              Test suites (tests/cpp assertion bodies, tests/sv, VCS runner tests/svdpi/run.sh)
+tests/              Test suites (tests/*.cpp assertion bodies, tests/shuttle_tests.sv, VCS runner
+                    tests/run-eda.sh)
 docs/               architecture.md / backends.md + Chinese twins (README_zh.md, docs/*_zh.md)
 ```
 

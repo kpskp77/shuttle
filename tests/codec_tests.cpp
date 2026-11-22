@@ -2,7 +2,7 @@
 //
 // The golden-byte assertions are the anchor of the cross-language contract: the expected
 // bytes in this file must match byte for byte the "Wire format" section of docs/backends.md
-// and the SV-side examples/sv/shuttle_demo.sv ({>>{...}} packing); any change on either side fails
+// and the SV-side examples/shuttle_demo.sv ({>>{...}} packing); any change on either side fails
 // here first.
 
 #include <array>

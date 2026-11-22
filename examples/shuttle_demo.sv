@@ -180,12 +180,12 @@ module shuttle_demo;
   end
 
   // ── Unified launch entry of the C++-side demos ────────────────────────────────────────────
-  // The C++ demos are registered as WEAVE_TESTs (see ../cpp/*.cpp) and executed serially by the weave root task.
+  // The C++ demos are registered as WEAVE_TESTs (see *.cpp) and executed serially by the weave root task.
   initial begin : run_cpp_demos
     automatic int status;
     weave_pkg::weave_run(status);
-    if (status != 0) $fatal(1, "SHUTTLE CPP DEMO FAILED (status=%0d)", status);
-    $display("SHUTTLE CPP DEMO PASSED");
+    if (status != 0) $fatal(1, "SHUTTLE DEMO FAILED (status=%0d)", status);
+    $display("SHUTTLE DEMO PASSED");
   end
 
 endmodule

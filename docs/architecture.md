@@ -163,7 +163,7 @@ or cancelled unit still releases the chain.
 Delayed frames must not hold the tail at publish time. An `after(Event)` delay is unbounded;
 holding the tail would pin every later frame on the topic (including frames with no trigger at
 all) and `publish_serial(...).wait()` deadlocks permanently — worst when the trigger is satisfied
-by a callback of a *later* frame on the same topic. `tests/cpp/trigger_tests.cpp` case8/case9 pin
+by a callback of a *later* frame on the same topic. `tests/trigger_tests.cpp` case8/case9 pin
 both laws; case10/case11 pin the per-subscriber variant.
 
 The price of the serial chain is head-of-line blocking across subscribers: one subscriber's

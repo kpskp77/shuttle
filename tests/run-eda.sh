@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Real-simulator (Synopsys VCS) run of the shuttle SVDPI payload library.
+# Real-simulator (Synopsys VCS) run of a shuttle SVDPI payload library.
 #
 # Usage:
-#   tests/svdpi/run.sh <payload.so>
+#   tests/run-eda.sh <payload.so>
 #
-# Flow (same as ../weave/tests/svdpi/run.sh): locate vcs → compile weave_pkg.sv +
-# shuttle_pkg.sv + examples/sv/shuttle_demo.sv → run simv with the payload via
-# -sv_root/-sv_lib → judge by the output marker "SHUTTLE CPP DEMO PASSED" and
-# the absence of $error lines.
+# The calling xmake target picks what to compile and what proves a pass:
+#   SHUTTLE_SV_TB        SV testbench (default: examples/shuttle_demo.sv)
+#   SHUTTLE_PASS_MARKER  output marker the run must print (default: SHUTTLE DEMO PASSED)
+#   SHUTTLE_SV_PKG       shuttle package (default: sv/shuttle_pkg.sv)
 #
-# runtime environment (xmake run sets `LD_LIBRARY_PATH` for this target's dependencies) is
+# The runtime environment (xmake run sets `LD_LIBRARY_PATH` for this target's dependencies) is
 # enough for simv to find libshuttle.so → libweave.so and their simlog/spdlog dependencies;
 # do NOT assemble LD_LIBRARY_PATH yourself here (it would override xmake's prepared search
 # path and cause the load to fail instead).
@@ -17,14 +17,12 @@
 set -uo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-root=$(cd -- "$here/../.." && pwd)
+root=$(cd -- "$here/.." && pwd)
 weave_root=$(cd -- "$root/../weave" && pwd)
 lib=${1:-}
-# Optional overrides (only for the framework's own compatibility probe): the SV package and
 sv_pkg=${SHUTTLE_SV_PKG:-$root/sv/shuttle_pkg.sv}
-sv_tb=${SHUTTLE_SV_TB:-$root/examples/sv/shuttle_demo.sv}
-# The success marker can be overridden: the test suite (tests/sv/shuttle_tests.sv)
-# prints "SHUTTLE TESTS PASSED".
+sv_tb=${SHUTTLE_SV_TB:-$root/examples/shuttle_demo.sv}
+marker=${SHUTTLE_PASS_MARKER:-SHUTTLE DEMO PASSED}
 vcs=""
 if [[ -n ${VCS_HOME:-} && -x $VCS_HOME/bin/vcs ]]; then
   vcs=$VCS_HOME/bin/vcs
@@ -36,14 +34,12 @@ if [[ -z $vcs ]]; then
   exit 0
 fi
 if [[ -z $lib || ! -f $lib ]]; then
-  echo "[svdpi-test] usage: run.sh <payload.so>" >&2
+  echo "[svdpi-test] usage: run-eda.sh <payload.so>" >&2
   exit 2
 fi
 lib=$(cd -- "$(dirname -- "$lib")" && pwd)/$(basename -- "$lib")
 libdir=$(dirname -- "$lib")
 base=$(basename -- "$lib" .so)
-
-marker=${SHUTTLE_PASS_MARKER:-SHUTTLE CPP DEMO PASSED}
 
 work="$libdir/svdpi_work_$base"
 rm -rf -- "$work"
@@ -59,11 +55,14 @@ if ! (cd "$work" &&
 fi
 
 echo "[svdpi-test] running simv (-sv_lib $base)"
-if ! (cd "$work" && timeout 300 ./simv -sv_root "$libdir" -sv_lib "$base" \
-    >run.log 2>&1 </dev/null); then
+simv_status=0
+(cd "$work" && timeout 300 ./simv -sv_root "$libdir" -sv_lib "$base" \
+    >run.log 2>&1 </dev/null) || simv_status=$?
+cat "$work/run.log"
+
+if [[ $simv_status -ne 0 ]]; then
   echo "[svdpi-test] FAIL: simv exited non-zero, see $work/run.log" >&2
-  tail -n 20 "$work/run.log" >&2
-  exit 2
+  exit 1
 fi
 
 # Simulator error shapes: VCS's "Error-[CODE]" and $error's "^Error".

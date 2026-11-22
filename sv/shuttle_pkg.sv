@@ -55,7 +55,7 @@ package shuttle_pkg;
   // weave_pkg supplies the SV-side blocking primitive (weave_sv_wait) and the
   // event table (weave_sv_create_event / _trigger): shuttle_mailbox is
   // implemented on top of them, entirely in SV (it adds no DPI entry point).
-  // weave_pkg.sv must be compiled first (tests/svdpi/run.sh and examples do).
+  // weave_pkg.sv must be compiled first (tests/run-eda.sh and the examples do).
   // A testbench that wants the deferred-publish recipe (weave_edge) imports weave_pkg itself: VCS
   // 2018.09 does not propagate this import through `export weave_pkg::*`, so there is no point
   // relying on re-export (verified).
