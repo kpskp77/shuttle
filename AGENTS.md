@@ -82,7 +82,7 @@ core, dispatch, the DPI surface or a public header changed:
 
 ```bash
 just example-all   # examples on both backends (systemc locally, VCS under the simulator)
-just test-all      # full suites, both backends: tests/*.cpp + tests/shuttle_tests.sv
+just test-all      # full suites, both backends: tests/*.cpp + tests/shuttle_tests*.sv
 ```
 
 - Broker core, dispatch, public headers, or DPI surface changed → `just test-all`, both backends.
@@ -109,8 +109,8 @@ just test-all      # full suites, both backends: tests/*.cpp + tests/shuttle_tes
 | New internal data model | `src/broker/model.hpp` only (backend-independent) |
 | New DPI entry | `src/backend/svdpi/dpi.cpp` + `sv/shuttle_pkg.sv` + the tables in `docs/backends.md` |
 | New backend | `src/backend/<name>/` implementing the 5 entries of `backend.hpp` + the `add_files` line in `xmake.lua` + a chapter in `docs/backends.md` |
-| New example | `examples/<name>.cpp` or `examples/<name>.sv` (globbed) + a row in `examples/README.md` |
-| New test case | `tests/<suite>.cpp` as `caseN` + SV assertions in `tests/shuttle_tests.sv` |
+| New example subject | `examples/shuttle_demo_<subject>.cpp` exposing `void shuttle_demo_<subject>()` (called by `examples/shuttle_demo.cpp`) and `examples/shuttle_demo_<subject>.sv` (listed in the SV compile order in `xmake.lua`) + a row in `examples/README.md` |
+| New test case | `caseN` in `tests/shuttle_tests_<suite>.cpp` + the case task in `tests/shuttle_tests_<suite>.sv`; a new suite also needs its call in `tests/shuttle_tests.cpp` / `tests/shuttle_tests.sv` and the SV file in the `xmake.lua` list |
 | New rule / guarantee | this file (imperative, diff-checkable); its *why* goes to `docs/architecture.md` |
 | Positioning, mapping, quick start | `README.md` (+ `README_zh.md`) |
 
@@ -131,13 +131,19 @@ downwards only.
 
 ## Tests
 
-- One `caseN` per case in the matching `tests/<suite>.cpp`, failing with
+- One `caseN` per case in the matching `tests/shuttle_tests_<suite>.cpp`, failing with
   `throw std::logic_error("caseN: ...")`; the suites are pinned by name in `docs/architecture.md`,
   so renaming a case is a doc change too.
-- SV assertions live in `tests/shuttle_tests.sv`, run by the same VCS pass.
-- Assertion bodies stay backend-agnostic in `tests/*.cpp`; anything svdpi-only belongs in a file
-  excluded from the systemc target by `remove_files` in `xmake.lua` (as `tests/xlang_tests.cpp`
-  is) and must not compile into the systemc suite.
+- One suite = one subject file per language: `tests/shuttle_tests_<suite>.cpp` exposing
+  `void shuttle_tests_<suite>()` and `tests/shuttle_tests_<suite>.sv` as one module with its own case
+  tasks and classes; shared fixtures go to `tests/shuttle_tests_fixtures.sv`. Only
+  `tests/shuttle_tests.cpp` / `tests/shuttle_tests.sv` carry the registration and the call order
+  (weave orders registered tests by name, so an explicit call list is the contract).
+- Cross-language suites are compiled out of the systemc build (`SHUTTLE_TESTS_XLANG` is defined only
+  by the svdpi target), never skipped at run time.
+- Assertion bodies stay backend-agnostic in `tests/shuttle_tests_<suite>.cpp`; anything svdpi-only
+  belongs in a file excluded from the systemc target by `remove_files` in `xmake.lua` (as
+  `tests/shuttle_tests_xlang.cpp` is) and must not compile into the systemc suite.
 - A cross-language behavior needs coverage on both sides (C++ suite entry + SV assertion) before
   the broker code that enables it lands.
 

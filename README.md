@@ -89,7 +89,7 @@ Beyond the mapping table there are three structural differences; most misuse ste
 
 ## Quick start
 
-The smallest end-to-end case, trimmed from [`examples/basic_demo.cpp`](examples/basic_demo.cpp)
+The smallest end-to-end case, trimmed from [`examples/shuttle_demo_publish.cpp`](examples/shuttle_demo_publish.cpp)
 (verified against the real example; the full file adds the other two publish flavors, retained,
 wildcards and introspection):
 
@@ -254,8 +254,9 @@ src/backend/        Backend boundary (backend.hpp, 5 entries) + exactly one back
                     (svdpi: bridge + DPI surface + facade; systemc: degenerate bridge)
 sv/                 shuttle_pkg.sv — the SV-side package (compile after weave_pkg.sv)
 examples/           Per-feature demos of the whole public API, both languages + expected output
-tests/              Test suites (tests/*.cpp assertion bodies, tests/shuttle_tests.sv, VCS runner
-                    tests/run-eda.sh)
+                    (one subject file per demo, called in order by shuttle_demo.cpp/.sv)
+tests/              Test suites, one subject file per suite in each language, called in order by
+                    tests/shuttle_tests.cpp / .sv; VCS runner tests/run-eda.sh
 docs/               architecture.md / backends.md + Chinese twins (README_zh.md, docs/*_zh.md)
 ```
 

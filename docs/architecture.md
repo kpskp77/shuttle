@@ -163,7 +163,7 @@ or cancelled unit still releases the chain.
 Delayed frames must not hold the tail at publish time. An `after(Event)` delay is unbounded;
 holding the tail would pin every later frame on the topic (including frames with no trigger at
 all) and `publish_serial(...).wait()` deadlocks permanently — worst when the trigger is satisfied
-by a callback of a *later* frame on the same topic. `tests/trigger_tests.cpp` case8/case9 pin
+by a callback of a *later* frame on the same topic. `tests/shuttle_tests_trigger.cpp` case8/case9 pin
 both laws; case10/case11 pin the per-subscriber variant.
 
 The price of the serial chain is head-of-line blocking across subscribers: one subscriber's
@@ -364,7 +364,7 @@ two `Requester` instances sharing a response topic do not collide. The reply tab
 `weak_ptr`s; the `Call` holds the only strong reference, so dropping the handle (or `cancel()`)
 releases the slot and late replies land in `stale_responses()` — countable, never silently
 misdelivered. Without the id, out-of-order replies misassign (two in-flight requests, FIFO order,
-swapped answers are undetectable when values coincide — pinned by `requester_tests::case2`), a
+swapped answers are undetectable when values coincide — pinned by `shuttle_tests_requester::case2`), a
 3-target request cannot answer "how many replies remain", a late reply from a timed-out request
 poisons the next one, and SV responders have no integer to echo back.
 

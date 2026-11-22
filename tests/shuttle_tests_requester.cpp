@@ -6,6 +6,9 @@
 // shuttle::Meta, so a third-party type can be used as-is.
 //
 // Independent namespace (rq.*), shared broker singleton.
+
+// Suite entry: void shuttle_tests_requester() is called by tests/shuttle_tests.cpp, which owns the
+// only WEAVE_TEST and the suite order; the [PASS] label is the function name.
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -13,10 +16,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
-#include "case_runner.hpp"
+#include "shuttle_tests_runner.hpp"
 
 using namespace weave::literals;
 using shuttle_test::expect;
@@ -35,7 +37,7 @@ struct RqResp {
 };
 SHUTTLE_REFLECT(RqResp, data)
 
-WEAVE_TEST(requester_tests) {
+void shuttle_tests_requester() {
   // case1: one responder round trip. The requester allocates the corr_id, serve() copies it into
   // the response frame, and wait_all() expects one resp per request target subscriber
   run_case(__func__, "case1", [] {

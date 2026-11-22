@@ -31,6 +31,10 @@
 // After both sides finish their assertions, run_cpp_tests in tests/shuttle_tests.sv renders the
 // verdict.
 //
+
+// Suite entry: void shuttle_tests_xlang() is called last by tests/shuttle_tests.cpp and exists only
+// in the svdpi build (xmake defines SHUTTLE_TESTS_XLANG there): the SV peer registers its responder
+// in the first SV case, so this suite cannot run on the systemc backend at all.
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -38,10 +42,9 @@
 #include <shuttle/shuttle.hpp>
 #include <string>
 #include <vector>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
-#include "case_runner.hpp"
+#include "shuttle_tests_runner.hpp"
 
 // Compiled only into the svdpi backend's test target: this file calls the SV bridge entries
 // directly, which do not exist under the systemc backend (no SHUTTLE_BACKEND_* macros — backends
@@ -169,7 +172,7 @@ struct XlangState {
 
 }  // namespace
 
-WEAVE_TEST(xlang_tests) {
+void shuttle_tests_xlang() {
   auto st = std::make_shared<XlangState>();
 
   // case1: wait for the SV-side ready signal (subscribing to "xlang.sv_ready"; retained semantics

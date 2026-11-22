@@ -13,20 +13,36 @@ just example-sc    # systemc backend locally; the last line is "WEAVE TEST PASSE
 just example-vcs   # svdpi backend under VCS; judged by "SHUTTLE CPP DEMO PASSED"
 ```
 
-On the svdpi backend, `shuttle_demo.sv` runs alongside the C++ demos in one simulator, on one
-broker: the `uart0.tx` that the SV monitor subscribes to also receives the C++ publish, and the C++
-subscriber receives the SV publish. The systemc backend runs only the C++ demos, entered through
-`tests/sc_main.cpp`.
+On the svdpi backend, `shuttle_demo.sv` — the ordered top over the `shuttle_demo_*.sv` subject
+modules — runs alongside the C++ demos in one simulator, on one broker: the `uart0.tx` that the SV
+monitor subscribes to also receives the C++ publish, and the C++ subscriber receives the SV publish.
+The systemc backend runs only the C++ demos, entered through `tests/shuttle_tests_main.cpp`.
 
 ## What each example exercises
 
 | File | Language | API surface exercised |
 |---|---|---|
-| `basic_demo.cpp` | C++ | publisher + typed subscribe (blocking and `nb`), all three publish flavors, retained topics, wildcard patterns, `subscribe_bytes`, introspection, multi-publisher, nested message types, inherited message types (`SHUTTLE_REFLECT_DERIVED`), failure/timeout edges |
+| `shuttle_demo_publish.cpp` | C++ | publisher + typed subscribe (blocking and `nb`), all three publish flavors, retained topics, wildcard patterns, `subscribe_bytes`, introspection, multi-publisher |
+| `shuttle_demo_nested.cpp` | C++ | nested message types (a reflected struct holding two of another reflected struct) |
+| `shuttle_demo_inherit.cpp` | C++ | inherited message types (`SHUTTLE_REFLECT_DERIVED`, each level delegating its base subobject) |
+| `shuttle_demo_mailbox.cpp` | C++ | mailbox as subscriber, `recv(timeout)` drain, bounded queues (`drop_oldest`/`drop_newest`/`reject`), `OverflowPolicy::block` rejected at construction, copies sharing one queue, `close()`, request/response without a correlation id |
+| `shuttle_demo_requester.cpp` | C++ | `Requester`/`serve` with `corr_id` demultiplexing, concurrent in-flight calls, observer vs responder (`wait_for(n)`), responder timeout, a throwing responder surfacing as a `Failure` |
+| `shuttle_demo_trigger.cpp` | C++ | `Trigger`: `after(Event)` / `after(duration)` / `after(Task)` / `after_all`, handle completion orthogonal to trigger firing |
+| `shuttle_demo_edge.cpp` | C++ | failure and timeout edges: `publish_now` against a blocking entry (`CapabilityError`), the `wait(timeout)` verdict |
+| `shuttle_demo_msgs.hpp` | C++ | the wire types shared by the subject files (the mirror of `shuttle_demo_msgs.sv`) |
+| `shuttle_demo.cpp` | C++ (top) | the ordered call of the subject files and the only `WEAVE_TEST` of the C++ half |
 | `shuttle_demo.sv` | SV | `shuttle_publisher`/`shuttle_subscription`/`shuttle_subscribe_nb`, both entries on one class, `publish_now`/`publish_serial`/`publish_concurrent`, mailbox (pure SV), multi-publisher, nested message types, inherited message classes (`` `shuttle_base ``), a pure-SV requester with `shuttle_requester`/`shuttle_call` against a nonblocking responder (`shuttle_publisher::reply`), unsubscribe; also launches the C++ demos via `weave_run` |
-| `mailbox_demo.cpp` | C++ | mailbox as subscriber, `recv(timeout)` drain, bounded queues (`drop_oldest`/`drop_newest`/`reject`), `OverflowPolicy::block` rejected at construction, copies sharing one queue, `close()`, request/response without a correlation id |
-| `request_response_demo.cpp` | C++ | `Requester`/`serve` with `corr_id` demultiplexing, concurrent in-flight calls, observer vs responder (`wait_for(n)`), responder timeout, a throwing responder surfacing as a `Failure` |
-| `trigger_demo.cpp` | C++ | `Trigger`: `after(Event)` / `after(duration)` / `after(Task)` / `after_all`, handle completion orthogonal to trigger firing |
+
+The C++ side mirrors that shape: `shuttle_demo_msgs.hpp` (the wire types), one subject file per
+demonstration (`shuttle_demo_publish.cpp`, `_nested.cpp`, `_inherit.cpp`, `_mailbox.cpp`,
+`_requester.cpp`, `_trigger.cpp`, `_edge.cpp`), and `shuttle_demo.cpp` as the only `WEAVE_TEST`,
+calling the subject functions in order.
+
+The SV side is one file per subject: `shuttle_demo_msgs.sv` (the wire classes), then
+`shuttle_demo_publish.sv`, `shuttle_demo_nested.sv`, `shuttle_demo_inherit.sv`,
+`shuttle_demo_mailbox.sv`, `shuttle_demo_requester.sv`. Each module holds the classes it
+demonstrates and runs standalone; `shuttle_demo.sv` holds only the instantiation, the call order and
+the C++ launch.
 
 ## Expected output (svdpi backend)
 
@@ -34,7 +50,7 @@ The interleaving of SV and C++ callbacks is scheduled, not fixed — the `[monit
 block may appear in a different relative order, and the exact counts below depend on which demos
 run. What must hold:
 
-### `basic_demo` + `shuttle_demo.sv` (uart topics)
+### Uart topics (`shuttle_demo_publish.cpp` + `shuttle_demo_publish.sv`)
 
 ```
 [monitor] seq=2 addr=0x00000011 data=0x0000005a   ← SV subscriber receives the SV serial publish
@@ -49,7 +65,7 @@ run. What must hold:
 of one class (two registrations, as in C++); `delivered` follows from those registrations and the
 frames each of them was alive for.
 
-### `mailbox_demo`
+### `shuttle_demo_mailbox.cpp`
 
 ```
 [mailbox] publish_now filled it synchronously: size=3 received=3
@@ -68,7 +84,7 @@ frames each of them was alive for.
 2 survivors); `overflowed` counts evictions/refusals. `reject` reuses the normal `Failure` channel
 — no separate accounting — and `N` in its handle is the registration-order subscriber id.
 
-### `request_response_demo`
+### `shuttle_demo_requester.cpp`
 
 ```
 [driver] addr=0x04 corr_id=1 -> 2 resp(s), 2 target(s)
@@ -84,7 +100,7 @@ One request fans out to both register blocks; each answers with its own verdict 
 stays attached through the resp topic. The observer case shows why `wait_all` is wrong when
 non-responders also subscribe: `wait_for(<responder count>)`.
 
-### `trigger_demo`
+### `shuttle_demo_trigger.cpp`
 
 ```
 [alarm] code=1
@@ -100,5 +116,6 @@ finishes — but exactly four callbacks must run and all four `result()` calls m
 
 Every example file opens with a comment block explaining its scenario; the code then asserts the
 documented values, so the comment cannot drift silently. When you add an example, follow the same
-shape (comment → scenario → assertions) and add a row to the table above; a new SV example needs
-the same treatment in this file and in `shuttle_demo.sv`'s compile order note.
+shape (comment → scenario → assertions) and add a row to the table above; a new subject needs a C++
+file exposing `void shuttle_demo_<subject>()` (called by `shuttle_demo.cpp`), an SV module, its line
+in the SV compile list of `xmake.lua` (`shuttle_examples_svdpi_vcs`) and a row in this file.

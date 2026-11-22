@@ -5,6 +5,9 @@
 // and the SV-side examples/shuttle_demo.sv ({>>{...}} packing); any change on either side fails
 // here first.
 
+// Suite entry: void shuttle_tests_codec() is called first by tests/shuttle_tests.cpp (wire format
+// before any broker state exists); the [PASS] label is the function name.
+
 #include <array>
 #include <cstdint>
 #include <shuttle/codec.hpp>
@@ -13,9 +16,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <weave/test.hpp>
 
-#include "case_runner.hpp"
+#include "shuttle_tests_runner.hpp"
 
 using shuttle_test::expect;
 using shuttle_test::expect_eq;
@@ -163,7 +165,7 @@ void expect_bytes(const bytes& actual, const bytes& wanted, const char* what) {
 
 }  // namespace
 
-WEAVE_TEST(codec_tests) {
+void shuttle_tests_codec() {
   // case1: golden vector — byte-for-byte counterpart of the SV {>>{32'h12, 32'h3c}}
   run_case(__func__, "case1", [] {
     UartTx tx{0x12, 0x3C};

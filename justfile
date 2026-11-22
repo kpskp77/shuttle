@@ -17,11 +17,11 @@ example-vcs:
 example-all: example-sc example-vcs
 
 # test suite (systemc backend): all cases in tests/*.cpp, local executable
-#   expected last line "WEAVE TEST PASSED"; the xlang cases SKIP by design
+#   expected last line "WEAVE TEST PASSED"; the cross-language suite is compiled out here
 test-sc:
     xmake f --backend=systemc -y && xmake run shuttle_tests_sc
 
-# test suite (VCS): tests/*.cpp + tests/shuttle_tests.sv, judged by "SHUTTLE TESTS PASSED"
+# test suite (VCS): tests/*.cpp + the SV suites tests/shuttle_tests*.sv, judged by "SHUTTLE TESTS PASSED"
 test-vcs:
     xmake f --backend=svdpi -y && xmake run shuttle_tests_svdpi_vcs
 

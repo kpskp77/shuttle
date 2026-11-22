@@ -7,17 +7,19 @@
 // units. Consuming the frames is then your own process line's business, which is
 // what makes "collect N frames, then decide" possible at all.
 //
-// This is the C++ half of the demo; sv/shuttle_demo.sv shows the SV API
+// This is the C++ half of the demo; examples/shuttle_demo_mailbox.sv shows the SV API
 // (shuttle_mailbox, pure SV — no DPI entry).
 //
 // Expected output (values) is documented in examples/README.md.
+//
+// Subject file of the C++ half of the uart demo (SV mirror: examples/shuttle_demo_<subject>.sv):
+// exposes void shuttle_demo_<subject>(), called in order by examples/shuttle_demo.cpp.
 
 #include <cstdint>
 #include <cstdio>
 #include <shuttle/shuttle.hpp>
 #include <stdexcept>
 #include <string>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
 using namespace weave::literals;
@@ -31,7 +33,7 @@ struct Sample {
 };
 SHUTTLE_REFLECT(Sample, ch, data)
 
-WEAVE_TEST(mailbox_demo) {
+void shuttle_demo_mailbox() {
   // ── A mailbox is an ordinary subscriber ────────────────────────────────
   // It joins the target set of every matching publication (so it shows up in
   // Publication::subscriber_count() and in topic subscriber counts) and honours
@@ -43,7 +45,7 @@ WEAVE_TEST(mailbox_demo) {
   std::printf("[mailbox] publish_now filled it synchronously: size=%zu received=%llu\n", box.size(),
               static_cast<unsigned long long>(box.received()));
   if (box.size() != 3)
-    throw std::logic_error("mailbox_demo: publish_now must fill the queue inline");
+    throw std::logic_error("shuttle_demo_mailbox: publish_now must fill the queue inline");
 
   // ── The pull side: drain in your own process line ──────────────────────
   // recv(timeout) returns nullopt when nothing arrives in time and never loses a
@@ -56,7 +58,8 @@ WEAVE_TEST(mailbox_demo) {
   }
   std::printf("[mailbox] drained %zu frame(s) (sum=%u), then recv(1ms) returned empty\n", drained,
               sum);
-  if (drained != 3 || sum != 6) throw std::logic_error("mailbox_demo: lost frames while draining");
+  if (drained != 3 || sum != 6)
+    throw std::logic_error("shuttle_demo_mailbox: lost frames while draining");
 
   // ── Mailbox and Publication answer different questions ─────────────────
   // Publication::wait() = "every subscriber's callback has finished";
@@ -65,7 +68,8 @@ WEAVE_TEST(mailbox_demo) {
   auto next = box.recv();  // already queued by the time wait() returned
   std::printf("[mailbox] recv() got data=%u seq=%llu\n", next.value.data,
               static_cast<unsigned long long>(next.meta.topic_seq));
-  if (next.value.data != 7) throw std::logic_error("mailbox_demo: recv() returned the wrong frame");
+  if (next.value.data != 7)
+    throw std::logic_error("shuttle_demo_mailbox: recv() returned the wrong frame");
 
   // ── Bounded mailbox: the queue stops growing, the losses are counted ───
   // max_pending == 0 (the default) is unbounded. A bounded mailbox counts frames
@@ -87,7 +91,7 @@ WEAVE_TEST(mailbox_demo) {
               kept_second->value.data);
   if (capped.size() != 0 || capped.received() != 5 || capped.overflowed() != 3 ||
       kept_first->value.data != 4 || kept_second->value.data != 5)
-    throw std::logic_error("mailbox_demo: drop_oldest accounting is wrong");
+    throw std::logic_error("shuttle_demo_mailbox: drop_oldest accounting is wrong");
 
   // drop_newest instead refuses the incoming frame, so the two counters differ:
   // with the same capacity and the same burst, received() == 2 but overflowed() == 3,
@@ -105,7 +109,7 @@ WEAVE_TEST(mailbox_demo) {
               newest_second->value.data);
   if (newest.received() != 2 || newest.overflowed() != 3 || newest_first->value.data != 1 ||
       newest_second->value.data != 2)
-    throw std::logic_error("mailbox_demo: drop_newest accounting is wrong");
+    throw std::logic_error("shuttle_demo_mailbox: drop_newest accounting is wrong");
 
   // ── OverflowPolicy::reject: the overflow becomes a normal delivery Failure ──
   // No new accounting channel: the frame did not reach this subscriber, so it is
@@ -127,7 +131,7 @@ WEAVE_TEST(mailbox_demo) {
     std::printf("[reject] subscriber %s -> %s\n", f.subscriber.c_str(), text.c_str());
   }
   if (rejected_pub.failures().size() != 1)
-    throw std::logic_error("mailbox_demo: reject must surface as one delivery Failure");
+    throw std::logic_error("shuttle_demo_mailbox: reject must surface as one delivery Failure");
 
   // ── OverflowPolicy::block cannot be honoured ───────────────────────────
   // The callback may run inside publish_now; blocking the deliverer there would
@@ -136,7 +140,8 @@ WEAVE_TEST(mailbox_demo) {
     auto bad = shuttle::mailbox<Sample>("mb.block",
                                         shuttle::SubOptions{1, shuttle::OverflowPolicy::block});
     (void)bad;
-    throw std::logic_error("mailbox_demo: a bounded mailbox accepted OverflowPolicy::block");
+    throw std::logic_error(
+        "shuttle_demo_mailbox: a bounded mailbox accepted OverflowPolicy::block");
   } catch (const std::invalid_argument& e) {
     std::printf("[block] rejected at construction: %s\n", e.what());
   }
@@ -148,7 +153,7 @@ WEAVE_TEST(mailbox_demo) {
   std::printf("[alias] a copy reads the same queue (data=%u, %zu left in the original)\n",
               taken->value.data, box.size());
   if (!taken || taken->value.data != 9 || box.size() != 0)
-    throw std::logic_error("mailbox_demo: copies must share one queue");
+    throw std::logic_error("shuttle_demo_mailbox: copies must share one queue");
 
   // ── close(): queued frames stay readable, then MailboxClosed ───────────
   pub.publish_now(Sample{0, 11}, shuttle::NowPolicy::skip);
@@ -163,7 +168,7 @@ WEAVE_TEST(mailbox_demo) {
   std::printf("[close] drains to %u, then recv() throws: %s\n", after_close->value.data,
               closed_text.c_str());
   if (!after_close || closed_text.empty())
-    throw std::logic_error("mailbox_demo: close() must keep queued frames readable");
+    throw std::logic_error("shuttle_demo_mailbox: close() must keep queued frames readable");
 
   // ── Minimal request/response without a correlation id ──────────────────
   // The pattern from mailbox.hpp's header comment: one request topic, one resp
@@ -179,7 +184,7 @@ WEAVE_TEST(mailbox_demo) {
   shuttle::Publisher<Sample> req_pub("mb.req");
   req_pub.publish_serial(Sample{3, 21}).wait();  // the responder's callback has returned
   auto resp = resps.recv(1_ms);
-  if (!resp) throw std::logic_error("mailbox_demo: no reply arrived");
+  if (!resp) throw std::logic_error("shuttle_demo_mailbox: no reply arrived");
   std::printf("[rpc] request data=21 -> reply ch=%u data=%u\n", resp->value.ch, resp->value.data);
-  if (resp->value.data != 42) throw std::logic_error("mailbox_demo: wrong reply");
+  if (resp->value.data != 42) throw std::logic_error("shuttle_demo_mailbox: wrong reply");
 }

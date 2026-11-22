@@ -85,7 +85,7 @@ shuttle 的 API 语义沿用主题式发布-订阅（NATS 风格的 topic、MQTT
 
 ## 快速上手
 
-最小端到端示例，裁剪自 [`examples/basic_demo.cpp`](examples/basic_demo.cpp)
+最小端到端示例，裁剪自 [`examples/shuttle_demo_publish.cpp`](examples/shuttle_demo_publish.cpp)
 （已与真实示例核对；完整文件另含另外两种发布方式、retained、通配符与 introspection）：
 
 ```cpp
@@ -240,8 +240,10 @@ src/broker/         broker 内部：model、路由/校验/绑定、dispatch 调�
 src/backend/        后端边界（backend.hpp，5 入口）+ 恰好一个后端目录
                     （svdpi：桥 + DPI 面 + facade；systemc：退化桥）
 sv/                 shuttle_pkg.sv——SV 侧包（在 weave_pkg.sv 之后编译）
-examples/           覆盖整个公开 API 的逐特性演示，含两种语言与预期输出
-tests/              测试套件（tests/*.cpp 断言体、tests/shuttle_tests.sv、VCS 运行器 tests/run-eda.sh）
+examples/           覆盖整个公开 API 的逐特性演示，含两种语言与预期输出（一个对象一个文件，
+                    由 shuttle_demo.cpp/.sv 顺序调用）
+tests/              测试套件，两种语言都是每个套件一个对象文件，由 tests/shuttle_tests.cpp / .sv
+                    顺序调用；VCS 运行器 tests/run-eda.sh
 docs/               architecture.md / backends.md 及中文孪生（README_zh.md、docs/*_zh.md）
 ```
 

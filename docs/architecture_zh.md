@@ -147,7 +147,7 @@ topics[topic].chain = *mine;                                      // 安装
 延迟帧不许在发布瞬间占住链尾。`after(Event)` 这类延迟是无界的；占住链尾会把同 topic
 后续的每一帧（包括根本没有触发器的帧）一起扣住，`publish_serial(...).wait()` 因此永
 久死锁——最糟的情况是触发器由*排在后面的同 topic 帧的回调*满足，构成真死锁。
-`tests/trigger_tests.cpp` 的 case8/case9 钉住这两条定律；case10/case11 钉住
+`tests/shuttle_tests_trigger.cpp` 的 case8/case9 钉住这两条定律；case10/case11 钉住
 per-订阅者变体。
 
 串行链的代价是跨订阅者的队头阻塞：一个订阅者的回调必须完全跑完，下一个才开始。这是
@@ -325,7 +325,7 @@ blocking *旁观*被禁。标记之前注册的 blocking 旁观者不做追溯�
 `Requester` 实例不会撞号。回执表存 `weak_ptr`；`Call` 持有唯一强引用，丢掉句柄（或
 `cancel()`）即释放槽位，迟到回执落进 `stale_responses()`——可数，永不静默错投。没有这
 个 id，乱序回执会错配（两个在途请求、先进先出顺序、答案互换而数值恰又相同时无法检
-出——由 `requester_tests::case2` 钉住）；三目标请求无法回答"还剩几帧回执"；超时请求的
+出——由 `shuttle_tests_requester::case2` 钉住）；三目标请求无法回答"还剩几帧回执"；超时请求的
 迟到回执会污染下一个请求；SV 响应方也没有整数可回显。
 
 `wait_all()` 的期望回执数是一条约定，不是知识：框架默认"请求帧的每个目标恰好回一

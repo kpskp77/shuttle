@@ -16,6 +16,9 @@
 // svdpi inside the simulator).
 //
 // Expected output (values) is documented in examples/README.md.
+//
+// Subject file of the C++ half of the uart demo (SV mirror: examples/shuttle_demo_<subject>.sv):
+// exposes void shuttle_demo_<subject>(), called in order by examples/shuttle_demo.cpp.
 
 #include <cstdint>
 #include <cstdio>
@@ -24,7 +27,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
 using namespace weave::literals;
@@ -109,7 +111,7 @@ private:
   shuttle::Requester<RegReq, RegResp> client_;
 };
 
-WEAVE_TEST(request_response_demo) {
+void shuttle_demo_requester() {
   // ── Two responder components, one topic pair ──────────────────────────
   // Each block covers a different address window; both are targets of every
   // request, so a query gets one resp per block.
@@ -122,10 +124,10 @@ WEAVE_TEST(request_response_demo) {
   // ── One request, two resps ───────────────────────────────────────────
   auto resps = driver.query(0x0004, 1_ms);
   if (resps.size() != 2)
-    throw std::logic_error("request_response_demo: expected one reply per responder");
+    throw std::logic_error("shuttle_demo_requester: expected one reply per responder");
   // The two blocks answered the same request with different verdicts.
   if (resps[0].status + resps[1].status != 1)
-    throw std::logic_error("request_response_demo: exactly one block should decode the address");
+    throw std::logic_error("shuttle_demo_requester: exactly one block should decode the address");
 
   // ── Two requests in flight at once ─────────────────────────────────────
   // Nothing serialises the calls: send both, then wait for each. The resp
@@ -134,12 +136,12 @@ WEAVE_TEST(request_response_demo) {
   auto call_a = driver.client().send_serial(RegReq{0x0006});
   auto call_b = driver.client().send_serial(RegReq{0x0102});
   if (call_a.corr_id() == call_b.corr_id())
-    throw std::logic_error("request_response_demo: each call needs its own corr_id");
+    throw std::logic_error("shuttle_demo_requester: each call needs its own corr_id");
 
   auto resps_b = call_b.wait_all(1_ms);
   auto resps_a = call_a.wait_all(1_ms);  // deliberately taken out of order
   if (resps_a.size() != 2 || resps_b.size() != 2)
-    throw std::logic_error("request_response_demo: both calls should get both replies");
+    throw std::logic_error("shuttle_demo_requester: both calls should get both replies");
   // Call A asked for 0x0006 (low window): the low block answers 0x1006, the high
   // block reports "outside". Demultiplexing must not swap the two answers.
   std::uint32_t a_decoded = 0, b_decoded = 0;
@@ -148,7 +150,7 @@ WEAVE_TEST(request_response_demo) {
   for (const auto& r : resps_b)
     if (r.status == 0) b_decoded = r.value;
   if (a_decoded != 0x1006 || b_decoded != 0x1002)
-    throw std::logic_error("request_response_demo: replies were not paired with their request");
+    throw std::logic_error("shuttle_demo_requester: replies were not paired with their request");
   std::printf("[driver] demux ok: A=0x%05x B=0x%05x\n", a_decoded, b_decoded);
 
   // ── A subscriber that only observes ────────────────────────────────────
@@ -166,7 +168,7 @@ WEAVE_TEST(request_response_demo) {
               observed_resps.size(), observed_call.publication().subscriber_count(), observed);
   if (observed_resps.size() != 2 || observed != 1 ||
       observed_call.publication().subscriber_count() != 3)
-    throw std::logic_error("request_response_demo: the observer must not eat replies");
+    throw std::logic_error("shuttle_demo_requester: the observer must not eat replies");
 
   // ── Nobody answers: the timeout returns an empty result, no hang ───────
   shuttle::Requester<RegReq, RegResp> lonely("reg.orphan.req", "reg.orphan.resp");
@@ -175,7 +177,7 @@ WEAVE_TEST(request_response_demo) {
   std::printf("[driver] no responder: %zu resp(s), subscribers=%zu\n", nothing.size(),
               orphan.publication().subscriber_count());
   if (!nothing.empty())
-    throw std::logic_error("request_response_demo: an orphan request cannot receive replies");
+    throw std::logic_error("shuttle_demo_requester: an orphan request cannot receive replies");
 
   // ── A responder whose handler throws is reported, not swallowed ────────
   auto broken = shuttle::serve<RegReq, RegResp>(
@@ -197,6 +199,7 @@ WEAVE_TEST(request_response_demo) {
     std::printf("[driver] responder %s failed: %s\n", f.subscriber.c_str(), text.c_str());
   }
   if (!broken_resps.empty() || broken_call.publication().failures().size() != 1)
-    throw std::logic_error("request_response_demo: a throwing responder must surface as a failure");
+    throw std::logic_error(
+        "shuttle_demo_requester: a throwing responder must surface as a failure");
   (void)broken;
 }

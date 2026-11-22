@@ -3,16 +3,18 @@
 // These cases use independent topic namespaces (bkr.*) and share no state;
 // the broker is a process-level singleton, so assertions only reference topics
 // exclusive to the case (or its delta versus this case).
+
+// Suite entry: void shuttle_tests_broker() is called by tests/shuttle_tests.cpp, which owns the
+// only WEAVE_TEST and the suite order; the [PASS] label is the function name.
 #include <cstdint>
 #include <memory>
 #include <shuttle/shuttle.hpp>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
-#include "case_runner.hpp"
+#include "shuttle_tests_runner.hpp"
 
 using namespace weave::literals;
 using shuttle_test::expect;
@@ -59,7 +61,7 @@ std::shared_ptr<ByteTaps> tap(shuttle::Subscription& keep, std::string pattern) 
 
 }  // namespace
 
-WEAVE_TEST(broker_tests) {
+void shuttle_tests_broker() {
   // case1: wildcards — "*" matches exactly one level
   run_case(__func__, "case1", [] {
     shuttle::Publisher<BkrTx> pub_a("bkr.w.a");

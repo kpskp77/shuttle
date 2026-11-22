@@ -5,16 +5,18 @@
 //   parallel across subscribers, FIFO per (topic, subscriber)
 // plus their waiting semantics (wait / wait(timeout) / done / result / failures).
 
+// Suite entry: void shuttle_tests_publish() is called by tests/shuttle_tests.cpp, which owns the
+// only WEAVE_TEST and the suite order; the [PASS] label is the function name.
+
 #include <cstdint>
 #include <memory>
 #include <shuttle/shuttle.hpp>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
-#include "case_runner.hpp"
+#include "shuttle_tests_runner.hpp"
 
 using namespace weave::literals;
 using shuttle_test::expect;
@@ -22,9 +24,9 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── Message types (private to publish_tests): SHUTTLE_REFLECT must be used at global scope;
-// the type name is the cross-language type_tag, so each test file uses distinct names to avoid ODR
-// conflicts.
+// ── Message types (private to shuttle_tests_publish): SHUTTLE_REFLECT must be used at global
+// scope; the type name is the cross-language type_tag, so each test file uses distinct names to
+// avoid ODR conflicts.
 struct PubMsg {
   std::uint32_t v = 0;
 };
@@ -37,7 +39,7 @@ struct PubMsgOther {
 };
 SHUTTLE_REFLECT(PubMsgOther, v)
 
-WEAVE_TEST(publish_tests) {
+void shuttle_tests_publish() {
   // case1: `publish_now` is synchronous — the nb callback has already run before publish_now
   // returns (the publisher never suspends)
   run_case(__func__, "case1", [] {

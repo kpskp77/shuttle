@@ -1,21 +1,25 @@
 #pragma once
 
-// Per-case result printing for the tests (belongs to tests/ only; not part of
+// Per-suite result printing for the tests (belongs to tests/ only; not part of
 // the public headers).
 //
-//   WEAVE_TEST(codec_tests) {
+//   void shuttle_tests_codec() {          // called by tests/shuttle_tests.cpp
 //     run_case(__func__, "case1", [&] { ...case body... });
 //     ...
 //     report(__func__);   // final summary and counter reset
 //   }
 //
+// The suite files carry no WEAVE_TEST of their own: tests/shuttle_tests.cpp owns the only
+// registration and calls the suites in order, so `__func__` (the suite name printed in every
+// line) is exactly the function name defined here.
+//
+// Same style as ../weave/tests/case_runner.hpp (the two projects evolve
+// independently, so each keeps its own copy).
+//
 // The case body returning normally → [PASS] is printed; throwing (by
 // convention throw std::logic_error("case1: ...")) → [FAIL] is printed and the
 // exception is rethrown as-is, so the backend reporting process judges the
 // whole test as FAILED.
-//
-// Same style as ../weave/tests/case_runner.hpp (the two projects evolve
-// independently, so each keeps its own copy).
 
 #include <cstdio>
 #include <exception>

@@ -40,7 +40,7 @@ target("shuttle_examples_sc", function()
   set_warnings("all", "extra", "error")
   add_deps("shuttle")
   add_rpathdirs("$ORIGIN")
-  add_files("examples/*.cpp", "tests/sc_main.cpp")
+  add_files("examples/*.cpp", "tests/shuttle_tests_main.cpp")
 end)
 
 target("shuttle_examples_svdpi", function()
@@ -52,7 +52,7 @@ target("shuttle_examples_svdpi", function()
   add_files("examples/*.cpp")
 end)
 
--- VCS run (phony): compile weave_pkg + shuttle_pkg + the SV demo,
+-- VCS run (phony): compile weave_pkg + shuttle_pkg + the SV demo modules in order,
 -- run simv with shuttle_examples_svdpi as the payload, judge by the output marker.
 target("shuttle_examples_svdpi_vcs", function()
   set_kind("phony")
@@ -60,12 +60,23 @@ target("shuttle_examples_svdpi_vcs", function()
   add_deps("shuttle_examples_svdpi")
   on_run(function(target)
     local root = os.projectdir()
-    os.setenv("SHUTTLE_SV_TB", path.join(root, "examples/shuttle_demo.sv"))
+    -- compile order: shared message package, one file per subject, the ordered top last
+    local sv = {
+      "examples/shuttle_demo_msgs.sv",
+      "examples/shuttle_demo_publish.sv",
+      "examples/shuttle_demo_nested.sv",
+      "examples/shuttle_demo_inherit.sv",
+      "examples/shuttle_demo_mailbox.sv",
+      "examples/shuttle_demo_requester.sv",
+      "examples/shuttle_demo.sv",
+    }
     os.setenv("SHUTTLE_PASS_MARKER", "SHUTTLE DEMO PASSED")
-    os.execv("bash", {
-      path.join(root, "tests/run-eda.sh"),
-      target:dep("shuttle_examples_svdpi"):targetfile(),
-    })
+    local argv =
+      { path.join(root, "tests/run-eda.sh"), target:dep("shuttle_examples_svdpi"):targetfile() }
+    for _, f in ipairs(sv) do
+      table.insert(argv, path.join(root, f))
+    end
+    os.execv("bash", argv)
   end)
 end)
 
@@ -77,10 +88,11 @@ if get_config("backend") == "systemc" then
     set_warnings("all", "extra", "error")
     add_deps("shuttle")
     add_rpathdirs("$ORIGIN")
-    -- includes sc_main.cpp (the systemc entry); excludes xlang_tests, which calls the SV
-    -- bridge entries directly and is compiled only in the svdpi backend target
+    -- includes shuttle_tests_main.cpp (the systemc entry) and the top shuttle_tests.cpp;
+    -- excludes the cross-language suite, which needs the SV peer and is compiled only in the
+    -- svdpi backend target (the top leaves it out without SHUTTLE_TESTS_XLANG)
     add_files("tests/*.cpp")
-    remove_files("tests/xlang_tests.cpp")
+    remove_files("tests/shuttle_tests_xlang.cpp")
     add_packages("weave")
   end)
 else
@@ -90,9 +102,11 @@ else
     set_warnings("all", "extra", "error")
     add_deps("shuttle")
     add_rpathdirs("$ORIGIN")
-    -- no sc_main.cpp: the svdpi backend's entry lives on the simulator side
+    -- no shuttle_tests_main.cpp: the svdpi backend's entry lives on the simulator side; the top
+    -- shuttle_tests.cpp compiles the cross-language suite because of SHUTTLE_TESTS_XLANG
     add_files("tests/*.cpp")
-    remove_files("tests/sc_main.cpp")
+    remove_files("tests/shuttle_tests_main.cpp")
+    add_defines("SHUTTLE_TESTS_XLANG")
     add_packages("weave")
   end)
 
@@ -103,12 +117,25 @@ else
     add_deps("shuttle_tests_svdpi")
     on_run(function(target)
       local root = os.projectdir()
-      os.setenv("SHUTTLE_SV_TB", path.join(root, "tests/shuttle_tests.sv"))
+      -- compile order: shared fixtures, the case runner, one file per suite, the top last
+      local sv = {
+        "tests/shuttle_tests_fixtures.sv",
+        "tests/shuttle_tests_runner.sv",
+        "tests/shuttle_tests_publish.sv",
+        "tests/shuttle_tests_broker.sv",
+        "tests/shuttle_tests_trigger.sv",
+        "tests/shuttle_tests_mailbox.sv",
+        "tests/shuttle_tests_xlang.sv",
+        "tests/shuttle_tests_requester.sv",
+        "tests/shuttle_tests.sv",
+      }
       os.setenv("SHUTTLE_PASS_MARKER", "SHUTTLE TESTS PASSED")
-      os.execv("bash", {
-        path.join(root, "tests/run-eda.sh"),
-        target:dep("shuttle_tests_svdpi"):targetfile(),
-      })
+      local argv =
+        { path.join(root, "tests/run-eda.sh"), target:dep("shuttle_tests_svdpi"):targetfile() }
+      for _, f in ipairs(sv) do
+        table.insert(argv, path.join(root, f))
+      end
+      os.execv("bash", argv)
     end)
   end)
 end

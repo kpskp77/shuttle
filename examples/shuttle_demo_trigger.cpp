@@ -9,12 +9,14 @@
 //   (failure/cancellation included) after_all / after_any   — combine multiple triggers
 // Waiting for completion (wait/result) is orthogonal to triggers: the handle
 // becomes done only after all callbacks finish.
+//
+// Subject file of the C++ half of the uart demo (SV mirror: examples/shuttle_demo_<subject>.sv):
+// exposes void shuttle_demo_<subject>(), called in order by examples/shuttle_demo.cpp.
 
 #include <cstdint>
 #include <cstdio>
 #include <shuttle/shuttle.hpp>
 #include <stdexcept>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
 using namespace weave::literals;
@@ -24,7 +26,7 @@ struct Alarm {
 };
 SHUTTLE_REFLECT(Alarm, code)
 
-WEAVE_TEST(trigger_demo) {
+void shuttle_demo_trigger() {
   shuttle::Publisher<Alarm> pub("soc.alarm");
 
   int received = 0;
@@ -40,7 +42,8 @@ WEAVE_TEST(trigger_demo) {
   //    event id is never handed across the DPI boundary — SV arms a weave_edge instead) ────────
   weave::Event ev;
   auto h2 = pub.publish_concurrent(Alarm{2}, shuttle::after(ev));
-  if (h2.done()) throw std::logic_error("trigger_demo: must not complete before the event fires");
+  if (h2.done())
+    throw std::logic_error("shuttle_demo_trigger: must not complete before the event fires");
   ev.set();
 
   // ── Task-following trigger: starts once the worker reaches a terminal state
@@ -60,5 +63,5 @@ WEAVE_TEST(trigger_demo) {
   h2.result();
   h3.result();
   h4.result();
-  if (received != 4) throw std::logic_error("trigger_demo: callback count mismatch");
+  if (received != 4) throw std::logic_error("shuttle_demo_trigger: callback count mismatch");
 }

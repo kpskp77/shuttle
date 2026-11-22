@@ -2,10 +2,11 @@
 # Real-simulator (Synopsys VCS) run of a shuttle SVDPI payload library.
 #
 # Usage:
-#   tests/run-eda.sh <payload.so>
+#   tests/run-eda.sh <payload.so> [<testbench.sv>...]
 #
 # The calling xmake target picks what to compile and what proves a pass:
-#   SHUTTLE_SV_TB        SV testbench (default: examples/shuttle_demo.sv)
+#   <testbench.sv>...    SV sources, compiled in the given order (a top instantiated last)
+#   SHUTTLE_SV_TB        SV testbench when no file argument is given (default: examples/shuttle_demo.sv)
 #   SHUTTLE_PASS_MARKER  output marker the run must print (default: SHUTTLE DEMO PASSED)
 #   SHUTTLE_SV_PKG       shuttle package (default: sv/shuttle_pkg.sv)
 #
@@ -21,7 +22,14 @@ root=$(cd -- "$here/.." && pwd)
 weave_root=$(cd -- "$root/../weave" && pwd)
 lib=${1:-}
 sv_pkg=${SHUTTLE_SV_PKG:-$root/sv/shuttle_pkg.sv}
-sv_tb=${SHUTTLE_SV_TB:-$root/examples/shuttle_demo.sv}
+sv_tbs=()
+if [[ $# -gt 1 ]]; then
+  shift
+  sv_tbs=("$@")
+fi
+if [[ ${#sv_tbs[@]} -eq 0 ]]; then
+  sv_tbs=("${SHUTTLE_SV_TB:-$root/examples/shuttle_demo.sv}")
+fi
 marker=${SHUTTLE_PASS_MARKER:-SHUTTLE DEMO PASSED}
 vcs=""
 if [[ -n ${VCS_HOME:-} && -x $VCS_HOME/bin/vcs ]]; then
@@ -34,12 +42,18 @@ if [[ -z $vcs ]]; then
   exit 0
 fi
 if [[ -z $lib || ! -f $lib ]]; then
-  echo "[svdpi-test] usage: run-eda.sh <payload.so>" >&2
+  echo "[svdpi-test] usage: run-eda.sh <payload.so> [<testbench.sv>...]" >&2
   exit 2
 fi
 lib=$(cd -- "$(dirname -- "$lib")" && pwd)/$(basename -- "$lib")
 libdir=$(dirname -- "$lib")
 base=$(basename -- "$lib" .so)
+for tb in "${sv_tbs[@]}"; do
+  if [[ ! -f $tb ]]; then
+    echo "[svdpi-test] FAIL: missing SV source $tb" >&2
+    exit 2
+  fi
+done
 
 work="$libdir/svdpi_work_$base"
 rm -rf -- "$work"
@@ -49,7 +63,7 @@ echo "[svdpi-test] compiling $base (vcs: $vcs)"
 if ! (cd "$work" &&
   timeout 900 "$vcs" -full64 -sverilog -LDFLAGS "-Wl,--export-dynamic" \
     +incdir+"$root/sv" \
-    "$weave_root/sv/weave_pkg.sv" "$sv_pkg" "$sv_tb" >compile.log 2>&1 </dev/null); then
+    "$weave_root/sv/weave_pkg.sv" "$sv_pkg" "${sv_tbs[@]}" >compile.log 2>&1 </dev/null); then
   echo "[svdpi-test] FAIL: vcs compile failed, see $work/compile.log" >&2
   tail -n 20 "$work/compile.log" >&2
   exit 2

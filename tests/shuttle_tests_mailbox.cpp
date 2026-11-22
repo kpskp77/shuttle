@@ -5,6 +5,9 @@
 //
 // Independent namespace (mbx.*), shared broker singleton: every assertion only
 // refers to topics owned by its own case.
+
+// Suite entry: void shuttle_tests_mailbox() is called by tests/shuttle_tests.cpp, which owns the
+// only WEAVE_TEST and the suite order; the [PASS] label is the function name.
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -12,10 +15,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
-#include "case_runner.hpp"
+#include "shuttle_tests_runner.hpp"
 
 using namespace weave::literals;
 using shuttle_test::expect;
@@ -34,7 +36,7 @@ struct MbxResp {
 };
 SHUTTLE_REFLECT(MbxResp, data)
 
-WEAVE_TEST(mailbox_tests) {
+void shuttle_tests_mailbox() {
   // case1: a mailbox is a nonblocking subscriber, so publish_now fills it synchronously on the
   // publisher's stack — no background scheduling, no CapabilityError, no defer
   run_case(__func__, "case1", [] {

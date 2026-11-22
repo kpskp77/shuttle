@@ -7,15 +7,17 @@
 //   the Publication stays incomplete; · Trigger::wait() runs inside the broker's dispatch task, so
 //   the callback may block.
 
+// Suite entry: void shuttle_tests_trigger() is called by tests/shuttle_tests.cpp, which owns the
+// only WEAVE_TEST and the suite order; the [PASS] label is the function name.
+
 #include <cstdint>
 #include <shuttle/shuttle.hpp>
 #include <stdexcept>
 #include <string>
 #include <weave/sv.hpp>
-#include <weave/test.hpp>
 #include <weave/weave.hpp>
 
-#include "case_runner.hpp"
+#include "shuttle_tests_runner.hpp"
 
 using namespace weave::literals;
 using shuttle_test::expect;
@@ -23,7 +25,7 @@ using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// ── Message type (private to trigger_tests): SHUTTLE_REFLECT must be used at global scope;
+// ── Message type (private to shuttle_tests_trigger): SHUTTLE_REFLECT must be used at global scope;
 // the type name is the cross-language type_tag; each test file uses distinct names to avoid ODR
 // conflicts.
 struct TrigMsg {
@@ -31,7 +33,7 @@ struct TrigMsg {
 };
 SHUTTLE_REFLECT(TrigMsg, v)
 
-WEAVE_TEST(trigger_tests) {
+void shuttle_tests_trigger() {
   // case1: after(duration) — nothing is delivered before the deadline; after it, delivery happens
   // and completion is waitable
   run_case(__func__, "case1", [] {
