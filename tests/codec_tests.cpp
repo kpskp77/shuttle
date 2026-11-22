@@ -81,6 +81,37 @@ struct NotReflected {
   int x = 0;
 };
 
+// More fields than the old 16-entry dispatch table (used by case11): the FOR_EACH cascade now
+// covers up to 64
+struct Many {
+  std::uint32_t f00 = 0;
+  std::uint32_t f01 = 0;
+  std::uint32_t f02 = 0;
+  std::uint32_t f03 = 0;
+  std::uint32_t f04 = 0;
+  std::uint32_t f05 = 0;
+  std::uint32_t f06 = 0;
+  std::uint32_t f07 = 0;
+  std::uint32_t f08 = 0;
+  std::uint32_t f09 = 0;
+  std::uint32_t f10 = 0;
+  std::uint32_t f11 = 0;
+  std::uint32_t f12 = 0;
+  std::uint32_t f13 = 0;
+  std::uint32_t f14 = 0;
+  std::uint32_t f15 = 0;
+  std::uint32_t f16 = 0;
+  std::uint32_t f17 = 0;
+  std::uint32_t f18 = 0;
+  std::uint32_t f19 = 0;
+  std::uint32_t f20 = 0;
+  std::uint32_t f21 = 0;
+  std::uint32_t f22 = 0;
+  std::uint32_t f23 = 0;
+};
+SHUTTLE_REFLECT(Many, f00, f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13, f14,
+                f15, f16, f17, f18, f19, f20, f21, f22, f23)
+
 namespace {
 
 using bytes = std::vector<std::byte>;
@@ -257,6 +288,15 @@ WEAVE_TEST(codec_tests) {
     expect(back.head == in.head && back.body.tag == in.body.tag && back.body.a.v == in.body.a.v &&
                back.body.b.v == in.body.b.v && back.tail.v == in.tail.v,
            "three-level nesting round trip");
+  });
+
+  // case11: more than 16 fields — the FOR_EACH dispatch table covers up to 64
+  run_case(__func__, "case11", [] {
+    Many m{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
+    const bytes enc = shuttle::encode(m);
+    expect_eq(static_cast<long long>(enc.size()), 24 * 4, "24 fields x 4 bytes");
+    const Many back = shuttle::decode<Many>(enc);
+    expect_bytes(shuttle::encode(back), enc, "24-field round trip is byte-stable");
   });
 
   report(__func__);

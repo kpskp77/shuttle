@@ -308,7 +308,7 @@ std::string type_tag_of() {
 // Usage (at global scope):
 //   struct Txn { uint32_t addr; uint32_t data; std::string tag; };
 //   SHUTTLE_REFLECT(Txn, addr, data, tag)
-// Fields are encoded in declaration order, up to 16; member types must belong to the codec subset
+// Fields are encoded in declaration order, up to 64; member types must belong to the codec subset
 // (integers / floats / bool / string / enum / vector / array / already-registered nested structs).
 
 #define SHUTTLE_DETAIL_CAT_(a, b) a##b
@@ -330,12 +330,66 @@ std::string type_tag_of() {
 #define SHUTTLE_DETAIL_FE14(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE13(m, t, __VA_ARGS__)
 #define SHUTTLE_DETAIL_FE15(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE14(m, t, __VA_ARGS__)
 #define SHUTTLE_DETAIL_FE16(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE15(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE17(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE16(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE18(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE17(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE19(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE18(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE20(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE19(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE21(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE20(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE22(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE21(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE23(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE22(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE24(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE23(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE25(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE24(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE26(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE25(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE27(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE26(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE28(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE27(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE29(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE28(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE30(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE29(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE31(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE30(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE32(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE31(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE33(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE32(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE34(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE33(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE35(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE34(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE36(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE35(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE37(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE36(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE38(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE37(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE39(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE38(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE40(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE39(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE41(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE40(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE42(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE41(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE43(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE42(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE44(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE43(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE45(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE44(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE46(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE45(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE47(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE46(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE48(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE47(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE49(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE48(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE50(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE49(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE51(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE50(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE52(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE51(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE53(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE52(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE54(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE53(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE55(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE54(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE56(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE55(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE57(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE56(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE58(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE57(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE59(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE58(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE60(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE59(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE61(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE60(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE62(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE61(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE63(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE62(m, t, __VA_ARGS__)
+#define SHUTTLE_DETAIL_FE64(m, t, a, ...) m(t, a) SHUTTLE_DETAIL_FE63(m, t, __VA_ARGS__)
 
 #define SHUTTLE_DETAIL_COUNT_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, \
-                              _16, N, ...)                                                      \
+                              _16, _17, _18, _19, _20, _21, _22, _23, _24, _25, _26, _27, _28,  \
+                              _29, _30, _31, _32, _33, _34, _35, _36, _37, _38, _39, _40, _41,  \
+                              _42, _43, _44, _45, _46, _47, _48, _49, _50, _51, _52, _53, _54,  \
+                              _55, _56, _57, _58, _59, _60, _61, _62, _63, _64, N, ...)         \
   N
-#define SHUTTLE_DETAIL_COUNT(...) \
-  SHUTTLE_DETAIL_COUNT_(__VA_ARGS__, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
+#define SHUTTLE_DETAIL_COUNT(...)                                                                \
+  SHUTTLE_DETAIL_COUNT_(__VA_ARGS__, 64, 63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52, 51, 50, \
+                        49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32,  \
+                        31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14,  \
+                        13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
 
 #define SHUTTLE_DETAIL_FOR_EACH(m, t, ...) \
   SHUTTLE_DETAIL_CAT(SHUTTLE_DETAIL_FE, SHUTTLE_DETAIL_COUNT(__VA_ARGS__))(m, t, __VA_ARGS__)

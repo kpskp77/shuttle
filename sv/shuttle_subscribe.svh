@@ -24,7 +24,7 @@ endclass
 // shuttle_sv_dispatch[_nb] and this registry dispatches them to user objects
 // by sub_id.
 class shuttle_registry;
-  static local int            next_id_  = 1;
+  static local int             next_id_  = 1;
   static local shuttle_sink    sinks_[int];
   static local shuttle_sink_nb sinks_nb_[int];
   // Unsubscribed ids: the C++ side may still have in-flight deliveries (the
@@ -33,7 +33,7 @@ class shuttle_registry;
   // shuttle_c_sub_retired so the frame records this subscriber's terminal
   // state as retired (instead of a phantom delivered); an id that was never
   // registered is still an error.
-  static local bit            retired_[int];
+  static local bit             retired_[int];
 
   static function automatic int add(shuttle_sink s, shuttle_sink_nb snb);
     int id = next_id_++;
