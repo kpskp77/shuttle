@@ -48,6 +48,7 @@ mkdir -p -- "$work"
 echo "[svdpi-test] compiling $base (vcs: $vcs)"
 if ! (cd "$work" &&
   timeout 900 "$vcs" -full64 -sverilog -LDFLAGS "-Wl,--export-dynamic" \
+    +incdir+"$root/sv" \
     "$weave_root/sv/weave_pkg.sv" "$sv_pkg" "$sv_tb" >compile.log 2>&1 </dev/null); then
   echo "[svdpi-test] FAIL: vcs compile failed, see $work/compile.log" >&2
   tail -n 20 "$work/compile.log" >&2
