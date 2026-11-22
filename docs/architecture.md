@@ -424,6 +424,29 @@ graph, and "no current task while suspended" — the last one is what makes the 
 above sound). Edge semantics are edge, not latch: a `fire()` before the wait registers is lost (use
 `after(weave::Event&)` for latching). VCS 2018.09 reserves `edge`, so the SV field is `edge_name`.
 
+### Inheritance is delegated level by level, never flattened at the leaves
+
+`SHUTTLE_REFLECT_DERIVED(Derived, Base, own_fields...)` registers `Derived` by encoding the base
+subobject through `Codec<Base>` instead of repeating the inherited field names; the SV twin is
+`` `shuttle_base(Base) `` inside the derived class's three-piece block. Both produce the same wire
+bytes as listing every field flat at the leaf — the base encoding first, then the own fields —
+because the C++ base subobject is laid out before the derived members and the codec emits fields
+in declaration order. The delegation form is the one to write: at depth *n* a flat listing repeats
+the inherited names *n* times, and a base field added at level *k* edits every descendant. With
+delegation each level names its direct base once, so a chain composes and a base change touches
+only the base's own registration. Wire compatibility is what makes the two forms interchangeable:
+a leaf registered flat and a leaf registered by delegation decode each other, and existing frames
+need no migration.
+
+Constraints follow from the mechanism, not from taste: exactly one public base per level (the
+encode side passes `Derived` where `Base` is expected, decode assigns through
+`static_cast<Base&>`); `Codec<Base>` must already be registered when the derived registration is
+seen; and a pure pass-through level that contributes no field of its own needs a hand-written
+`Codec` specialization, because the field macro cannot expand to nothing. On the SV side the
+unpack leg of `` `shuttle_base `` copies the derived handle into a base-typed local first: VCS
+2018.09 rejects a derived handle for a `ref` formal (`Error-[IRPC]`), and the copy is safe because
+the generated entry points have already constructed the object the handle refers to.
+
 ### `Meta` strings are views, and `pubs` holds only external publishes
 
 `Meta::topic_name` / `Meta::type_tag` are `std::string_view`s into storage the broker already
@@ -456,7 +479,7 @@ Dependencies point downwards; `shuttle.hpp` is the umbrella and defines what is 
 ```
 shuttle/types.hpp        Capability / SubKind / NowPolicy / OverflowPolicy / errors
 shuttle/meta.hpp         Meta{topic_name, topic_seq, type_tag, time_fs, corr_id}
-shuttle/codec.hpp        Writer / Reader (big-endian) + SHUTTLE_REFLECT
+shuttle/codec.hpp        Writer / Reader (big-endian) + SHUTTLE_REFLECT / SHUTTLE_REFLECT_DERIVED
 shuttle/trigger.hpp      Trigger + after/after_all/after_any factories
 shuttle/publisher.hpp    Publisher<T> (pub_* ABI visible here; pulls detail/abi.hpp)
 shuttle/subscription.hpp subscribe<T> / subscribe_bytes / Subscription (pulls detail/abi.hpp)

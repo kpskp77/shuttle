@@ -376,6 +376,22 @@ id。shuttle 不持有任何事件对象、也没有按 id 恢复的入口——
 语义是边沿而非闩锁：`fire()` 早于等待登记即丢失（要闩锁用 `after(weave::Event&)`）。
 VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 
+### 继承逐层委托，不在叶子上摊平
+
+`SHUTTLE_REFLECT_DERIVED(Derived, Base, 自有字段...)` 注册 `Derived` 时把基类子对象整体交给
+`Codec<Base>` 编解码，不重复继承来的字段名；SV 的对偶是在派生类的三件套块里写
+`` `shuttle_base(Base) ``。两种写法与在叶子摊平全部字段产生同样的字节：先基类编码，再自有
+字段——因为 C++ 的基类子对象排在派生成员之前，而 codec 按声明顺序输出字段。应当写委托形式：
+深度为 *n* 时摊平写法把继承名重复 *n* 次，而在第 *k* 层新增一个基类字段要改动它的全部后代。
+委托下每层只写一次直接基类，链式组合，基类改动只落在基类自己的注册处。两种写法可互换正是因为
+线格式相同：摊平注册的叶子与委托注册的叶子互相解码，已有帧无需迁移。
+
+约束来自机制而非偏好：每层恰好一个公有基类（编码侧把 `Derived` 当 `Base` 传，解码侧经
+`static_cast<Base&>` 赋值）；派生注册出现时 `Codec<Base>` 必须已注册；只做透传、不带自有字段
+的中间层需要手写 `Codec` 特化，因为字段宏无法展开成空。SV 侧 `` `shuttle_base `` 的解包腿先把
+派生句柄拷进基类型局部变量：VCS 2018.09 拒绝把派生句柄接到 `ref` 形参（`Error-[IRPC]`），
+而拷贝是安全的——生成的入口在进入 `__codec` 之前已经构造好句柄所指的对象。
+
 ### `Meta` 的字符串是视图，`pubs` 只登记外部发布
 
 `Meta::topic_name` / `Meta::type_tag` 是指向 broker 已有且永不迁移存储的
@@ -406,7 +422,7 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 ```
 shuttle/types.hpp        Capability / SubKind / NowPolicy / OverflowPolicy / errors
 shuttle/meta.hpp         Meta{topic_name, topic_seq, type_tag, time_fs, corr_id}
-shuttle/codec.hpp        Writer / Reader（大端）+ SHUTTLE_REFLECT
+shuttle/codec.hpp        Writer / Reader（大端）+ SHUTTLE_REFLECT / SHUTTLE_REFLECT_DERIVED
 shuttle/trigger.hpp      Trigger + after/after_all/after_any 工厂
 shuttle/publisher.hpp    Publisher<T>（此处可见 pub_* ABI；拉入 detail/abi.hpp）
 shuttle/subscription.hpp subscribe<T> / subscribe_bytes / Subscription（拉入 detail/abi.hpp）

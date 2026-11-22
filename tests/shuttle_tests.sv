@@ -11,6 +11,8 @@
 //   · case_xlang_mixed — one topic whose target set mixes an SV blocking entry with C++ ones
 //   · case_xlang_nested — nested message types (XPoint inside XTrack) in both directions,
 //     paired with case7 of tests/xlang_tests.cpp;
+//   · case_xlang_inherit — an inheritance chain (XHead → XMid → XChain) in both directions,
+//     paired with case8 of tests/xlang_tests.cpp; each level delegates via `shuttle_base;
 //                       (task identity must survive the nested frame; weave v1.2.0);
 //   · run_cpp_tests  — launches the C++-side tests (WEAVE_TEST in tests/*.cpp) via weave_run;
 //                       both sides share one broker, so they see each other.
@@ -99,6 +101,45 @@ module shuttle_tests;
       `shuttle_field(origin, XPoint)
       `shuttle_field(dest, XPoint)
     `shuttle_reflect_end
+  endclass
+
+  // ── Inheritance chain (mirror XHead/XMid/XChain in tests/xlang_tests.cpp case8) ──
+  // Each level lists only its own fields and delegates its base subobject with `shuttle_base,
+  // the SV twin of SHUTTLE_REFLECT_DERIVED: wire order is the base encoding first, then the own
+  // fields, so the chain stays byte-for-byte the C++ Codec<XChain> → Codec<XMid> → Codec<XHead>
+  // delegation. A signed field at the middle level checks the sign convention across the DPI.
+  class XHead;
+    int unsigned seq;
+    `shuttle_reflect_begin(XHead)
+      `shuttle_field(seq, shuttle_u32)
+    `shuttle_reflect_end
+  endclass
+
+  class XMid extends XHead;
+    shortint level;
+    `shuttle_reflect_begin(XMid)
+      `shuttle_base(XHead)
+      `shuttle_field(level, shuttle_i16)
+    `shuttle_reflect_end
+  endclass
+
+  class XChain extends XMid;
+    byte flag;
+    `shuttle_reflect_begin(XChain)
+      `shuttle_base(XMid)
+      `shuttle_field(flag, shuttle_u8)
+    `shuttle_reflect_end
+  endclass
+
+  // ── Inheritance sink: decodes the C++-side XChain (negative middle field included) ──
+  class InhRec implements shuttle_sink;
+    int    count = 0;
+    XChain last;
+    virtual task invoke(input byte payload[], input shuttle_meta meta);
+      XChain c = XChain::unpack(payload);
+      count++;
+      last = c;
+    endtask
   endclass
 
   // ── Nested-type sink: decodes the C++-side XTrack (negative coordinates included) ──
@@ -644,6 +685,52 @@ module shuttle_tests;
     check(ok, "xlang.nest.no_failure");
   endtask
 
+  // ── Inheritance chain, both directions (mirror case8 of tests/xlang_tests.cpp) ──
+  // The C++ side registers XChain with SHUTTLE_REFLECT_DERIVED, so its wire form is the base
+  // encoding followed by the own fields; the SV classes reach the same layout through
+  // `shuttle_base. Decoding here proves both delegations agree byte for byte, and the frame going
+  // back proves the SV pack order is what Codec<XChain> expects.
+  task automatic case_xlang_inherit();
+    automatic InhRec               rec       = new();
+    automatic shuttle_sub          sub       = shuttle_subscribe("xlang.inherit.cpp2sv", rec, "XChain");
+    automatic shuttle_pub #(XChain) ready_pub = new("xlang.inherit.ready");
+    automatic shuttle_pub #(XChain) to_cpp    = new("xlang.inherit.sv2cpp");
+    automatic XChain               m         = new();
+    automatic shuttle_handle       h;
+    automatic bit                  ok;
+
+    check(sub.id() != 0, "xlang.inherit.subscribed");
+
+    // ready broadcast (retained): the C++ side subscribes after this and gets the frame replayed
+    ready_pub.set_retained(1);
+    m.seq   = 1;
+    m.level = 0;
+    m.flag  = 0;
+    h = ready_pub.publish_serial(m);
+    h.wait_done();
+    ok = (h.first_error() == "");
+    check(ok, "xlang.inherit.ready_no_failure");
+
+    // wait for the C++-side frame; bounded so a broken handshake fails loudly
+    for (int i = 0; i < 5000 && rec.count < 1; i++) #(10us);
+    check(rec.count == 1, "xlang.inherit.count");
+    if (rec.last != null) begin
+      check(rec.last.seq == 32'hC0FFEE02, "xlang.inherit.seq");
+      check(rec.last.level == -7, "xlang.inherit.level");
+      check(rec.last.flag == 8'h5A, "xlang.inherit.flag");
+    end
+
+    // answer with another chain; wait_done returning means the C++ callback has finished
+    m = new();
+    m.seq   = 2;
+    m.level = -3;
+    m.flag  = 8'hA5;
+    h = to_cpp.publish_serial(m);
+    h.wait_done();
+    ok = (h.first_error() == "");
+    check(ok, "xlang.inherit.no_failure");
+  endtask
+
   // A wait_pub deadline: the timeout leg fires, the frame stays pending and completes later.
   // Exercised through shuttle_c_wait_pub directly because shuttle_handle::wait_done() turns a
   // timeout into $error by design (this file never calls $error).
@@ -877,6 +964,7 @@ module shuttle_tests;
     case_xlang();
     case_xlang_mixed();
     case_xlang_nested();
+    case_xlang_inherit();
     g_sv_done = 1;
     $display("[sv] %0d passed, %0d failed", g_pass, g_fail);
   end

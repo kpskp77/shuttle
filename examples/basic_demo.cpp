@@ -44,6 +44,25 @@ struct UartBurst {
 };
 SHUTTLE_REFLECT(UartBurst, count, first, last)
 
+// Inherited message types: SHUTTLE_REFLECT_DERIVED registers a derived struct by delegating its
+// base subobject to Codec<Base>, so each level lists only its own fields and chains compose level
+// by level. The wire format is the base encoding followed by the own fields — identical to listing
+// every field flat, but the inherited field names are written once, at the level that declares
+// them. The SV mirror is class UartHeader/UartFrame/UartTagged in examples/shuttle_demo.sv, which
+// uses `shuttle_base for the same delegation.
+struct UartHeader {
+  std::uint32_t addr;
+};
+struct UartFrame : UartHeader {
+  std::uint32_t data;
+};
+struct UartTagged : UartFrame {
+  std::uint8_t flags;
+};
+SHUTTLE_REFLECT(UartHeader, addr)
+SHUTTLE_REFLECT_DERIVED(UartFrame, UartHeader, data)
+SHUTTLE_REFLECT_DERIVED(UartTagged, UartFrame, flags)
+
 WEAVE_TEST(basic_demo) {
   // ── Subscription: both callback capabilities ─────────────────────────
   // Blocking capability (delivered by `serial`/`concurrent`): the callback runs
@@ -144,6 +163,22 @@ WEAVE_TEST(basic_demo) {
   if (burst_last.count != 2 || burst_last.first.addr != 0x21 || burst_last.first.data != 0xAA ||
       burst_last.last.addr != 0x22 || burst_last.last.data != 0xBB)
     throw std::logic_error("basic_demo: nested message round trip failed");
+
+  // ── Inherited message types: each level delegates its base subobject to the base codec ──
+  // Retained for the same reason as the burst above: the SV demo decodes the frame whenever it
+  // subscribes. The wire length is the sum over the chain (4 + 4 + 1 bytes).
+  UartTagged tag_last{};
+  auto tag_sub = shuttle::subscribe<UartTagged>(
+      "uart0.tag", [&tag_last](const UartTagged& t, const shuttle::Meta&) { tag_last = t; });
+  shuttle::Publisher<UartTagged> tag_pub("uart0.tag");
+  tag_pub.set_retained(true);
+  UartTagged tagged{};
+  tagged.addr = 0x30;
+  tagged.data = 0xCAFE;
+  tagged.flags = 0x5;
+  tag_pub.publish_serial(tagged).wait();
+  if (tag_last.addr != 0x30 || tag_last.data != 0xCAFE || tag_last.flags != 0x5)
+    throw std::logic_error("basic_demo: inherited message round trip failed");
 
   // ── Edge cases: `publish_now` with a blocking-entry subscriber → CapabilityError; wait timeout
   // ── Isolated on a separate topic so the delayed frame does not disturb the FIFO observation

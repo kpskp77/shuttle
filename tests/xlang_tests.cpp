@@ -19,6 +19,9 @@
 //   keying task identity per simulation process in weave v1.2.0).
 //   6. case7 covers nested message types (struct XPoint inside struct XTrack): C++ → SV decode via
 //   the SV-side three-piece macros, SV → C++ decode via Codec<XTrack> recursing Codec<XPoint>.
+//   7. case8 covers an inheritance chain (XHead → XMid → XChain) registered with
+//   SHUTTLE_REFLECT_DERIVED: each level delegates its base subobject to the base codec, so both
+//   directions exercise the delegated encoding against the SV `shuttle_base chain.
 //
 // After both sides finish their assertions, run_cpp_tests in tests/shuttle_tests.sv renders the
 // verdict.
@@ -86,6 +89,24 @@ struct XTrack {
 };
 SHUTTLE_REFLECT(XTrack, id, origin, dest)
 
+// Inheritance chain for case8: each level lists only its own fields and delegates its base
+// subobject to Codec<Base> via SHUTTLE_REFLECT_DERIVED, so the wire format is the base encoding
+// followed by the own fields (here 4 + 2 + 1 bytes). The SV mirror is class
+// XHead/XMid/XChain in tests/shuttle_tests.sv, which reaches the same layout through
+// `shuttle_base. The middle level carries a signed field to pin the sign convention.
+struct XHead {
+  std::uint32_t seq = 0;
+};
+struct XMid : XHead {
+  std::int16_t level = 0;
+};
+struct XChain : XMid {
+  std::uint8_t flag = 0;
+};
+SHUTTLE_REFLECT(XHead, seq)
+SHUTTLE_REFLECT_DERIVED(XMid, XHead, level)
+SHUTTLE_REFLECT_DERIVED(XChain, XMid, flag)
+
 namespace {
 
 constexpr const char* kReadyTopic = "xlang.sv_ready";      // SV → C++ ready broadcast (retained)
@@ -94,10 +115,13 @@ constexpr const char* kFromSvTopic = "xlang.sv2cpp";       // SV → C++
 constexpr const char* kMixedTopic = "xlang.mixed.tx";      // mixed target set: SV sink + C++ subs
 constexpr const char* kMixedMonTopic = "xlang.mixed.mon";  // published by the SV sink itself
 constexpr const char* kMixedReadyTopic =
-    "xlang.mixed.ready";  // SV → C++ ready broadcast (retained)
-constexpr const char* kNestReadyTopic = "xlang.nest.ready";    // SV → C++ ready (retained)
-constexpr const char* kNestToSvTopic = "xlang.nest.cpp2sv";    // C++ → SV, nested types
-constexpr const char* kNestFromSvTopic = "xlang.nest.sv2cpp";  // SV → C++, nested types
+    "xlang.mixed.ready";                                     // SV → C++ ready broadcast (retained)
+constexpr const char* kNestReadyTopic = "xlang.nest.ready";  // SV → C++ ready (retained)
+constexpr const char* kNestToSvTopic = "xlang.nest.cpp2sv";  // C++ → SV, nested types
+constexpr const char* kNestFromSvTopic = "xlang.nest.sv2cpp";    // SV → C++, nested types
+constexpr const char* kInhReadyTopic = "xlang.inherit.ready";    // SV → C++ ready (retained)
+constexpr const char* kInhToSvTopic = "xlang.inherit.cpp2sv";    // C++ → SV, inheritance chain
+constexpr const char* kInhFromSvTopic = "xlang.inherit.sv2cpp";  // SV → C++, inheritance chain
 
 // State shared across cases (subscription handles must outlive the test, so they live in a heap
 // holder)
@@ -124,6 +148,13 @@ struct XlangState {
   weave::Event nest_ready_ev;
   std::vector<XTrack> nest_got;
   std::vector<std::string> nest_tags;
+
+  // case8 state: the inheritance chain XHead → XMid → XChain
+  shuttle::Subscription inh_ready;
+  shuttle::Subscription inh_from_sv;
+  weave::Event inh_ready_ev;
+  std::vector<XChain> inh_got;
+  std::vector<std::string> inh_tags;
 };
 
 }  // namespace
@@ -293,9 +324,8 @@ WEAVE_TEST(xlang_tests) {
   // both sides; the ready frame's 20-byte wire length checks the inline nested layout
   // (u32 id + 2 x (i32 x + i32 y), no length prefix).
   run_case(__func__, "case7", [st] {
-    st->nest_ready =
-        shuttle::subscribe_bytes(kNestReadyTopic, [st](const std::vector<std::byte>& bytes,
-                                                       const shuttle::Meta& meta) {
+    st->nest_ready = shuttle::subscribe_bytes(
+        kNestReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
           expect(bytes.size() == 20, "the nested ready frame wire length should be 20 bytes");
           expect(meta.type_tag == "XTrack",
                  "the nested ready frame type tag comes from the SV class XTrack");
@@ -304,8 +334,8 @@ WEAVE_TEST(xlang_tests) {
     for (int i = 0; i < 2000 && !st->nest_ready_ev.is_set(); ++i) weave::sleep(100_us);
     expect(st->nest_ready_ev.is_set(), "never saw the SV-side ready broadcast (xlang.nest.ready)");
 
-    st->nest_from_sv =
-        shuttle::subscribe<XTrack>(kNestFromSvTopic, [st](const XTrack& t, const shuttle::Meta& meta) {
+    st->nest_from_sv = shuttle::subscribe<XTrack>(
+        kNestFromSvTopic, [st](const XTrack& t, const shuttle::Meta& meta) {
           st->nest_got.push_back(t);
           st->nest_tags.push_back(std::string(meta.type_tag));
         });
@@ -332,6 +362,49 @@ WEAVE_TEST(xlang_tests) {
       expect_eq(static_cast<long long>(t.dest.x), -3, "dest.x negative from the SV publish");
       expect_eq(static_cast<long long>(t.dest.y), 4, "dest.y from the SV publish");
       expect(st->nest_tags[0] == "XTrack", "type_tag is the XTrack declared on the SV side");
+    }
+  });
+
+  // case8: inheritance chain — each level delegates its base subobject to the base codec
+  run_case(__func__, "case8", [st] {
+    st->inh_ready = shuttle::subscribe_bytes(
+        kInhReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
+          expect(bytes.size() == 7, "the chain ready frame wire length should be 4 + 2 + 1 bytes");
+          expect(meta.type_tag == "XChain",
+                 "the chain ready frame type tag comes from the SV class XChain");
+          st->inh_ready_ev.set();
+        });
+    for (int i = 0; i < 2000 && !st->inh_ready_ev.is_set(); ++i) weave::sleep(100_us);
+    expect(st->inh_ready_ev.is_set(),
+           "never saw the SV-side ready broadcast (xlang.inherit.ready)");
+
+    st->inh_from_sv = shuttle::subscribe<XChain>(
+        kInhFromSvTopic, [st](const XChain& c, const shuttle::Meta& meta) {
+          st->inh_got.push_back(c);
+          st->inh_tags.push_back(std::string(meta.type_tag));
+        });
+
+    shuttle::Publisher<XChain> pub(kInhToSvTopic);
+    XChain out;
+    out.seq = 0xC0FFEE02u;
+    out.level = -7;
+    out.flag = 0x5A;
+    auto h = pub.publish_serial(out);
+    expect_eq(static_cast<long long>(h.subscriber_count()), 1,
+              "the SV side should have 1 blocking subscriber");
+    h.wait();
+    expect(h.done() && h.failures().empty(), "the SV-side chain decode should not fail");
+
+    for (int i = 0; i < 200 && st->inh_got.size() < 1; ++i) weave::sleep(100_us);
+    expect_eq(static_cast<long long>(st->inh_got.size()), 1,
+              "one chain frame should come back SV → C++");
+    if (!st->inh_got.empty()) {
+      const XChain& c = st->inh_got[0];
+      expect_eq(static_cast<long long>(c.seq), 2, "the base field decoded from the SV publish");
+      expect_eq(static_cast<long long>(c.level), -3,
+                "the middle field, negative, from the SV publish");
+      expect_eq(static_cast<long long>(c.flag), 0xA5, "the own field from the SV publish");
+      expect(st->inh_tags[0] == "XChain", "type_tag is the XChain declared on the SV side");
     }
   });
 

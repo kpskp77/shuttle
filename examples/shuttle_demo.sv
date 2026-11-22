@@ -4,7 +4,7 @@
 // Compile order: weave_pkg.sv (../weave/sv) → shuttle_pkg.sv (../../sv) → this file.
 // Run: the simulator loads libshuttle_examples_svdpi.so via -sv_lib (which brings in
 //       libshuttle.so / libweave.so indirectly); weave_run also starts the C++-side registered
-//       demos (WEAVE_TEST, see ../cpp/). Publishing/subscribing on both sides interoperates on the same broker:
+//       demos (WEAVE_TEST, see ../): Publishing/subscribing on both sides interoperates on the same broker:
 //       the "uart0.tx" this file subscribes to also receives messages published by the C++ basic_demo, and vice versa.
 // ============================================================================
 
@@ -51,6 +51,43 @@ module shuttle_demo;
       UartBurst b = UartBurst::unpack(payload);
       count++;
       last = b;
+    endtask
+  endclass
+
+  // ── Inherited message classes: counterpart of UartHeader/UartFrame/UartTagged in basic_demo.cpp ──
+  // `shuttle_base(T) encodes the direct base subobject through T's own codec, so each level lists
+  // only its own fields — the SV twin of SHUTTLE_REFLECT_DERIVED. Wire order is base first, then
+  // own fields, which is exactly the flat listing; here the inherited fields are written once.
+  class UartHeader;
+    int unsigned addr;
+    `shuttle_reflect_begin(UartHeader)
+      `shuttle_field(addr, shuttle_u32)
+    `shuttle_reflect_end
+  endclass
+
+  class UartFrame extends UartHeader;
+    int unsigned data;
+    `shuttle_reflect_begin(UartFrame)
+      `shuttle_base(UartHeader)
+      `shuttle_field(data, shuttle_u32)
+    `shuttle_reflect_end
+  endclass
+
+  class UartTagged extends UartFrame;
+    byte flags;
+    `shuttle_reflect_begin(UartTagged)
+      `shuttle_base(UartFrame)
+      `shuttle_field(flags, shuttle_u8)
+    `shuttle_reflect_end
+  endclass
+
+  class TagRec implements shuttle_sink;
+    int        count = 0;
+    UartTagged last;
+    virtual task invoke(input byte payload[], input shuttle_meta meta);
+      UartTagged t = UartTagged::unpack(payload);
+      count++;
+      last = t;
     endtask
   endclass
 
@@ -159,6 +196,21 @@ module shuttle_demo;
           $error("nested burst: first transaction wrong");
         if (brec.last.last.addr !== 32'h22 || brec.last.last.data !== 32'hBB)
           $error("nested burst: last transaction wrong");
+      end
+    end
+
+    // ── Inherited message classes: decode the retained UartTagged published by basic_demo.cpp ──
+    // The frame crosses the DPI boundary in the base-first order both macros produce; the inherited
+    // field names never appear in the derived class, only `shuttle_base.
+    begin
+      automatic TagRec            trec = new();
+      automatic shuttle_sub       tsub = shuttle_subscribe("uart0.tag", trec, UartTagged::type_tag);
+      for (int i = 0; i < 5000 && trec.count < 1; i++) #(10us);
+      if (trec.count != 1) $error("inherited message was not delivered");
+      if (trec.last != null) begin
+        if (trec.last.addr !== 32'h30) $error("inherited message: base field wrong");
+        if (trec.last.data !== 32'hCAFE) $error("inherited message: middle field wrong");
+        if (trec.last.flags !== 8'h05) $error("inherited message: own field wrong");
       end
     end
 

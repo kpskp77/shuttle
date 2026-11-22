@@ -68,6 +68,29 @@
     k::unpack_into(b, pos, o.f); \
   end
 
+// `shuttle_base(T) — encode/decode the direct base subobject as a unit through T's own codec,
+// instead of repeating the inherited field names. Chains compose: each level names its direct
+// base, and that base may itself use `shuttle_base. Requires T to carry the macro-generated
+// static surface (pack_obj / unpack_into), i.e. T must use this three-piece reflection too.
+// The unpack side goes through a T-typed handle copy because VCS 2018 ref formals demand an
+// exact type match (a derived handle is rejected); generated entry points construct `o` before
+// __codec runs, so writing through the handle copy lands on the same object.
+// Usage:
+//   class Base; ... `shuttle_reflect_begin(Base) ... `shuttle_reflect_end  endclass
+//   class Derived extends Base;
+//     `shuttle_reflect_begin(Derived)
+//     `shuttle_base(Base)
+//     `shuttle_field(data, shuttle_u32)
+//     `shuttle_reflect_end
+//   endclass
+`define shuttle_base(T) \
+  if (packing) begin \
+    T::pack_obj(q, o); \
+  end else begin \
+    T base_ = o; \
+    T::unpack_into(b, pos, base_); \
+  end
+
 `define shuttle_reflect_end \
   endfunction
 

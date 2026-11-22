@@ -413,3 +413,35 @@ std::string type_tag_of() {
     }                                                                \
   };                                                                 \
   }
+
+// ── SHUTTLE_REFLECT_DERIVED: register a derived class by delegating its base ──────
+// Like SHUTTLE_REFLECT, but the base subobject is encoded/decoded as a unit through
+// Codec<BaseType> instead of repeating the inherited field names. Chains compose:
+// each level delegates to its direct base, which may itself use this macro.
+// Usage (at global scope, AFTER Codec<BaseType> is registered):
+//   struct Base { uint32_t seq = 0; };
+//   struct Derived : Base { uint32_t data = 0; };
+//   SHUTTLE_REFLECT(Base, seq)
+//   SHUTTLE_REFLECT_DERIVED(Derived, Base, data)
+// Constraints: single public base; at least one own field must be listed (a pure
+// pass-through derived type needs a hand-written Codec specialization); multiple
+// inheritance needs a hand-written Codec specialization as well.
+
+#define SHUTTLE_REFLECT_DERIVED(Type, BaseType, ...)                 \
+  namespace shuttle {                                                \
+  template <>                                                        \
+  struct Codec<Type> {                                               \
+    static constexpr bool available = true;                          \
+    static const char* tag() { return #Type; }                       \
+    static void encode(::shuttle::Writer& w, const Type& obj) {      \
+      Codec<BaseType>::encode(w, obj);                               \
+      SHUTTLE_DETAIL_FOR_EACH(SHUTTLE_DETAIL_ENC, Type, __VA_ARGS__) \
+    }                                                                \
+    static Type decode(::shuttle::Reader& r) {                       \
+      Type obj{};                                                    \
+      static_cast<BaseType&>(obj) = Codec<BaseType>::decode(r);      \
+      SHUTTLE_DETAIL_FOR_EACH(SHUTTLE_DETAIL_DEC, Type, __VA_ARGS__) \
+      return obj;                                                    \
+    }                                                                \
+  };                                                                 \
+  }

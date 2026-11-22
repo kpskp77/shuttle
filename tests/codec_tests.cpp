@@ -76,6 +76,21 @@ struct NestL3 {
 };
 SHUTTLE_REFLECT(NestL3, head, body, tail)
 
+// Inheritance chain registered via SHUTTLE_REFLECT_DERIVED (used by case12): each level
+// delegates its base subobject to the base's codec instead of repeating field names
+struct InhBase {
+  std::uint32_t seq = 0;
+};
+struct InhMid : InhBase {
+  std::uint32_t payload = 0;
+};
+struct InhDeep : InhMid {
+  std::uint16_t flag = 0;
+};
+SHUTTLE_REFLECT(InhBase, seq)
+SHUTTLE_REFLECT_DERIVED(InhMid, InhBase, payload)
+SHUTTLE_REFLECT_DERIVED(InhDeep, InhMid, flag)
+
 // A type with no codec (used by the static-capability probe)
 struct NotReflected {
   int x = 0;
@@ -297,6 +312,26 @@ WEAVE_TEST(codec_tests) {
     expect_eq(static_cast<long long>(enc.size()), 24 * 4, "24 fields x 4 bytes");
     const Many back = shuttle::decode<Many>(enc);
     expect_bytes(shuttle::encode(back), enc, "24-field round trip is byte-stable");
+  });
+
+  // case12: inheritance chain via SHUTTLE_REFLECT_DERIVED — each level's wire bytes are the
+  // base prefix plus its own fields; the chain composes through Codec<Base>
+  run_case(__func__, "case12", [] {
+    InhDeep d;
+    d.seq = 1;
+    d.payload = 0xdeadbeef;
+    d.flag = 0x2a;
+    const bytes enc = shuttle::encode(d);
+    expect_eq(static_cast<long long>(enc.size()), 10, "4 + 4 + 2 bytes, base first");
+    InhBase b;
+    b.seq = 1;
+    const bytes encb = shuttle::encode(b);
+    expect(enc.size() >= encb.size() && std::equal(encb.begin(), encb.end(), enc.begin()),
+           "InhBase encoding is a prefix of InhDeep");
+    const InhDeep back = shuttle::decode<InhDeep>(enc);
+    expect_eq(static_cast<long long>(back.seq), 1, "inherited seq");
+    expect_eq(static_cast<long long>(back.payload), 0xdeadbeef, "mid-level payload");
+    expect_eq(static_cast<long long>(back.flag), 0x2a, "own flag");
   });
 
   report(__func__);

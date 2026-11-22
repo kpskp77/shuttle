@@ -121,6 +121,27 @@ shuttle_handle h = pub.publish_serial(tx);
 h.wait_done();                                               // suspends this SV process
 ```
 
+Message types may nest and may inherit. Nesting expands the member's own codec inline; inheritance
+delegates each level's base subobject to the base's codec, so a field is listed once, where it is
+declared:
+
+```cpp
+struct Frame { std::uint32_t seq; };
+struct Pkt : Frame { std::uint32_t data; };
+SHUTTLE_REFLECT(Frame, seq)
+SHUTTLE_REFLECT_DERIVED(Pkt, Frame, data)   // wire = Frame encoding, then data
+```
+
+```systemverilog
+class Pkt extends Frame;
+  int unsigned data;
+  `shuttle_reflect_begin(Pkt)
+    `shuttle_base(Frame)                     // Frame::pack_obj / unpack_into
+    `shuttle_field(data, shuttle_u32)
+  `shuttle_reflect_end
+endclass
+```
+
 Run it end to end (the SV demo runs the same scenario from the SV side; both sides meet on one
 broker):
 

@@ -116,6 +116,26 @@ shuttle_handle h = pub.publish_serial(tx);
 h.wait_done();                                               // 挂起本 SV 进程
 ```
 
+消息类型可以嵌套，也可以继承。嵌套把成员自己的 codec 就地展开；继承把每一层的基类子对象交给基类的
+codec 编解码，同一个字段只在声明处写一次：
+
+```cpp
+struct Frame { std::uint32_t seq; };
+struct Pkt : Frame { std::uint32_t data; };
+SHUTTLE_REFLECT(Frame, seq)
+SHUTTLE_REFLECT_DERIVED(Pkt, Frame, data)   // 线格式 = Frame 编码 + data
+```
+
+```systemverilog
+class Pkt extends Frame;
+  int unsigned data;
+  `shuttle_reflect_begin(Pkt)
+    `shuttle_base(Frame)                     // Frame::pack_obj / unpack_into
+    `shuttle_field(data, shuttle_u32)
+  `shuttle_reflect_end
+endclass
+```
+
 端到端跑一遍（SV 演示从 SV 侧跑同一情景；两侧在同一个 broker 上汇合）：
 
 ```bash
