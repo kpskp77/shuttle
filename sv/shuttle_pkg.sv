@@ -3,9 +3,9 @@
 //
 // This file is an AGGREGATOR: the package body is split into functional
 // fragments (`include`d below, one concern per file — dpi / constants /
-// meta / subscribe / mailbox / publication / pub / dispatch / codec), so
-// each part can be read and reviewed on its own. Compile THIS file only;
-// the fragments are not standalone compilation units. The shuttle_reflect_begin
+// meta / subscribe / mailbox / publication / pub / requester / dispatch /
+// codec), so each part can be read and reviewed on its own. Compile THIS file
+// only; the fragments are not standalone compilation units. The shuttle_reflect_begin
 // / shuttle_field / shuttle_reflect_end macros (sv/shuttle_reflect.svh) are
 // included after `endpackage` because `define has compilation-unit scope.
 //
@@ -86,6 +86,7 @@ package shuttle_pkg;
   `include "shuttle_mailbox.svh"
   `include "shuttle_publication.svh"
   `include "shuttle_pub.svh"
+  `include "shuttle_requester.svh"
   `include "shuttle_dispatch.svh"
   `include "shuttle_codec.svh"
 

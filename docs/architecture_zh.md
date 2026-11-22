@@ -333,6 +333,24 @@ blocking *旁观*被禁。标记之前注册的 blocking 旁观者不做追溯�
 `recv`。请求 topic 与回执 topic 必须不同——响应者在请求回调内发布回执，共享 topic 会
 让回执排在发布它的回调后面；构造时抛 `std::invalid_argument`。
 
+### SV 请求者是同一套设计，只有计数器与标记跨 DPI
+
+`shuttle_requester #(TReq, TResp)` / `shuttle_call #(TResp)` 与 `Requester` / `Call` 逐项对应：
+调用槽先登记、再发帧（nonblocking 响应者在发布调用内就作答），`wait_for` 用一个截止时刻
+约束整段等待，`wait_all` 从请求帧的 `subscriber_count()` 取期望回执数。有两件东西放不进
+SV，于是变成 DPI 入口：`shuttle_c_take_corr_id`（计数器是进程级 C++ 状态，另起一个计数器
+会让同一响应 topic 上的 SV 调用与 C++ 调用拿到同一个 id）与 `shuttle_c_mark_responses`
+（`Broker::mark_response_topic` 是 broker 状态，SV 请求者必须像 `Requester`/`serve` 一样
+先认领自己的响应通道）。
+
+不同的地方是语言，不是设计：SV 没有异常，所以构造失败留在 `valid()` 为假 + `last_error()`，
+`send_*` 返回空调用而不抛异常，`recv`/`wait_*` 对超时与取消都用 `ok == 0` 作答（那里没有
+`TimeoutError` / `CancelledError`）。分发需要一个可持有句柄的订阅回调，而队列属于参数化类，
+所以 `shuttle_reply_target` 是一个非参数化基类，请求者覆写它的 `accept_response`。请求直接
+走发布 DPI 入口而不经 `shuttle_pub`——公开三件套故意没有 `corr_id` 参数，这也正是
+`shuttle_pub::reply` 绕开它的原因。取消是显式的（`cancel()`）：SV 没有 `weak_ptr`，调用方
+只是丢掉的槽不可见，`prune()` 只能清掉已取消的调用，它们的回执计进 `stale_responses()`。
+
 ### Mailbox = 订阅者 + 队列，不是新的投递机制
 
 `Mailbox<T>` 组合两个既有能力：经由普通 `detail::sub_typed` / `sub_raw` 注册得到的

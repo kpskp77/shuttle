@@ -22,10 +22,15 @@
 //   7. case8 covers an inheritance chain (XHead → XMid → XChain) registered with
 //   SHUTTLE_REFLECT_DERIVED: each level delegates its base subobject to the base codec, so both
 //   directions exercise the delegated encoding against the SV `shuttle_base chain.
+//   8. case9 covers request/response in the *other* direction: an SV Requester calls a C++
+//   serve() responder. The SV side mints its corr_id through the shared counter
+//   (shuttle_c_take_corr_id), serve() echoes it back, and the SV-side response-topic mark
+//   (shuttle_c_mark_responses) refuses a blocking C++ subscriber on a topic no C++ responder
+//   ever touched.
 //
 // After both sides finish their assertions, run_cpp_tests in tests/shuttle_tests.sv renders the
 // verdict.
-
+//
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -122,6 +127,11 @@ constexpr const char* kNestFromSvTopic = "xlang.nest.sv2cpp";    // SV → C++, 
 constexpr const char* kInhReadyTopic = "xlang.inherit.ready";    // SV → C++ ready (retained)
 constexpr const char* kInhToSvTopic = "xlang.inherit.cpp2sv";    // C++ → SV, inheritance chain
 constexpr const char* kInhFromSvTopic = "xlang.inherit.sv2cpp";  // SV → C++, inheritance chain
+constexpr const char* kRqSvReadyTopic = "xlang.rqsv.ready";      // C++ → SV ready (retained)
+constexpr const char* kRqSvReqTopic = "xlang.rqsv.req";          // SV requester → C++ responder
+constexpr const char* kRqSvRespTopic = "xlang.rqsv.resp";        // C++ responder → SV requester
+constexpr const char* kRqSvMarkRespTopic =
+    "xlang.rqsv.mark.resp";  // response topic marked by SV only (no C++ responder)
 
 // State shared across cases (subscription handles must outlive the test, so they live in a heap
 // holder)
@@ -406,6 +416,48 @@ WEAVE_TEST(xlang_tests) {
       expect_eq(static_cast<long long>(c.flag), 0xA5, "the own field from the SV publish");
       expect(st->inh_tags[0] == "XChain", "type_tag is the XChain declared on the SV side");
     }
+  });
+
+  // case9: request/response the other way — an SV Requester calls this C++ serve() responder. The
+  // SV side allocates its corr_id through shuttle_c_take_corr_id (one counter for both languages),
+  // serve() copies meta.corr_id into the answer, and the SV reply table matches it. The second
+  // assertion covers the other new DPI entry: the SV requester claims its response topic as a
+  // response channel, so a blocking C++ subscriber on it is refused even though no C++ responder
+  // ever touched that topic.
+  run_case(__func__, "case9", [] {
+    auto hits = std::make_shared<std::size_t>(0);
+    auto server = shuttle::serve<XRqReq, XRqResp>(
+        kRqSvReqTopic, kRqSvRespTopic,
+        shuttle::nb([hits](const XRqReq& req, const shuttle::Meta& meta) {
+          ++*hits;
+          expect(meta.corr_id != 0, "the SV requester's corr_id crossed the DPI");
+          return XRqResp{req.op * 2};
+        }));
+    (void)server;
+
+    // Announce readiness only once the responder exists: the SV side sends its request as soon as
+    // it sees this frame.
+    shuttle::Publisher<XMsg> ready(kRqSvReadyTopic);
+    ready.set_retained(true);
+    auto h = ready.publish_now(XMsg{0x9, 0});
+    expect(h.done(), "the ready broadcast completed");
+
+    for (int i = 0; i < 2000 && *hits == 0; ++i) weave::sleep(100_us);
+    expect_eq(static_cast<long long>(*hits), 1,
+              "the SV requester's request reached the C++ responder");
+
+    bool refused = false;
+    std::string why;
+    try {
+      auto bad = shuttle::subscribe<XRqReq>(kRqSvMarkRespTopic,
+                                            [](const XRqReq&, const shuttle::Meta&) {});
+      (void)bad;
+    } catch (const shuttle::CapabilityError& e) {
+      refused = true;
+      why = e.what();
+    }
+    expect(refused, "the SV requester's response mark refuses a blocking C++ subscriber");
+    expect(why.find("response topic") != std::string::npos, "the refusal names the response topic");
   });
 
   report(__func__);

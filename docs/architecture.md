@@ -375,6 +375,28 @@ must differ — the responder publishes its reply inside the request callback, a
 would queue the reply behind the callback that published it; the constructors throw
 `std::invalid_argument`.
 
+### The SV requester is the same design, with the counter and the mark across the DPI
+
+`shuttle_requester #(TReq, TResp)` / `shuttle_call #(TResp)` mirror `Requester` / `Call` shape for
+shape: the call slot is registered before the frame goes out (an nb responder answers inside the
+publish call), `wait_for` bounds the whole wait with one deadline, and `wait_all` reads its
+expected count from the request frame's `subscriber_count()`. Two pieces cannot live in SV and
+become DPI entries instead — `shuttle_c_take_corr_id` (the [`detail::take_corr_id`] counter is
+process-level C++ state; a second counter would let an SV call and a C++ call on one response
+topic mint the same id) and `shuttle_c_mark_responses` (`Broker::mark_response_topic` is broker
+state, and an SV requester must claim its response channel exactly like `Requester`/`serve`).
+
+The differences are the language, not the design: SV has no exceptions, so a failed constructor
+leaves `valid()` false with `last_error()` set, `send_*` returns a null call instead of throwing,
+and `recv`/`wait_*` report `ok == 0` for both timeout and cancellation (`TimeoutError` /
+`CancelledError` do not exist there). The demux needs a handlable subscription callback but the
+queue belongs to a parameterized class, so `shuttle_reply_target` is a non-parameterized base
+whose `accept_response` the requester overrides. Requests go out through the publish DPI entries
+directly, not through `shuttle_pub` — the public trio has no `corr_id` parameter, on purpose, and
+that is exactly why `shuttle_pub::reply` bypasses it too. Cancellation is explicit (`cancel()`)
+because SV has no `weak_ptr`: a slot the caller merely forgot is invisible, so `prune()` can only
+drop cancelled calls, and replies for those are counted in `stale_responses()`.
+
 ### Mailbox is a subscriber plus a queue, not a new delivery mechanism
 
 `Mailbox<T>` composes two existing capabilities: a subscriber identity via the ordinary

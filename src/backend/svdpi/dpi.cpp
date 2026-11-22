@@ -15,6 +15,7 @@
 #include <memory>
 #include <shuttle/detail/abi.hpp>
 #include <shuttle/exception.hpp>
+#include <shuttle/requester.hpp>
 #include <shuttle/trigger.hpp>
 #include <stdexcept>
 #include <string>
@@ -278,6 +279,30 @@ void shuttle_c_set_retained(const char* topic, int retained) {
     shuttle::detail::topic_set_retained(topic ? topic : "", retained != 0);
   } catch (const std::exception& e) {
     set_last_error(e.what());
+  }
+}
+
+// Request/response: allocate the next correlation id. SV has no counterpart to
+// the Requester's counter, so the allocation point stays C++-side and both
+// languages draw from one sequence — an SV corr_id can never collide with a C++
+// one on a shared response topic. Never 0 (0 means "uncorrelated").
+int shuttle_c_take_corr_id() {
+  return static_cast<int>(shuttle::detail::take_corr_id());
+}
+
+// Claim `topic` as a response channel, exactly as the C++ Requester and serve()
+// do: from here on a blocking-entry subscription on it is refused. Returns 0 on
+// success, 1 on failure (reason in shuttle_c_last_error).
+int shuttle_c_mark_responses(const char* topic) {
+  try {
+    shuttle::detail::topic_mark_responses(topic ? topic : "");
+    return 0;
+  } catch (const std::exception& e) {
+    set_last_error(e.what());
+    return 1;
+  } catch (...) {
+    set_last_error("shuttle: unknown exception");
+    return 1;
   }
 }
 

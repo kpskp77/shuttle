@@ -165,6 +165,24 @@ module shuttle_tests;
     endtask
   endclass
 
+  // ── Nonblocking responder for the SV-requester cases: answers op*2 and hands the request's
+  //    frame header to `pub.reply`, which echoes meta.corr_id for us ────────────────────────
+  class SvRqNb implements shuttle_sink_nb;
+    int                    count = 0;
+    shuttle_pub #(XRqResp) pub;
+    function new(string resp_topic);
+      pub   = new (resp_topic);
+      count = 0;
+    endfunction
+    virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
+      XRqReq  req  = XRqReq::unpack(payload);
+      XRqResp resp = new();
+      resp.data = req.op * 2;
+      count++;
+      void'(pub.reply(resp, meta));
+    endfunction
+  endclass
+
   // ── Implements both entries: shuttle_subscribe registers the blocking entry, shuttle_subscribe_nb the
   //    nonblocking entry (isomorphic to C++ subscribe(fn) / subscribe(nb(fn))) ─────────
   class Rec implements shuttle_sink, shuttle_sink_nb;
@@ -731,6 +749,114 @@ module shuttle_tests;
     check(ok, "xlang.inherit.no_failure");
   endtask
 
+  // ── SV-side request/response with both ends in SV: the requester allocates its corr_id through
+  //    shuttle_c_take_corr_id (the counter C++ shares), an nb responder answers inside the publish
+  //    call, and the reply is routed back by that id ─────────────────────────────────
+  task automatic case_sv_requester();
+    automatic SvRqNb                               svc  = new ("sv.rq.resp");
+    automatic shuttle_sub                          ssub = shuttle_subscribe_nb("sv.rq.req", svc, "XRqReq");
+    automatic shuttle_requester #(XRqReq, XRqResp) rq   = new ("sv.rq.req", "sv.rq.resp");
+    automatic XRqReq                               req  = new();
+    automatic XRqResp                              resp;
+    automatic XRqResp                              all[$];
+    automatic shuttle_call #(XRqResp)              call;
+    automatic shuttle_requester #(XRqReq, XRqResp) same;
+    automatic shuttle_requester #(XRqReq, XRqResp) nameless;
+    automatic bit                                  ok;
+    automatic time                                 t0;
+
+    check(rq.valid(), "svrq.valid");
+    check(ssub.id() != 0, "svrq.responder_registered");
+    check(rq.req_topic() == "sv.rq.req" && rq.resp_topic() == "sv.rq.resp", "svrq.topics");
+    req.op = 21;
+
+    // send_now + an nb responder: the round trip happens on this stack, no simulation time spent
+    t0   = $time;
+    call = rq.send_now(req);
+    check(call != null, "svrq.send_now_call");
+    if (call != null) begin
+      check(call.corr_id() != 0, "svrq.corr_id_allocated");
+      check(call.queued() == 1, "svrq.inline_reply");
+      check($time == t0, "svrq.no_sim_time");
+      check(call.publication().subscriber_count() == 1 && call.publication().done() != 0,
+            "svrq.request_done");
+      call.recv(ok, resp, 1_000_000);
+      check(ok == 1, "svrq.recv_ok");
+      if (resp != null) check(resp.data == 42, "svrq.reply_value");
+      check(call.queued() == 0, "svrq.reply_taken");
+    end
+
+    // serial flavor: the request travels the background chain, so the reply arrives later and the
+    // requester suspends on the call's own event
+    call = rq.send_serial(req);
+    check(call != null, "svrq.send_serial_call");
+    if (call != null) begin
+      check(call.queued() == 0, "svrq.serial_not_inline");
+      call.wait_all(all, 1_000_000);
+      check(all.size() == 1, "svrq.serial_reply_count");
+      if (all.size() == 1) check(all[0].data == 42, "svrq.serial_reply_value");
+    end
+
+    // a cancelled call stops accepting replies: the answer that still arrives is counted as stale,
+    // and a pending recv returns ok == 0 instead of waiting for its deadline
+    call = rq.send_serial(req);
+    check(call != null, "svrq.cancel_call");
+    if (call != null) begin
+      call.cancel();
+      call.publication().wait_done();  // every target has been served by now
+      check(call.cancelled() != 0, "svrq.cancelled");
+      check(rq.stale_responses() == 1, "svrq.stale_counted");
+      check(call.queued() == 0, "svrq.cancelled_queue_dropped");
+      call.recv(ok, resp, 1_000_000);
+      check(ok == 0, "svrq.cancelled_recv_not_ok");
+    end
+
+    // the next send prunes the cancelled slot: the table stays bounded by the calls still in flight
+    call = rq.send_now(req);
+    check(call != null && rq.inflight() == 3, "svrq.pruned_table");
+
+    // both failure modes are reported through valid()/last_error(), never by $error (which would
+    // fail the run) and never silently
+    same     = new ("sv.rq.same", "sv.rq.same");
+    nameless = new ("", "sv.rq.nameless.resp");
+    check(!same.valid() && same.last_error() != "", "svrq.same_topic_invalid");
+    check(!nameless.valid() && nameless.last_error() != "", "svrq.empty_topic_invalid");
+  endtask
+
+  // ── Cross-language request/response, SV requester side: the C++ responder is case9 of
+  //    tests/xlang_tests.cpp (serve() with an nb handler plus a retained ready frame) ─────────────
+  task automatic case_rq_sv_requester();
+    automatic shuttle_mailbox                      ready = new ("xlang.rqsv.ready", "XMsg");
+    automatic shuttle_requester #(XRqReq, XRqResp) rq    = new ("xlang.rqsv.req", "xlang.rqsv.resp");
+    // A requester with no responder anywhere: its only purpose is the response-channel mark, which
+    // the C++ side then proves (a blocking C++ subscriber on it must be refused) — no C++ code ever
+    // marks that topic.
+    automatic shuttle_requester #(XRqReq, XRqResp) marked = new ("xlang.rqsv.mark.req",
+                                                                 "xlang.rqsv.mark.resp");
+    automatic XRqReq                  req = new();
+    automatic XRqResp                 all[$];
+    automatic shuttle_call #(XRqResp) call;
+
+    check(rq.valid(), "rqsv.valid");
+    check(marked.valid(), "rqsv.marked_valid");
+
+    // The C++ responder announces itself with a retained frame, so subscribing first is enough —
+    // but it registers only after its own earlier cases, so this wait spans them (bounded so a
+    // broken handshake fails loudly instead of hanging the run).
+    for (int i = 0; i < 100_000 && ready.size() == 0; i++) #(10us);  // up to 1s
+    check(ready.size() == 1, "rqsv.ready_seen");
+
+    req.op = 21;
+    call   = rq.send_serial(req);
+    check(call != null, "rqsv.send_call");
+    if (call != null) begin
+      call.wait_all(all, 10_000_000);  // 10ms
+      check(all.size() == 1, "rqsv.reply_count");
+      if (all.size() == 1) check(all[0].data == 42, "rqsv.reply_value");
+      check(rq.stale_responses() == 0, "rqsv.no_stale");
+    end
+  endtask
+
   // A wait_pub deadline: the timeout leg fires, the frame stays pending and completes later.
   // Exercised through shuttle_c_wait_pub directly because shuttle_handle::wait_done() turns a
   // timeout into $error by design (this file never calls $error).
@@ -965,6 +1091,11 @@ module shuttle_tests;
     case_xlang_mixed();
     case_xlang_nested();
     case_xlang_inherit();
+    // SV-side request/response last: the cross-language half waits for the C++ responder, which the
+    // C++ case9 registers only after its earlier cases — running it earlier would make both sides
+    // wait for each other.
+    case_sv_requester();
+    case_rq_sv_requester();
     g_sv_done = 1;
     $display("[sv] %0d passed, %0d failed", g_pass, g_fail);
   end

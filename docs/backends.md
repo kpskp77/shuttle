@@ -60,7 +60,7 @@ consists of four pieces with strictly separated concerns:
 | `src/backend/svdpi/facade.cpp` | The external facade: `ext_*` (byte-frame publish, external-subscription registration) and `pub_*` (per-`pub_id` queries/waits). Broker orchestration only; no DPI knowledge. |
 | `src/backend/svdpi/bridge.cpp` | The `detail::backend` implementation: `dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery` plus the frame-pull channel. |
 | `src/backend/svdpi/svdpi_internal.hpp` | Private header of the directory: `SvScopeGuard`, `FrameContext`, `g_frame`, the on-wire codes, and the `ext_*`/`pub_*` declarations. |
-| `sv/shuttle_pkg.sv` | The SV-side package: the DPI import/export declarations, the constants, the subscription registry, and the user API (`shuttle_pub`, `shuttle_sub`, `shuttle_handle`, `shuttle_trigger`, `shuttle_mailbox`). |
+| `sv/shuttle_pkg.sv` | The SV-side package: the DPI import/export declarations, the constants, the subscription registry, and the user API (`shuttle_pub`, `shuttle_requester`, `shuttle_call`, `shuttle_sub`, `shuttle_handle`, `shuttle_trigger`, `shuttle_mailbox`). |
 
 Declarations and definitions are split along "who calls whom": SV calls into
 `dpi.cpp`, which calls `facade.cpp` as `shuttle::detail::*`; the broker calls
@@ -112,6 +112,8 @@ Imports — provided by libshuttle.so (dpi.cpp), called from SV
 | `shuttle_c_subscribe` | function | `(string topic, int caps, string type_tag, int sv_sid) → int` | Registers an external subscriber; `caps` is 1 (`SHUTTLE_CAP_BLOCKING`) or 2 (`SHUTTLE_CAP_NONBLOCKING`); `sv_sid` is the SV registry id, stored opaquely and returned verbatim at dispatch. Returns 0 on success. |
 | `shuttle_c_unsubscribe` | function | `(int sv_sid)` | Removes the external subscriber with this handle. |
 | `shuttle_c_set_retained` | function | `(string topic, bit retained)` | Enables/disables the retained latch on a topic. |
+| `shuttle_c_take_corr_id` | function | `() → int` | Allocates the next request/response correlation id from the counter `shuttle::Requester` uses; never 0. Kept C++-side so an SV requester and a C++ requester cannot mint the same id for two calls on one response topic. |
+| `shuttle_c_mark_responses` | function | `(string topic) → int` | Claims `topic` as a response channel (same call `Requester` / `serve` make): from here on a blocking-entry subscription matching it is refused. Returns 0 on success, 1 on failure (`shuttle_c_last_error`). |
 | `shuttle_c_last_error` | function | `() → string` | The most recent error message on this process (the error channel for every entry that reports failure as a return code). |
 | `shuttle_c_frame_len` | function | `() → int` | Frame-pull protocol: byte length of the frame parked in `g_frame`. |
 | `shuttle_c_frame_qword` | function | `(int index) → longint` | Frame-pull protocol: the index-th 8-byte chunk, little-endian within the qword. |
@@ -191,8 +193,8 @@ The consequences:
   `WeaveScopeGuard` / `SHUTTLE_WEAVE_SV_PACKAGE` approach was deleted precisely
   because importing weave's exports from dpi.cpp would bypass weave's own
   guard and re-couple shuttle to weave's package layout.
-- Entries that never call an export need no guard: `shuttle_c_set_retained`
-  and the read-only queries (`shuttle_c_pub_done` / `_pub_stat` / `_pub_error`,
+- Entries that never call an export need no guard: `shuttle_c_set_retained`,
+  `shuttle_c_take_corr_id`, `shuttle_c_mark_responses`, and the read-only queries (`shuttle_c_pub_done` / `_pub_stat` / `_pub_error`,
   and the frame-pull pair, which only runs inside an export body already under
   a guard).
 - The package name itself can be overridden with `-DSHUTTLE_SV_PACKAGE=`; only

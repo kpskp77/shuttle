@@ -91,6 +91,22 @@ module shuttle_demo;
     endtask
   endclass
 
+  // ── Responder for the requester section: answers in its nonblocking entry and hands the request's
+  //    frame header to `pub.reply`, which echoes meta.corr_id — the answer never mentions the id ──
+  class UartEchoNb implements shuttle_sink_nb;
+    shuttle_pub #(UartTx) pub;
+    function new(string resp_topic);
+      pub = new (resp_topic);
+    endfunction
+    virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
+      UartTx req  = UartTx::unpack(payload);
+      UartTx resp = new();
+      resp.addr = req.addr;
+      resp.data = req.data + 1;
+      void'(pub.reply(resp, meta));
+    endfunction
+  endclass
+
   // ── Subscriber: multiple interface-class implementations, no single-inheritance slot spent ────────────────────
   // implements shuttle_sink     → blocking entry (export task), registered via shuttle_subscribe:
   //                              invoked by the delivery units of `serial`/`concurrent` and the defer section of `publish_now`;
@@ -263,6 +279,43 @@ module shuttle_demo;
       cap.recv(got_ok, payload, meta, 0);  // second queued frame is still delivered
       cap.recv(got_ok, payload, meta, 0);  // now drained and closed
       if (got_ok != 0) $error("mailbox: recv after close must report ok == 0");
+    end
+
+    // ── Requester: request/response with a correlation id ("ask the peer and wait for its answer") ──────
+    // Counterpart of the C++ shuttle::Requester in ../cpp/request_response_demo.cpp. The id comes from
+    // shuttle_c_take_corr_id() — the same counter C++ draws from — and every reply is routed back by it,
+    // so two in-flight calls cannot mix up their answers. The response topic is claimed as a response
+    // channel first, exactly like the C++ side, which is why a blocking observer there would be refused.
+    begin
+      automatic UartEchoNb                          svc  = new ("uart0.rpc.resp");
+      automatic shuttle_sub                         ssub = shuttle_subscribe_nb("uart0.rpc.req", svc,
+                                                                              "UartTx");
+      automatic shuttle_requester #(UartTx, UartTx) rq   = new ("uart0.rpc.req", "uart0.rpc.resp");
+      automatic UartTx                              each[$];
+      automatic shuttle_call #(UartTx)              call;
+      automatic UartTx                              answer;
+      automatic bit                                 got_ok;
+
+      if (!rq.valid()) $error("requester: %0s", rq.last_error());
+      tx.addr = 32'h40;
+      tx.data = 32'h1000;
+
+      // send_now + a nonblocking responder: the whole round trip runs on this stack, so the answer is
+      // already queued when send_now returns
+      call = rq.send_now(tx);
+      if (call == null || call.queued() != 1)
+        $error("requester: the nonblocking responder must answer inside send_now");
+      call.recv(got_ok, answer, 1_000_000);  // 1us
+      if (got_ok != 1 || answer == null || answer.data != 32'h1001)
+        $error("requester: wrong answer");
+
+      // serial flavor: the request travels the background chain, so the call waits on its own event;
+      // wait_all expects one answer per target of the request frame
+      call = rq.send_serial(tx);
+      call.wait_all(each, 1_000_000);  // 1us
+      if (each.size() != 1 || each[0].data != 32'h1001) $error("requester: serial answer");
+      $display("[rpc] corr_id=%0d answer=0x%08h", call.corr_id(), each[0].data);
+      ssub.unsubscribe();
     end
 
     // ── Unsubscribe (idempotent) ──────────────────────────────────────────────────────

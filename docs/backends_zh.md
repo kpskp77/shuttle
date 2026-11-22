@@ -47,7 +47,7 @@ svdpi 后端是唯一带外部订阅者通道的构建，由四块关注点严�
 | `src/backend/svdpi/facade.cpp` | 外部门面：`ext_*`（字节帧发布、外部订阅者注册）与 `pub_*`（按 `pub_id` 的查询/等待）。只做 broker 编排；不认识 DPI。 |
 | `src/backend/svdpi/bridge.cpp` | `detail::backend` 实现：`dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery` 加帧拉取通道。 |
 | `src/backend/svdpi/svdpi_internal.hpp` | 目录私有头：`SvScopeGuard`、`FrameContext`、`g_frame`、线上编码常量、`ext_*`/`pub_*` 声明。 |
-| `sv/shuttle_pkg.sv` | SV 侧包：DPI import/export 声明、常量、订阅注册表与用户 API（`shuttle_pub`、`shuttle_sub`、`shuttle_handle`、`shuttle_trigger`、`shuttle_mailbox`）。 |
+| `sv/shuttle_pkg.sv` | SV 侧包：DPI import/export 声明、常量、订阅注册表与用户 API（`shuttle_pub`、`shuttle_requester`、`shuttle_call`、`shuttle_sub`、`shuttle_handle`、`shuttle_trigger`、`shuttle_mailbox`）。 |
 
 声明与定义按"谁调用谁"切开：SV 调进 `dpi.cpp`，后者以 `shuttle::detail::*` 的名义调用
 `facade.cpp`；broker 经 `src/backend/backend.hpp` 的 5 入口契约调用 `bridge.cpp`；
@@ -92,6 +92,8 @@ Import——由 libshuttle.so 提供（dpi.cpp），SV 侧调用（`shuttle_pkg.
 | `shuttle_c_subscribe` | function | `(string topic, int caps, string type_tag, int sv_sid) → int` | 注册外部订阅者；`caps` 为 1（`SHUTTLE_CAP_BLOCKING`）或 2（`SHUTTLE_CAP_NONBLOCKING`）；`sv_sid` 是 SV 注册表 id，不透明存储、派发时原样带回。成功返回 0。 |
 | `shuttle_c_unsubscribe` | function | `(int sv_sid)` | 按句柄删除外部订阅者。 |
 | `shuttle_c_set_retained` | function | `(string topic, bit retained)` | 开关某 topic 的 retained 锁存器。 |
+| `shuttle_c_take_corr_id` | function | `() → int` | 从 `shuttle::Requester` 用的那个计数器里取下一个请求/响应关联 id，绝不返回 0。留在 C++ 侧，SV 请求者与 C++ 请求者才不会在同一响应 topic 上给两个调用发出同一个 id。 |
+| `shuttle_c_mark_responses` | function | `(string topic) → int` | 把 `topic` 标记为响应通道（`Requester` / `serve` 调的是同一处）：此后匹配它的阻塞入口订阅被拒绝。成功返回 0，失败返回 1（见 `shuttle_c_last_error`）。 |
 | `shuttle_c_last_error` | function | `() → string` | 本进程最近的错误信息（每个以返回码报错的入口的错误通道）。 |
 | `shuttle_c_frame_len` | function | `() → int` | 帧拉取协议：停放在 `g_frame` 的帧的字节长度。 |
 | `shuttle_c_frame_qword` | function | `(int index) → longint` | 帧拉取协议：第 index 个 8 字节块，qword 内小端。 |
@@ -158,7 +160,8 @@ VCS 2018.09 上实测：SV 进程调用过返回 `string` 的 import（如 `shut
   为 `weave_pkg` 切作用域；早年的 `WeaveScopeGuard` / `SHUTTLE_WEAVE_SV_PACKAGE` 方案
   被删，正因为从 dpi.cpp import weave 的 export 会绕过 weave 自己的守卫，并把 shuttle
   重新耦合到 weave 的包布局上。
-- 从不调 export 的条目不需要守卫：`shuttle_c_set_retained` 与只读查询
+- 从不调 export 的条目不需要守卫：`shuttle_c_set_retained`、`shuttle_c_take_corr_id`、
+  `shuttle_c_mark_responses` 与只读查询
   （`shuttle_c_pub_done` / `_pub_stat` / `_pub_error`，以及帧拉取对——它只运行在已经
   处于守卫之下的 export 函数体内）。
 - 包名本身可用 `-DSHUTTLE_SV_PACKAGE=` 覆盖；只有 shuttle 自己的包需要它。

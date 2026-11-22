@@ -1,6 +1,31 @@
 `ifndef SHUTTLE_PUB_SVH
 `define SHUTTLE_PUB_SVH
 
+// ── Shared wire helpers ────────────────────────────────────────────────
+// Used by shuttle_pub and shuttle_requester: both need the same conversion to
+// the DPI open-array form and the same trigger scalars.
+
+// Queue → dynamic array (DPI open-array parameters require dynamic arrays;
+// VCS does not support unpacked arrays as function return types)
+function automatic void shuttle_q2a(const ref byte q[$], output byte a[]);
+  a = new [q.size()];
+  foreach (q[i]) a[i] = q[i];
+endfunction
+
+// Trigger → (trig_kind, trig_arg, trig_name) scalars; null means start
+// immediately
+function automatic void shuttle_trig_scalars(shuttle_trigger trig, output int kind,
+                                            output longint arg, output string name);
+  kind = SHUTTLE_TRIG_NONE;
+  arg  = 0;
+  name = "";
+  if (trig != null) begin
+    kind = trig.kind;
+    arg  = trig.arg;
+    name = trig.edge_name;
+  end
+endfunction
+
 // ── Typed publisher ────────────────────────────────────────────────────
 // The type parameter T must satisfy the message-class convention at the top
 // of this file (pack() + localparam type_tag).
@@ -8,13 +33,6 @@ class shuttle_pub #(type T = byte);
   local string topic_;
   function new(string topic);
     topic_ = topic;
-  endfunction
-
-  // Queue → dynamic array (DPI open-array parameters require dynamic arrays;
-  // VCS does not support unpacked arrays as function return types)
-  local function automatic void q2a(const ref byte q[$], output byte a[]);
-    a = new [q.size()];
-    foreach (q[i]) a[i] = q[i];
   endfunction
 
   // ── Publish trio: names correspond 1:1 to publish_now / publish_serial /
@@ -26,20 +44,7 @@ class shuttle_pub #(type T = byte);
   local function void pack_payload(T msg, output byte payload[]);
     byte q[$];
     msg.pack(q);
-    q2a(q, payload);
-  endfunction
-
-  // Trigger → (trig_kind, trig_arg) scalars; null means start immediately
-  local function void trig_scalars(shuttle_trigger trig, output int kind, output longint arg,
-                                  output string name);
-    kind = SHUTTLE_TRIG_NONE;
-    arg  = 0;
-    name = "";
-    if (trig != null) begin
-      kind = trig.kind;
-      arg  = trig.arg;
-      name = trig.edge_name;
-    end
+    shuttle_q2a(q, payload);
   endfunction
 
   // pub_id → handle; returns null on failure. loud=1 additionally prints $error.
@@ -86,7 +91,7 @@ class shuttle_pub #(type T = byte);
     int kind;
     longint arg;
     string name;
-    trig_scalars(trig, kind, arg, name);
+    shuttle_trig_scalars(trig, kind, arg, name);
     pack_payload(msg, payload);
     return wrap(shuttle_c_publish_serial(topic_, T::type_tag, payload, kind, arg, name, 0),
                 "serial", 1'b1);
@@ -99,7 +104,7 @@ class shuttle_pub #(type T = byte);
     int kind;
     longint arg;
     string name;
-    trig_scalars(trig, kind, arg, name);
+    shuttle_trig_scalars(trig, kind, arg, name);
     pack_payload(msg, payload);
     return wrap(shuttle_c_publish_concurrent(topic_, T::type_tag, payload, kind, arg, name, 0),
                 "concurrent", 1'b1);
