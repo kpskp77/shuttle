@@ -1,5 +1,5 @@
-`ifndef SHUTTLE_SUBSCRIBE_SVH
-`define SHUTTLE_SUBSCRIBE_SVH
+`ifndef SHUTTLE_SUBSCRIPTION_SVH
+`define SHUTTLE_SUBSCRIPTION_SVH
 
 // ── Callback interfaces: existing classes implement them to plug in, without
 //    spending the single-inheritance slot ──────────────────────────────────
@@ -79,7 +79,7 @@ class shuttle_registry;
 endclass
 
 // ── Subscription handle ────────────────────────────────────────────────
-class shuttle_sub;
+class shuttle_subscription;
   local int id_;
   local bit active_;
   function new(int id);
@@ -117,11 +117,11 @@ endclass
 // Internal: shared implementation of the two public registration functions
 // (VCS 2018.09 rejects local functions inside packages, so this is not
 // declared local; the naming convention marks it internal)
-function automatic shuttle_sub shuttle_register(string topic, shuttle_sink s,
+function automatic shuttle_subscription shuttle_register(string topic, shuttle_sink s,
                                                 shuttle_sink_nb snb, string type_tag,
                                                 int caps);
   int                   sid = shuttle_registry::add(s, snb);
-  automatic shuttle_sub sub;
+  automatic shuttle_subscription sub;
   // The SV-local id goes to C++ as sv_sid and comes back verbatim at
   // dispatch time; neither side maintains a mapping.
   if (shuttle_c_subscribe(topic, caps, type_tag, sid) != 0) begin
@@ -134,15 +134,15 @@ function automatic shuttle_sub shuttle_register(string topic, shuttle_sink s,
 endfunction
 
 // blocking entry (SV: export task): ≙ C++ subscribe(topic, fn)
-function automatic shuttle_sub shuttle_subscribe(string topic, shuttle_sink cb,
+function automatic shuttle_subscription shuttle_subscribe(string topic, shuttle_sink cb,
                                                  string type_tag = "");
   return shuttle_register(topic, cb, null, type_tag, SHUTTLE_CAP_BLOCKING);
 endfunction
 
 // nonblocking entry (SV: export function): ≙ C++ subscribe(topic, nb(fn))
-function automatic shuttle_sub shuttle_subscribe_nb(string topic, shuttle_sink_nb cb,
+function automatic shuttle_subscription shuttle_subscribe_nb(string topic, shuttle_sink_nb cb,
                                                     string type_tag = "");
   return shuttle_register(topic, null, cb, type_tag, SHUTTLE_CAP_NONBLOCKING);
 endfunction
 
-`endif  // SHUTTLE_SUBSCRIBE_SVH
+`endif  // SHUTTLE_SUBSCRIPTION_SVH

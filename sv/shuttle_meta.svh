@@ -8,7 +8,7 @@ class shuttle_meta;
   longint topic_seq;
   longint time_fs;
   // Correlation id of this frame, assigned by the publisher (0 = uncorrelated).
-  // Echo it when publishing a response to a request (see `shuttle_pub::publish_*`).
+  // Echo it when publishing a response to a request (see `shuttle_publisher::publish_*`).
   int unsigned corr_id;
   function new(string topic_name, string type_tag, longint topic_seq, longint time_fs,
                int unsigned corr_id = 0);

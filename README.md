@@ -57,7 +57,7 @@ the differences are listed under [model differences](#model-differences-versus-p
 | `Publication` handle counters | — (no counterpart) | per-frame: targets / finished / skipped / deferred / retired / failures |
 | `Trigger` (`after(event/task/duration/edge)`, `after_all/any`) | asyncio-style scheduling delays | when a background publish may start |
 | `Mailbox<T>` | mailbox / queue | a nonblocking subscriber with its own bounded queue; overflow policy per mailbox |
-| `Requester` / `serve` (SV: `shuttle_requester` / `shuttle_pub::reply`) | request/response over two subjects | correlation id rides in the frame header (`Meta::corr_id`), not in your payload; one id counter and one response-topic mark serve both languages |
+| `Requester` / `serve` (SV: `shuttle_requester` / `shuttle_publisher::reply`) | request/response over two subjects | correlation id rides in the frame header (`Meta::corr_id`), not in your payload; one id counter and one response-topic mark serve both languages |
 
 ### Model differences (versus plain pub-sub, must read)
 
@@ -115,8 +115,8 @@ class monitor implements shuttle_sink;                       // blocking entry
   endtask
 endclass
 
-shuttle_sub sub = shuttle_subscribe("uart0.tx", mon, UartTx::type_tag);
-shuttle_pub #(UartTx) pub = new("uart0.tx");
+shuttle_subscription sub = shuttle_subscribe("uart0.tx", mon, UartTx::type_tag);
+shuttle_publisher #(UartTx) pub = new("uart0.tx");
 shuttle_handle h = pub.publish_serial(tx);
 h.wait_done();                                               // suspends this SV process
 ```

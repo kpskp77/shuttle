@@ -20,7 +20,7 @@
 //     `shuttle_reflect_end
 //   endclass
 //
-// The macros generate the message-class convention shuttle_pub#(T) expects:
+// The macros generate the message-class convention shuttle_publisher #(T) expects:
 //   localparam string type_tag = "Txn";   // must equal the C++ struct name
 //   function automatic void pack(output byte q[$]);
 //   static function automatic Txn unpack(const ref byte b[]);   // whole-frame (sinks)

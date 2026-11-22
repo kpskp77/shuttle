@@ -29,14 +29,14 @@
 
 ```
                       ┌──────────────────────────── user code ────────────────────────────┐
-                      │  C++: Publisher<T> subscribe<T> Publication Subscription Trigger    │
-                      │  SV : shuttle_pub#(T) shuttle_subscribe shuttle_sink(_nb) handle    │
+                      │  C++: Publisher<T> subscribe<T> Publication Subscription Trigger  │
+                      │  SV : shuttle_publisher #(T) shuttle_subscribe sink(_nb) handle   │
                       └───────────────┬───────────────────────────────┬───────────────────┘
                                       │ public headers (include/shuttle/*.hpp) │ SV package (sv/shuttle_pkg.sv)
         ┌─────────────────────────────▼──────────┐        ┌───────────▼───────────────────┐
         │  broker core (src/broker/)              │        │ shuttle_pkg.sv                │
         │  Topic table / wildcards / type binding │        │  registry / sub / handle       │
-        │  three publish schedulings / retained   │◀──DPI─▶│  trigger / event / pub#(T)     │
+        │  three publish schedulings / retained   │◀──DPI─▶│  trigger / event / publisher   │
         │  C++ API and handles: src/*.cpp         │        │  frame pull + {>>{}} packing   │
         └───────┬───────────────────────▲─────────┘        └───────────────────────────────┘
                 │ backend-agnostic        │ backend boundary (5-entry detail::backend facade,
@@ -186,7 +186,7 @@ per-订阅者变体。
   `$error`），丢弃时调 `shuttle_c_sub_retired`；`Broker::deliver` 在 export 返回后通过
   `take_retired_delivery()` 把这次投递转成 retired。
 
-两个来源不相交、谁也替代不了谁：C++ 标志看不到 SV 侧 `shuttle_sub::unsubscribe()`（它
+两个来源不相交、谁也替代不了谁：C++ 标志看不到 SV 侧 `shuttle_subscription::unsubscribe()`（它
 直接删注册表条目），SV 报告也覆盖不到 C++ 订阅者。早期只有 SV 来源产生 `retired`、
 C++ 却真的投递给已退订回调——一种后端专属终态，属于范畴错误。反向方案（SV 侧也保住
 帧）被否决：它需要跨语言在途引用计数、以及 `unsubscribe()` 返回后仍在跑回调，两者都
@@ -299,7 +299,7 @@ void target_finished(const std::shared_ptr<PubState>& pub) {
 blocking *旁观*被禁。标记之前注册的 blocking 旁观者不做追溯拒绝——`publish_now` 路
 径已经让它们无害。
 
-回执用 `detail::pub_now`（SV `shuttle_pub::reply` 同理），绝不走 `publish_serial`：
+回执用 `detail::pub_now`（SV `shuttle_publisher::reply` 同理），绝不走 `publish_serial`：
 配上 `nb(handler)` 响应者与 `send_now()`，整个往返跑在请求方栈上——`send_now()` 返
 回时回执已在 `Call` 里（`call.queued() == 1`），零往返时延、不消耗仿真时间。
 `NowPolicy::defer` 只是给标记之前注册的 blocking 响应者兜底。因为回执不占链尾，旁观
@@ -310,7 +310,7 @@ blocking *旁观*被禁。标记之前注册的 blocking 旁观者不做追溯�
 `Meta::corr_id` 是请求-应答关联号：请求方分配、响应方回显、用来把回执路由回它的
 `Call`。它是 `Meta` 里唯一业务可写字段（其余由 broker 填）；`0` 表示"非关联交换"。
 公开发布三件套不暴露它——`Publisher::publish_*` 永远发 `corr_id = 0`；只有
-`Requester::send_*`、`serve` 与 SV `shuttle_pub::reply` 会写它（经由内部
+`Requester::send_*`、`serve` 与 SV `shuttle_publisher::reply` 会写它（经由内部
 `detail::pub_*` 的尾参数）。
 
 为什么不放进载荷——三条承重的理由：
@@ -347,8 +347,8 @@ SV，于是变成 DPI 入口：`shuttle_c_take_corr_id`（计数器是进程级 
 `send_*` 返回空调用而不抛异常，`recv`/`wait_*` 对超时与取消都用 `ok == 0` 作答（那里没有
 `TimeoutError` / `CancelledError`）。分发需要一个可持有句柄的订阅回调，而队列属于参数化类，
 所以 `shuttle_reply_target` 是一个非参数化基类，请求者覆写它的 `accept_response`。请求直接
-走发布 DPI 入口而不经 `shuttle_pub`——公开三件套故意没有 `corr_id` 参数，这也正是
-`shuttle_pub::reply` 绕开它的原因。取消是显式的（`cancel()`）：SV 没有 `weak_ptr`，调用方
+走发布 DPI 入口而不经 `shuttle_publisher`——公开三件套故意没有 `corr_id` 参数，这也正是
+`shuttle_publisher::reply` 绕开它的原因。取消是显式的（`cancel()`）：SV 没有 `weak_ptr`，调用方
 只是丢掉的槽不可见，`prune()` 只能清掉已取消的调用，它们的回执计进 `stale_responses()`。
 
 ### Mailbox = 订阅者 + 队列，不是新的投递机制
@@ -429,7 +429,7 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 
 `Publication` 是可拷贝的 `shared_ptr<Impl>`。`Subscription` 是 `shared_ptr<Impl>`，
 由*最后一次*析构退订（`Impl::~Impl` → `Broker::remove_sub`）；`unsubscribe()` 幂等。SV
-的 `shuttle_sub` 是 id 对加一个 `active_` 标志，析构不退订（SV 没有确定性析构），SV
+的 `shuttle_subscription` 是 id 对加一个 `active_` 标志，析构不退订（SV 没有确定性析构），SV
 的 `shuttle_handle` 通过 `pub_id` 镜像 `Publication` 的方法。"退订立即生效"是双向的：
 之后的帧不再选中该订阅者，已快照的帧把它跳过并记为 retired。
 

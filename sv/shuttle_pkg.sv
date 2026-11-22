@@ -3,7 +3,7 @@
 //
 // This file is an AGGREGATOR: the package body is split into functional
 // fragments (`include`d below, one concern per file — dpi / constants /
-// meta / subscribe / mailbox / publication / pub / requester / dispatch /
+// meta / subscription / mailbox / publication / publisher / requester / dispatch /
 // codec), so each part can be read and reviewed on its own. Compile THIS file
 // only; the fragments are not standalone compilation units. The shuttle_reflect_begin
 // / shuttle_field / shuttle_reflect_end macros (sv/shuttle_reflect.svh) are
@@ -33,7 +33,7 @@
 //   is then decided by which registration function is called — for both,
 //   register twice.
 //
-// Message class convention (no base class to inherit; used by shuttle_pub#(T)).
+// Message class convention (no base class to inherit; used by shuttle_publisher #(T)).
 // Hand-written codecs stream-pack in declaration order (big-endian wire order):
 //   class Txn;
 //     int unsigned addr;
@@ -82,10 +82,10 @@ package shuttle_pkg;
   `include "shuttle_dpi.svh"
   `include "shuttle_constants.svh"
   `include "shuttle_meta.svh"
-  `include "shuttle_subscribe.svh"
+  `include "shuttle_subscription.svh"
   `include "shuttle_mailbox.svh"
   `include "shuttle_publication.svh"
-  `include "shuttle_pub.svh"
+  `include "shuttle_publisher.svh"
   `include "shuttle_requester.svh"
   `include "shuttle_dispatch.svh"
   `include "shuttle_codec.svh"

@@ -16,7 +16,7 @@
 //   endclass
 //
 // BEGIN opens a single dual-mode `__codec` (packing switch) and emits the
-// message-class convention shuttle_pub#(T) expects (type_tag / pack / unpack)
+// message-class convention shuttle_publisher #(T) expects (type_tag / pack / unpack)
 // plus the codec-surface entry points used when this class is a nested field
 // of another message (pack_obj / unpack_into). Each FIELD is one (field,
 // codec) pair; the codec token must name a class exposing the uniform codec

@@ -60,7 +60,7 @@ consists of four pieces with strictly separated concerns:
 | `src/backend/svdpi/facade.cpp` | The external facade: `ext_*` (byte-frame publish, external-subscription registration) and `pub_*` (per-`pub_id` queries/waits). Broker orchestration only; no DPI knowledge. |
 | `src/backend/svdpi/bridge.cpp` | The `detail::backend` implementation: `dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery` plus the frame-pull channel. |
 | `src/backend/svdpi/svdpi_internal.hpp` | Private header of the directory: `SvScopeGuard`, `FrameContext`, `g_frame`, the on-wire codes, and the `ext_*`/`pub_*` declarations. |
-| `sv/shuttle_pkg.sv` | The SV-side package: the DPI import/export declarations, the constants, the subscription registry, and the user API (`shuttle_pub`, `shuttle_requester`, `shuttle_call`, `shuttle_sub`, `shuttle_handle`, `shuttle_trigger`, `shuttle_mailbox`). |
+| `sv/shuttle_pkg.sv` | The SV-side package: the DPI import/export declarations, the constants, the subscription registry, and the user API (`shuttle_publisher`, `shuttle_requester`, `shuttle_call`, `shuttle_subscription`, `shuttle_handle`, `shuttle_trigger`, `shuttle_mailbox`). |
 
 Declarations and definitions are split along "who calls whom": SV calls into
 `dpi.cpp`, which calls `facade.cpp` as `shuttle::detail::*`; the broker calls
@@ -244,7 +244,7 @@ integers:
 - `$error` on the SV side never propagates back to C++: an import that the SV
   code called successfully returns successfully. Interfaces that need a strict
   error channel must return it explicitly (which is why `shuttle_c_subscribe`
-  and the publish imports answer with codes, and why `shuttle_pub::publish_now`
+  and the publish imports answer with codes, and why `shuttle_publisher::publish_now`
   stays silent on failure while `publish_serial` / `publish_concurrent` print
   immediately — fire-and-forget async interfaces have no later moment to
   surface an error).

@@ -139,7 +139,7 @@ class shuttle_mailbox_sink implements shuttle_sink_nb;
 endclass
 
 class shuttle_mailbox;
-  local shuttle_sub         sub_;   // nonblocking registration
+  local shuttle_subscription         sub_;   // nonblocking registration
   local shuttle_mailbox_sink sink_; // owns the queue; must outlive the registration
 
   function new(string pattern, string type_tag = "", int capacity = 0,

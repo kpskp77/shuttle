@@ -159,7 +159,7 @@ module shuttle_tests;
     virtual task invoke(input byte payload[], input shuttle_meta meta);
       XRqReq                 req  = XRqReq::unpack(payload);
       XRqResp                resp = new();
-      shuttle_pub #(XRqResp) pub = new("rq.xlang.resp");
+      shuttle_publisher #(XRqResp) pub = new("rq.xlang.resp");
       resp.data = req.op * 2 + 1;
       pub.reply(resp, meta);
     endtask
@@ -169,7 +169,7 @@ module shuttle_tests;
   //    frame header to `pub.reply`, which echoes meta.corr_id for us ────────────────────────
   class SvRqNb implements shuttle_sink_nb;
     int                    count = 0;
-    shuttle_pub #(XRqResp) pub;
+    shuttle_publisher #(XRqResp) pub;
     function new(string resp_topic);
       pub   = new (resp_topic);
       count = 0;
@@ -244,8 +244,8 @@ module shuttle_tests;
   task automatic case_now_sync();
     automatic Rec                 rec = new();
     // `now` only delivers to nonblocking entries → register via shuttle_subscribe_nb
-    automatic shuttle_sub         sub = shuttle_subscribe_nb("sv.t.now", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.now");
+    automatic shuttle_subscription         sub = shuttle_subscribe_nb("sv.t.now", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.now");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 32'h101;
@@ -262,8 +262,8 @@ module shuttle_tests;
   // ── `publish_now`: blocking-entry subscribers → reject errors / skip skips (the default is defer) ─────
   task automatic case_now_blocking();
     automatic BlkRec              rec = new();
-    automatic shuttle_sub         sub = shuttle_subscribe("sv.t.nowblk", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.nowblk");
+    automatic shuttle_subscription         sub = shuttle_subscribe("sv.t.nowblk", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.nowblk");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 1;
@@ -281,8 +281,8 @@ module shuttle_tests;
   // ── `publish_serial`: background single-process, in-order callbacks, per-topic FIFO ──────────────────────────
   task automatic case_publish_serial();
     automatic Rec                 rec = new();
-    automatic shuttle_sub         sub = shuttle_subscribe("sv.t.seq", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.seq");
+    automatic shuttle_subscription         sub = shuttle_subscribe("sv.t.seq", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.seq");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     for (int i = 1; i <= 3; i++) begin
@@ -304,9 +304,9 @@ module shuttle_tests;
   task automatic case_publish_concurrent();
     automatic Rec                 a   = new();
     automatic Rec                 b   = new();
-    automatic shuttle_sub         sa  = shuttle_subscribe("sv.t.par", a, "XMsg");
-    automatic shuttle_sub         sb  = shuttle_subscribe("sv.t.par", b, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.par");
+    automatic shuttle_subscription         sa  = shuttle_subscribe("sv.t.par", a, "XMsg");
+    automatic shuttle_subscription         sb  = shuttle_subscribe("sv.t.par", b, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.par");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 32'h300;
@@ -325,8 +325,8 @@ module shuttle_tests;
   //    has only this one entry, and delivery uses it) ──
   task automatic case_nb_in_background();
     automatic NbRec               rec = new();
-    automatic shuttle_sub         sub = shuttle_subscribe_nb("sv.t.nbbg", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.nbbg");
+    automatic shuttle_subscription         sub = shuttle_subscribe_nb("sv.t.nbbg", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.nbbg");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 32'h55;
@@ -344,9 +344,9 @@ module shuttle_tests;
   // This is C++ subscribe(fn) + subscribe(nb(fn)): two subscribers, two different entries.
   task automatic case_dual_registration();
     automatic Rec                 rec  = new();
-    automatic shuttle_sub         st   = shuttle_subscribe   ("sv.t.dual", rec, "XMsg");  // blocking entry
-    automatic shuttle_sub         snb  = shuttle_subscribe_nb("sv.t.dual", rec, "XMsg");  // nonblocking entry
-    automatic shuttle_pub #(XMsg) pub  = new("sv.t.dual");
+    automatic shuttle_subscription         st   = shuttle_subscribe   ("sv.t.dual", rec, "XMsg");  // blocking entry
+    automatic shuttle_subscription         snb  = shuttle_subscribe_nb("sv.t.dual", rec, "XMsg");  // nonblocking entry
+    automatic shuttle_publisher #(XMsg) pub  = new("sv.t.dual");
     automatic XMsg                m    = new();
     automatic shuttle_handle      h;
     m.addr = 32'h77;
@@ -378,8 +378,8 @@ module shuttle_tests;
   // ── Deferred trigger: no delivery before the condition holds, and the Publication stays incomplete ───────────────
   task automatic case_trigger();
     automatic Rec                 rec = new();
-    automatic shuttle_sub         sub = shuttle_subscribe("sv.t.trig", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.trig");
+    automatic shuttle_subscription         sub = shuttle_subscribe("sv.t.trig", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.trig");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 7;
@@ -395,12 +395,12 @@ module shuttle_tests;
   // ── retained: replay the latest frame when a new subscriber registers ──────────────────────────────
   task automatic case_retained();
     automatic Rec                 first = new();
-    automatic shuttle_sub         s1    = shuttle_subscribe("sv.t.ret", first, "XMsg");
-    automatic shuttle_pub #(XMsg) pub   = new("sv.t.ret");
+    automatic shuttle_subscription         s1    = shuttle_subscribe("sv.t.ret", first, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub   = new("sv.t.ret");
     automatic XMsg                m     = new();
     automatic shuttle_handle      h;
     automatic Rec                 late;
-    automatic shuttle_sub         s2;
+    automatic shuttle_subscription         s2;
     pub.set_retained(1);
     m.addr = 32'hACE;
     m.data = 32'h1;
@@ -426,9 +426,9 @@ module shuttle_tests;
   // ── Multiple publishers on one topic: both deliver, seq is globally monotonic within the topic ─────────────
   task automatic case_multi_pub();
     automatic Rec                 rec = new();
-    automatic shuttle_sub         sub = shuttle_subscribe_nb("sv.t.multi", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pa  = new("sv.t.multi");
-    automatic shuttle_pub #(XMsg) pb  = new("sv.t.multi");
+    automatic shuttle_subscription         sub = shuttle_subscribe_nb("sv.t.multi", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) pa  = new("sv.t.multi");
+    automatic shuttle_publisher #(XMsg) pb  = new("sv.t.multi");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 32'hA;
@@ -448,9 +448,9 @@ module shuttle_tests;
   task automatic case_retired();
     automatic Rec                 a   = new();
     automatic Rec                 b   = new();
-    automatic shuttle_sub         sa  = shuttle_subscribe("sv.t.retired", a, "XMsg");
-    automatic shuttle_sub         sb  = shuttle_subscribe("sv.t.retired", b, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.retired");
+    automatic shuttle_subscription         sa  = shuttle_subscribe("sv.t.retired", a, "XMsg");
+    automatic shuttle_subscription         sb  = shuttle_subscribe("sv.t.retired", b, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.retired");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 9;
@@ -471,11 +471,11 @@ module shuttle_tests;
   task automatic case_bind_conflict();
     automatic Rec                 rec   = new();
     automatic Rec                 other = new();
-    automatic shuttle_sub         subx  = shuttle_subscribe_nb("sv.t.late", rec, "XMsg");
-    automatic shuttle_sub         suby  = shuttle_subscribe_nb("sv.t.late2", other, "YMsg");
-    automatic shuttle_pub #(XMsg) pubx  = new("sv.t.late");
-    automatic shuttle_pub #(YMsg) puby  = new("sv.t.late");
-    automatic shuttle_pub #(XMsg) pubx2 = new("sv.t.late2");
+    automatic shuttle_subscription         subx  = shuttle_subscribe_nb("sv.t.late", rec, "XMsg");
+    automatic shuttle_subscription         suby  = shuttle_subscribe_nb("sv.t.late2", other, "YMsg");
+    automatic shuttle_publisher #(XMsg) pubx  = new("sv.t.late");
+    automatic shuttle_publisher #(YMsg) puby  = new("sv.t.late");
+    automatic shuttle_publisher #(XMsg) pubx2 = new("sv.t.late2");
     automatic XMsg                mx    = new();
     automatic XMsg                mx2   = new();
     automatic YMsg                my    = new();
@@ -503,8 +503,8 @@ module shuttle_tests;
   // Only the publish side is tested: `publish_now` fails silently (the reason goes through shuttle_c_last_error) instead of
   // $error-ing like serial/concurrent; subscription-pattern syntax is covered by case14 of the C++ broker_tests.
   task automatic case_bad_topic();
-    automatic shuttle_pub #(XMsg) bad = new("sv.t.bad.*");
-    automatic shuttle_pub #(XMsg) sib = new("sv.t.bad.ok");
+    automatic shuttle_publisher #(XMsg) bad = new("sv.t.bad.*");
+    automatic shuttle_publisher #(XMsg) sib = new("sv.t.bad.ok");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 1;
@@ -520,8 +520,8 @@ module shuttle_tests;
 
   task automatic case_unsubscribe();
     automatic Rec                 rec = new();
-    automatic shuttle_sub         sub = shuttle_subscribe_nb("sv.t.unsub", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.unsub");
+    automatic shuttle_subscription         sub = shuttle_subscribe_nb("sv.t.unsub", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.unsub");
     automatic XMsg                m   = new();
     automatic shuttle_handle      h;
     m.addr = 1;
@@ -538,12 +538,12 @@ module shuttle_tests;
   // ── Snapshot semantics of `publish_serial`: subscribers added after the publish call do not join this frame ───────────────────
   task automatic case_snapshot();
     automatic Rec                 first = new();
-    automatic shuttle_sub         s1    = shuttle_subscribe("sv.t.snap", first, "XMsg");
-    automatic shuttle_pub #(XMsg) pub   = new("sv.t.snap");
+    automatic shuttle_subscription         s1    = shuttle_subscribe("sv.t.snap", first, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub   = new("sv.t.snap");
     automatic XMsg                m     = new();
     automatic shuttle_handle      h;
     automatic Rec                 late;
-    automatic shuttle_sub         s2;
+    automatic shuttle_subscription         s2;
     m.addr = 32'h401;
     m.data = 0;
     h = pub.publish_serial(m, shuttle_trigger::after_delay(100_000_000));  // starts after 100ns
@@ -558,8 +558,8 @@ module shuttle_tests;
   // The ready broadcast is retained, so the C++ side may subscribe before or after it is published.
   task automatic case_rq_xlang();
     automatic SvRqSink            sink  = new();
-    automatic shuttle_sub         sub   = shuttle_subscribe("rq.xlang.req", sink, "XRqReq");
-    automatic shuttle_pub #(XMsg) ready = new("rq.xlang.ready");
+    automatic shuttle_subscription         sub   = shuttle_subscribe("rq.xlang.req", sink, "XRqReq");
+    automatic shuttle_publisher #(XMsg) ready = new("rq.xlang.ready");
     automatic XMsg                note  = new();
     note.addr = 32'h1;
     note.data = 32'h0;
@@ -571,9 +571,9 @@ module shuttle_tests;
   // ── Cross-language round trip: C++ side in tests/xlang_tests.cpp ────────────────────
   task automatic case_xlang();
     automatic Rec                 rec       = new();
-    automatic shuttle_sub         sub       = shuttle_subscribe("xlang.cpp2sv", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) ready_pub = new("xlang.sv_ready");
-    automatic shuttle_pub #(XMsg) to_cpp    = new("xlang.sv2cpp");
+    automatic shuttle_subscription         sub       = shuttle_subscribe("xlang.cpp2sv", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) ready_pub = new("xlang.sv_ready");
+    automatic shuttle_publisher #(XMsg) to_cpp    = new("xlang.sv2cpp");
     automatic XMsg                m         = new();
     automatic shuttle_handle      h;
     automatic bit                 ok;
@@ -614,7 +614,7 @@ module shuttle_tests;
   class MixedSink implements shuttle_sink;
     int                 count = 0;
     XMsg                last;
-    shuttle_pub #(XMsg) nested;
+    shuttle_publisher #(XMsg) nested;
 
     virtual task invoke(input byte payload[], input shuttle_meta meta);
       XMsg m = XMsg::unpack(payload);
@@ -630,10 +630,10 @@ module shuttle_tests;
   // [SV blocking entry, C++ blocking subscriber] - the ordering that used to break the identity.
   task automatic case_xlang_mixed();
     automatic MixedSink           sink  = new();
-    automatic shuttle_pub #(XMsg) ready = new("xlang.mixed.ready");
+    automatic shuttle_publisher #(XMsg) ready = new("xlang.mixed.ready");
     automatic XMsg                note  = new();
     automatic shuttle_handle      h;
-    automatic shuttle_sub         sub;
+    automatic shuttle_subscription         sub;
 
     sink.nested = new("xlang.mixed.mon");
     sub         = shuttle_subscribe("xlang.mixed.tx", sink, "XMsg");
@@ -664,9 +664,9 @@ module shuttle_tests;
   // announce readiness with a retained frame, so the C++ publish always has its target.
   task automatic case_xlang_nested();
     automatic NestRec               rec       = new();
-    automatic shuttle_sub           sub       = shuttle_subscribe("xlang.nest.cpp2sv", rec, "XTrack");
-    automatic shuttle_pub #(XTrack) ready_pub = new("xlang.nest.ready");
-    automatic shuttle_pub #(XTrack) to_cpp    = new("xlang.nest.sv2cpp");
+    automatic shuttle_subscription           sub       = shuttle_subscribe("xlang.nest.cpp2sv", rec, "XTrack");
+    automatic shuttle_publisher #(XTrack) ready_pub = new("xlang.nest.ready");
+    automatic shuttle_publisher #(XTrack) to_cpp    = new("xlang.nest.sv2cpp");
     automatic XTrack                m         = new();
     automatic shuttle_handle        h;
     automatic bit                   ok;
@@ -710,9 +710,9 @@ module shuttle_tests;
   // back proves the SV pack order is what Codec<XChain> expects.
   task automatic case_xlang_inherit();
     automatic InhRec               rec       = new();
-    automatic shuttle_sub          sub       = shuttle_subscribe("xlang.inherit.cpp2sv", rec, "XChain");
-    automatic shuttle_pub #(XChain) ready_pub = new("xlang.inherit.ready");
-    automatic shuttle_pub #(XChain) to_cpp    = new("xlang.inherit.sv2cpp");
+    automatic shuttle_subscription          sub       = shuttle_subscribe("xlang.inherit.cpp2sv", rec, "XChain");
+    automatic shuttle_publisher #(XChain) ready_pub = new("xlang.inherit.ready");
+    automatic shuttle_publisher #(XChain) to_cpp    = new("xlang.inherit.sv2cpp");
     automatic XChain               m         = new();
     automatic shuttle_handle       h;
     automatic bit                  ok;
@@ -754,7 +754,7 @@ module shuttle_tests;
   //    call, and the reply is routed back by that id ─────────────────────────────────
   task automatic case_sv_requester();
     automatic SvRqNb                               svc  = new ("sv.rq.resp");
-    automatic shuttle_sub                          ssub = shuttle_subscribe_nb("sv.rq.req", svc, "XRqReq");
+    automatic shuttle_subscription                          ssub = shuttle_subscribe_nb("sv.rq.req", svc, "XRqReq");
     automatic shuttle_requester #(XRqReq, XRqResp) rq   = new ("sv.rq.req", "sv.rq.resp");
     automatic XRqReq                               req  = new();
     automatic XRqResp                              resp;
@@ -861,11 +861,11 @@ module shuttle_tests;
   // Exercised through shuttle_c_wait_pub directly because shuttle_handle::wait_done() turns a
   // timeout into $error by design (this file never calls $error).
   task automatic case_wait_timeout();
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.timeout");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.timeout");
     automatic Rec                 rec = new();
     automatic XMsg                m   = new();
     automatic int                 st  = -1;
-    automatic shuttle_sub         sub;
+    automatic shuttle_subscription         sub;
     automatic shuttle_handle      h;
 
     sub = shuttle_subscribe("sv.t.timeout", rec, "XMsg");
@@ -891,7 +891,7 @@ module shuttle_tests;
     int             wait_status = -1;
     string          wait_error  = "";
     shuttle_handle  inner;
-    shuttle_pub #(XMsg) pub;
+    shuttle_publisher #(XMsg) pub;
 
     virtual task invoke(input byte payload[], input shuttle_meta meta);
       XMsg m = XMsg::unpack(payload);
@@ -914,8 +914,8 @@ module shuttle_tests;
   task automatic case_event();
     automatic weave_edge          ev  = new("sv.t.ev.edge");
     automatic Rec                 rec = new();
-    automatic shuttle_sub         sub = shuttle_subscribe("sv.t.ev", rec, "XMsg");
-    automatic shuttle_pub #(XMsg) pub = new("sv.t.ev");
+    automatic shuttle_subscription         sub = shuttle_subscribe("sv.t.ev", rec, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub = new("sv.t.ev");
     automatic XMsg                m   = new();
     m.addr = 32'hE0;
     m.data = 32'h0;
@@ -946,13 +946,13 @@ module shuttle_tests;
     automatic weave_edge          ev    = new("sv.t.ev.trig");
     automatic Rec                 early = new();
     automatic Rec                 late  = new();
-    automatic shuttle_sub         sub   = shuttle_subscribe("sv.t.ev.trig", early, "XMsg");
-    automatic shuttle_pub #(XMsg) pub   = new("sv.t.ev.trig");
+    automatic shuttle_subscription         sub   = shuttle_subscribe("sv.t.ev.trig", early, "XMsg");
+    automatic shuttle_publisher #(XMsg) pub   = new("sv.t.ev.trig");
     automatic XMsg                m     = new();
     automatic XMsg                m2    = new();
     automatic shuttle_handle      h;
     automatic shuttle_handle      h2;
-    automatic shuttle_sub         later;
+    automatic shuttle_subscription         later;
     m.addr  = 32'hA1;
     m2.addr = 32'hA2;
     h = pub.publish_serial(m, shuttle_trigger::after_edge(ev));
@@ -986,10 +986,10 @@ module shuttle_tests;
   // ── self-wait: a callback that publishes on its own topic and waits is diagnosed, not hung ──────
   task automatic case_self_wait();
     automatic SelfWaitSink        sink = new();
-    automatic shuttle_pub #(XMsg) pub  = new("sv.t.selfwait");
+    automatic shuttle_publisher #(XMsg) pub  = new("sv.t.selfwait");
     automatic XMsg                m    = new();
     automatic shuttle_handle      h;
-    automatic shuttle_sub         sub  = shuttle_subscribe("sv.t.selfwait", sink, "XMsg");
+    automatic shuttle_subscription         sub  = shuttle_subscribe("sv.t.selfwait", sink, "XMsg");
     sink.pub = pub;
     m.addr = 32'hD1;
     m.data = 32'h0;
@@ -1012,7 +1012,7 @@ module shuttle_tests;
   // ── Mailbox: subscription + queue, pure SV (weave_pkg's event primitives only) ──────────────────
   task automatic case_mailbox();
     automatic shuttle_mailbox     box    = new("sv.t.mbox");
-    automatic shuttle_pub #(XMsg) pub    = new("sv.t.mbox");
+    automatic shuttle_publisher #(XMsg) pub    = new("sv.t.mbox");
     automatic XMsg                m      = new();
     automatic byte                payload[];
     automatic shuttle_meta        meta;
@@ -1020,7 +1020,7 @@ module shuttle_tests;
     automatic XMsg                got;
     automatic shuttle_handle      h;
     automatic shuttle_mailbox     cap_box = new("sv.t.mboxcap", "", 2, SHUTTLE_OVERFLOW_DROP_NEWEST);
-    automatic shuttle_pub #(XMsg) pub2  = new("sv.t.mboxcap");
+    automatic shuttle_publisher #(XMsg) pub2  = new("sv.t.mboxcap");
 
     // nonblocking fill: publish_now delivers to the nonblocking entry synchronously
     m.addr = 32'h701;

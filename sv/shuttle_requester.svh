@@ -177,9 +177,9 @@ endclass
 class shuttle_requester #(type TReq, type TResp) extends shuttle_reply_target;
   local string                req_topic_;
   local string                resp_topic_;
-  local shuttle_pub #(TReq)   pub_;
+  local shuttle_publisher #(TReq)   pub_;
   local shuttle_response_sink sink_;
-  local shuttle_sub           sub_;
+  local shuttle_subscription           sub_;
   local shuttle_call #(TResp) calls_[int unsigned];
   local longint               stale_;
   local string                error_;

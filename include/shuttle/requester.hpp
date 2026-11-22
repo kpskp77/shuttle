@@ -27,7 +27,7 @@
 // subscriber may read it for logging. The public publish trio is deliberately untouched —
 // `Publisher::publish_now/publish_serial/publish_concurrent` take no corr_id and never will:
 // correlation is a request/response concept, so only the request/response objects
-// (Requester::send_*, serve, and SV `shuttle_pub::reply`) write it.
+// (Requester::send_*, serve, and SV `shuttle_publisher::reply`) write it.
 //
 // ── Counting replies ────────────────────────────────────────────────────
 // Nothing in the framework knows "how many replies to expect", so the count is

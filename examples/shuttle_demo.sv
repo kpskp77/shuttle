@@ -94,7 +94,7 @@ module shuttle_demo;
   // ── Responder for the requester section: answers in its nonblocking entry and hands the request's
   //    frame header to `pub.reply`, which echoes meta.corr_id — the answer never mentions the id ──
   class UartEchoNb implements shuttle_sink_nb;
-    shuttle_pub #(UartTx) pub;
+    shuttle_publisher #(UartTx) pub;
     function new(string resp_topic);
       pub = new (resp_topic);
     endfunction
@@ -134,9 +134,9 @@ module shuttle_demo;
   initial begin : demo
     automatic Monitor      mon = new();
     // The type_tag is validated against the topic's type binding at subscribe time; if a C++ Publisher<UartTx> has already bound it, they must match
-    automatic shuttle_sub  sub  = shuttle_subscribe   ("uart0.tx", mon, UartTx::type_tag);
-    automatic shuttle_sub  subn = shuttle_subscribe_nb("uart0.tx", mon, UartTx::type_tag);
-    automatic shuttle_pub #(UartTx) pub = new("uart0.tx");
+    automatic shuttle_subscription  sub  = shuttle_subscribe   ("uart0.tx", mon, UartTx::type_tag);
+    automatic shuttle_subscription  subn = shuttle_subscribe_nb("uart0.tx", mon, UartTx::type_tag);
+    automatic shuttle_publisher #(UartTx) pub = new("uart0.tx");
     automatic shuttle_handle h;
     automatic UartTx       tx  = new();
 
@@ -183,10 +183,10 @@ module shuttle_demo;
     pub.set_retained(1);
 
     // ── One-to-many: multiple publisher instances share the same topic and subscriber set ──────────────────
-    // (Same as C++: multiple shuttle_pub#(UartTx) instances all bind the "uart0.tx" type tag,
+    // (Same as C++: multiple shuttle_publisher #(UartTx) instances all bind the "uart0.tx" type tag,
     //  each publishes independently, and every subscriber independently receives every published frame)
     begin
-      automatic shuttle_pub #(UartTx) pub_b = new("uart0.tx");
+      automatic shuttle_publisher #(UartTx) pub_b = new("uart0.tx");
       tx.addr = 32'h15; tx.data = 32'h55;
       begin
         automatic shuttle_handle hn = pub_b.publish_now(tx, SHUTTLE_NOW_SKIP);
@@ -201,7 +201,7 @@ module shuttle_demo;
     // run silently — a wrong nested field fails the demo through $error, like everywhere above.
     begin
       automatic BurstRec              brec = new();
-      automatic shuttle_sub           bsub = shuttle_subscribe("uart0.burst", brec, UartBurst::type_tag);
+      automatic shuttle_subscription           bsub = shuttle_subscribe("uart0.burst", brec, UartBurst::type_tag);
       // The C++ demo publishes retained, but stay bounded: a broken handshake must fail loudly,
       // not hang the demo.
       for (int i = 0; i < 5000 && brec.count < 1; i++) #(10us);
@@ -220,7 +220,7 @@ module shuttle_demo;
     // field names never appear in the derived class, only `shuttle_base.
     begin
       automatic TagRec            trec = new();
-      automatic shuttle_sub       tsub = shuttle_subscribe("uart0.tag", trec, UartTagged::type_tag);
+      automatic shuttle_subscription       tsub = shuttle_subscribe("uart0.tag", trec, UartTagged::type_tag);
       for (int i = 0; i < 5000 && trec.count < 1; i++) #(10us);
       if (trec.count != 1) $error("inherited message was not delivered");
       if (trec.last != null) begin
@@ -236,9 +236,9 @@ module shuttle_demo;
     // the C++ shuttle::mailbox<UartTx> in ../cpp/mailbox_demo.cpp.
     begin
       automatic shuttle_mailbox         mbox = new("mbox.demo");
-      automatic shuttle_pub #(UartTx)   mpub = new("mbox.demo");
+      automatic shuttle_publisher #(UartTx)   mpub = new("mbox.demo");
       automatic shuttle_mailbox         cap  = new("mbox.cap", "", 2, SHUTTLE_OVERFLOW_DROP_NEWEST);
-      automatic shuttle_pub #(UartTx)   cpub = new("mbox.cap");
+      automatic shuttle_publisher #(UartTx)   cpub = new("mbox.cap");
       automatic byte                    payload[];
       automatic shuttle_meta            meta;
       automatic UartTx                  got;
@@ -288,7 +288,7 @@ module shuttle_demo;
     // channel first, exactly like the C++ side, which is why a blocking observer there would be refused.
     begin
       automatic UartEchoNb                          svc  = new ("uart0.rpc.resp");
-      automatic shuttle_sub                         ssub = shuttle_subscribe_nb("uart0.rpc.req", svc,
+      automatic shuttle_subscription                         ssub = shuttle_subscribe_nb("uart0.rpc.req", svc,
                                                                               "UartTx");
       automatic shuttle_requester #(UartTx, UartTx) rq   = new ("uart0.rpc.req", "uart0.rpc.resp");
       automatic UartTx                              each[$];

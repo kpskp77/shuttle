@@ -2,7 +2,7 @@
 `define SHUTTLE_PUB_SVH
 
 // ── Shared wire helpers ────────────────────────────────────────────────
-// Used by shuttle_pub and shuttle_requester: both need the same conversion to
+// Used by shuttle_publisher and shuttle_requester: both need the same conversion to
 // the DPI open-array form and the same trigger scalars.
 
 // Queue → dynamic array (DPI open-array parameters require dynamic arrays;
@@ -29,7 +29,7 @@ endfunction
 // ── Typed publisher ────────────────────────────────────────────────────
 // The type parameter T must satisfy the message-class convention at the top
 // of this file (pack() + localparam type_tag).
-class shuttle_pub #(type T = byte);
+class shuttle_publisher #(type T = byte);
   local string topic_;
   function new(string topic);
     topic_ = topic;

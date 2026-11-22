@@ -35,14 +35,14 @@ Consequences that are used everywhere below:
 
 ```
                       ┌──────────────────────────── user code ────────────────────────────┐
-                      │  C++: Publisher<T> subscribe<T> Publication Subscription Trigger    │
-                      │  SV : shuttle_pub#(T) shuttle_subscribe shuttle_sink(_nb) handle    │
+                      │  C++: Publisher<T> subscribe<T> Publication Subscription Trigger  │
+                      │  SV : shuttle_publisher #(T) shuttle_subscribe sink(_nb) handle   │
                       └───────────────┬───────────────────────────────┬───────────────────┘
                                       │ public headers (include/shuttle/*.hpp) │ SV package (sv/shuttle_pkg.sv)
         ┌─────────────────────────────▼──────────┐        ┌───────────▼───────────────────┐
         │  broker core (src/broker/)              │        │ shuttle_pkg.sv                │
         │  Topic table / wildcards / type binding │        │  registry / sub / handle       │
-        │  three publish schedulings / retained   │◀──DPI─▶│  trigger / event / pub#(T)     │
+        │  three publish schedulings / retained   │◀──DPI─▶│  trigger / event / publisher   │
         │  C++ API and handles: src/*.cpp         │        │  frame pull + {>>{}} packing   │
         └───────┬───────────────────────▲─────────┘        └───────────────────────────────┘
                 │ backend-agnostic        │ backend boundary (5-entry detail::backend facade,
@@ -207,7 +207,7 @@ are recorded as the `retired` terminal state (part of `dropped`, never `delivere
   `take_retired_delivery()`.
 
 The two sources are disjoint and neither replaces the other: the C++ flag cannot see SV-side
-`shuttle_sub::unsubscribe()` (it deletes the registry entry directly), and the SV report cannot
+`shuttle_subscription::unsubscribe()` (it deletes the registry entry directly), and the SV report cannot
 cover C++ subscribers. Earlier only the SV source produced `retired` while C++ delivered to
 removed callbacks — a backend-specific terminal state, which is a category error. The reverse
 (keeping the frame on the SV side too) was rejected: it requires cross-language in-flight
@@ -332,7 +332,7 @@ hardcoded cross-language strings are legal), publishing to the topic by hand is 
 blocking *observation* is banned. Blocking observers registered before the mark are not
 retro-rejected — the `publish_now` path makes them harmless.
 
-Replies use `detail::pub_now` (SV `shuttle_pub::reply` likewise), never `publish_serial`: with a
+Replies use `detail::pub_now` (SV `shuttle_publisher::reply` likewise), never `publish_serial`: with a
 `nb(handler)` responder and `send_now()`, the entire round trip runs on the requester's stack —
 `send_now()` returns with the reply already in the `Call` (`call.queued() == 1`), zero RTT, no
 simulation time consumed. `NowPolicy::defer` is only the fallback for a blocking responder
@@ -345,7 +345,7 @@ delay a requester even where one exists.
 by the responder, used to route a reply to its `Call`. It is the only business-writable field of
 `Meta` (the rest are broker-filled); `0` means "not a correlated exchange". The public publish
 trio does not expose it — `Publisher::publish_*` always sends `corr_id = 0`; only `Requester::send_*`,
-`serve` and SV `shuttle_pub::reply` write it (via the trailing argument of the internal
+`serve` and SV `shuttle_publisher::reply` write it (via the trailing argument of the internal
 `detail::pub_*`).
 
 Why not in the payload, in three load-bearing arguments:
@@ -392,8 +392,8 @@ and `recv`/`wait_*` report `ok == 0` for both timeout and cancellation (`Timeout
 `CancelledError` do not exist there). The demux needs a handlable subscription callback but the
 queue belongs to a parameterized class, so `shuttle_reply_target` is a non-parameterized base
 whose `accept_response` the requester overrides. Requests go out through the publish DPI entries
-directly, not through `shuttle_pub` — the public trio has no `corr_id` parameter, on purpose, and
-that is exactly why `shuttle_pub::reply` bypasses it too. Cancellation is explicit (`cancel()`)
+directly, not through `shuttle_publisher` — the public trio has no `corr_id` parameter, on purpose, and
+that is exactly why `shuttle_publisher::reply` bypasses it too. Cancellation is explicit (`cancel()`)
 because SV has no `weak_ptr`: a slot the caller merely forgot is invisible, so `prune()` can only
 drop cancelled calls, and replies for those are counted in `stale_responses()`.
 
@@ -489,7 +489,7 @@ long-running SV-side high-frequency regressions still need a periodic cleanup po
 
 `Publication` is a copyable `shared_ptr<Impl>`. `Subscription` is a `shared_ptr<Impl>` whose
 *last* destruction unsubscribes (`Impl::~Impl` → `Broker::remove_sub`); `unsubscribe()` is
-idempotent. The SV `shuttle_sub` is an id pair plus an `active_` flag, does not unsubscribe on
+idempotent. The SV `shuttle_subscription` is an id pair plus an `active_` flag, does not unsubscribe on
 destruction (SV has no deterministic destruction), and the SV `shuttle_handle` mirrors
 `Publication`'s methods over `pub_id`. "Unsubscribe takes effect immediately" means both: later
 frames no longer select the subscriber, and already-snapshotted frames skip it as retired.
