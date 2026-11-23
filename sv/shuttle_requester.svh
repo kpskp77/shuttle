@@ -73,7 +73,7 @@ endclass
 // time (SV functions cannot suspend): a responder that needs time before
 // answering keeps the manual composition — a shuttle_sink that later calls
 // pub.reply(resp, meta).
-virtual class shuttle_responder #(type TReq, type TResp);
+interface class shuttle_responder #(type TReq, type TResp);
   pure virtual function TResp respond(input TReq req, input shuttle_meta meta);
 endclass
 

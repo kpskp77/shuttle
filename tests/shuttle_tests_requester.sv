@@ -18,7 +18,7 @@ module shuttle_tests_requester;
 
   // ── Responder logic behind shuttle_serve: the service owns the response publisher and the
   //    corr_id echo (through pub.reply), so the responder only computes the answer ──────────
-  class SvRqPlusOne extends shuttle_responder #(XRqReq, XRqResp);
+  class SvRqPlusOne implements shuttle_responder #(XRqReq, XRqResp);
     virtual function XRqResp respond(input XRqReq req, input shuttle_meta meta);
       XRqResp resp = new();
       resp.data = req.op * 2 + 1;
@@ -27,7 +27,7 @@ module shuttle_tests_requester;
   endclass
 
   // ── Same doubling used by the SV-local cases ──
-  class SvRqDouble extends shuttle_responder #(XRqReq, XRqResp);
+  class SvRqDouble implements shuttle_responder #(XRqReq, XRqResp);
     virtual function XRqResp respond(input XRqReq req, input shuttle_meta meta);
       XRqResp resp = new();
       resp.data = req.op * 2;

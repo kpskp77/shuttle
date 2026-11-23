@@ -16,7 +16,7 @@ module shuttle_demo_requester;
 
   // ── Responder: answers in a nonblocking entry; shuttle_serve owns the response publisher and
   //    echoes meta.corr_id through pub.reply — the answer never mentions the id ──
-  class UartEcho extends shuttle_responder #(UartTx, UartTx);
+  class UartEcho implements shuttle_responder #(UartTx, UartTx);
     virtual function UartTx respond(input UartTx req, input shuttle_meta meta);
       UartTx resp = new();
       resp.addr = req.addr;
