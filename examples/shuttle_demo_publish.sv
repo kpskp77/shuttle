@@ -40,7 +40,7 @@ module shuttle_demo_publish;
 
   task automatic run();
     automatic shuttle_publisher #(UartTx) pub = new("uart0.tx");
-    automatic shuttle_handle h;
+    automatic shuttle_publication h;
     automatic UartTx       tx  = new();
 
     mon = new();
@@ -53,7 +53,7 @@ module shuttle_demo_publish;
     // here we skip it with skip; omitting the policy defaults to defer (hand to the background serial chain, invoke called later).
     tx.addr = 32'h10; tx.data = 32'hA5;
     begin
-      automatic shuttle_handle hn = pub.publish_now(tx, SHUTTLE_NOW_SKIP);
+      automatic shuttle_publication hn = pub.publish_now(tx, SHUTTLE_NOW_SKIP);
       if (hn == null) $error("publish_now failed: %s", shuttle_c_last_error());
       else if (hn.skipped() != 1)
         $error("publish_now should skip 1 blocking-entry subscriber (got %0d)", hn.skipped());
@@ -97,7 +97,7 @@ module shuttle_demo_publish;
       automatic shuttle_publisher #(UartTx) pub_b = new("uart0.tx");
       tx.addr = 32'h15; tx.data = 32'h55;
       begin
-        automatic shuttle_handle hn = pub_b.publish_now(tx, SHUTTLE_NOW_SKIP);
+        automatic shuttle_publication hn = pub_b.publish_now(tx, SHUTTLE_NOW_SKIP);
         if (hn == null) $error("multi-publisher publish_now failed: %s", shuttle_c_last_error());
       end
       if (mon.last.addr !== 32'h15)

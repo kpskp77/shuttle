@@ -24,7 +24,7 @@ module shuttle_tests_mailbox;
     automatic shuttle_meta        meta;
     automatic bit                 ok;
     automatic XMsg                got;
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     automatic shuttle_mailbox     cap_box = new("sv.t.mboxcap", "", 2, SHUTTLE_OVERFLOW_DROP_NEWEST);
     automatic shuttle_publisher #(XMsg) pub2  = new("sv.t.mboxcap");
 

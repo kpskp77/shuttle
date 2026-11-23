@@ -57,7 +57,7 @@ class shuttle_call #(type TResp);
   local int            ev_;      // weave event: a reply arrived / the call was cancelled
   local TResp          items[$]; // replies not taken yet
   local bit            cancelled_;
-  local shuttle_handle pub_;
+  local shuttle_publication pub_;
 
   function new(int unsigned corr_id);
     corr_id_   = corr_id;
@@ -71,7 +71,7 @@ class shuttle_call #(type TResp);
 
   // The request frame: subscriber_count() (what wait_all() asks), done() and
   // wait_done() live here. Null until the request publish succeeded.
-  function shuttle_handle publication();
+  function shuttle_publication publication();
     return pub_;
   endfunction
 
@@ -86,7 +86,7 @@ class shuttle_call #(type TResp);
   // ── internal: called by shuttle_requester ─────────────────────────────
   // Attached after the publish call: the call slot has to exist before the
   // frame goes out, because a nonblocking responder answers inside it.
-  function void attach(shuttle_handle h);
+  function void attach(shuttle_publication h);
     pub_ = h;
   endfunction
 
@@ -295,7 +295,7 @@ class shuttle_requester #(type TReq, type TResp) extends shuttle_reply_target;
   // reason in last_error()). The request may well have reached its targets
   // already — the failure is about the completion handle, not the delivery.
   local function shuttle_call #(TResp) finish(shuttle_call #(TResp) call, int pid);
-    shuttle_handle h;
+    shuttle_publication h;
     if (pid <= 0) begin
       error_ = shuttle_c_last_error();
       calls_.delete(call.corr_id());

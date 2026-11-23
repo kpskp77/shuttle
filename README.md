@@ -117,7 +117,7 @@ endclass
 
 shuttle_subscription sub = shuttle_subscribe("uart0.tx", mon, UartTx::type_tag);
 shuttle_publisher #(UartTx) pub = new("uart0.tx");
-shuttle_handle h = pub.publish_serial(tx);
+shuttle_publication h = pub.publish_serial(tx);
 h.wait_done();                                               // suspends this SV process
 ```
 

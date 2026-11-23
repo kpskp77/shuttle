@@ -60,7 +60,7 @@ consists of four pieces with strictly separated concerns:
 | `src/backend/svdpi/facade.cpp` | The external facade: `ext_*` (byte-frame publish, external-subscription registration) and `pub_*` (per-`pub_id` queries/waits). Broker orchestration only; no DPI knowledge. |
 | `src/backend/svdpi/bridge.cpp` | The `detail::backend` implementation: `dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery` plus the frame-pull channel. |
 | `src/backend/svdpi/svdpi_internal.hpp` | Private header of the directory: `SvScopeGuard`, `FrameContext`, `g_frame`, the on-wire codes, and the `ext_*`/`pub_*` declarations. |
-| `sv/shuttle_pkg.sv` | The SV-side package: the DPI import/export declarations, the constants, the subscription registry, and the user API (`shuttle_publisher`, `shuttle_requester`, `shuttle_call`, `shuttle_subscription`, `shuttle_handle`, `shuttle_trigger`, `shuttle_mailbox`). |
+| `sv/shuttle_pkg.sv` | The SV-side package: the DPI import/export declarations, the constants, the subscription registry, and the user API (`shuttle_publisher`, `shuttle_requester`, `shuttle_call`, `shuttle_subscription`, `shuttle_publication`, `shuttle_trigger`, `shuttle_mailbox`). |
 
 Declarations and definitions are split along "who calls whom": SV calls into
 `dpi.cpp`, which calls `facade.cpp` as `shuttle::detail::*`; the broker calls
@@ -231,7 +231,7 @@ integers:
   as the opaque `handle` of `shuttle_c_subscribe`, and C++ returns it verbatim
   at dispatch time. Neither side maintains a mapping. `pub_id` ownership is
   the mirror image: C++ allocates it at publish time and SV stores it in
-  `shuttle_handle`.
+  `shuttle_publication`.
 - Dispatch is two hops: the export (`shuttle_sv_dispatch` / `_nb`) pulls the
   payload and builds the `shuttle_meta`, then `shuttle_registry::dispatch[_nb]`
   routes by id to `invoke` / `invoke_nb`.
@@ -251,7 +251,7 @@ integers:
 
 ### wait_done suspends a plain SV process through a leaf weave wait
 
-`shuttle_handle::wait_done()` needs to park an ordinary `initial`/`always`
+`shuttle_publication::wait_done()` needs to park an ordinary `initial`/`always`
 process until a publication completes, and the mechanism is entirely weave's
 public C++ API:
 
@@ -334,7 +334,7 @@ each allocated on one side and echoed back by the other:
 | Handle | Allocated by | Stored by | Returned via |
 | --- | --- | --- | --- |
 | `sv_sid` (subscriber) | `shuttle_registry::add` (SV) | broker `Subscriber::handle` (opaque) | `shuttle_sv_dispatch[_nb]` first argument |
-| `pub_id` (publication) | the broker at publish time (`PubState::id`) | `shuttle_handle::pub_id_` (SV) | every `shuttle_c_pub_*` / `shuttle_c_wait_pub` call |
+| `pub_id` (publication) | the broker at publish time (`PubState::id`) | `shuttle_publication::pub_id_` (SV) | every `shuttle_c_pub_*` / `shuttle_c_wait_pub` call |
 
 The only genuinely per-process state on the C++ side of the boundary —
 `g_frame`, the retired-delivery flag, the last-error string — is safe as plain

@@ -430,7 +430,7 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 `Publication` 是可拷贝的 `shared_ptr<Impl>`。`Subscription` 是 `shared_ptr<Impl>`，
 由*最后一次*析构退订（`Impl::~Impl` → `Broker::remove_sub`）；`unsubscribe()` 幂等。SV
 的 `shuttle_subscription` 是 id 对加一个 `active_` 标志，析构不退订（SV 没有确定性析构），SV
-的 `shuttle_handle` 通过 `pub_id` 镜像 `Publication` 的方法。"退订立即生效"是双向的：
+的 `shuttle_publication` 通过 `pub_id` 镜像 `Publication` 的方法。"退订立即生效"是双向的：
 之后的帧不再选中该订阅者，已快照的帧把它跳过并记为 retired。
 
 ## 公开面的分层

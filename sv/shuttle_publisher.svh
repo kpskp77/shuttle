@@ -52,14 +52,14 @@ class shuttle_publisher #(type T = byte);
   // expected outcome; the reason goes through shuttle_c_last_error());
   // `serial`/`concurrent` print because they are fire-and-forget async
   // interfaces where errors must be visible immediately.
-  local function shuttle_handle wrap(int pid, string what, bit loud);
+  local function shuttle_publication wrap(int pid, string what, bit loud);
     if (pid <= 0) begin
       if (loud)
         $error("shuttle: %s publish failed (topic=%s): %s", what, topic_, shuttle_c_last_error());
       return null;
     end
     begin
-      shuttle_handle h = new(pid);
+      shuttle_publication h = new(pid);
       return h;
     end
   endfunction
@@ -78,7 +78,7 @@ class shuttle_publisher #(type T = byte);
   // in skipped(), and deferred targets are still on the background chain —
   // done()/wait_done() cover that part.
   // Returns null on failure (see shuttle_c_last_error()).
-  function shuttle_handle publish_now(T msg, int policy = SHUTTLE_NOW_DEFER);
+  function shuttle_publication publish_now(T msg, int policy = SHUTTLE_NOW_DEFER);
     byte payload[];
     pack_payload(msg, payload);
     return wrap(shuttle_c_publish_now(topic_, T::type_tag, payload, policy, 0), "now", 1'b0);
@@ -86,7 +86,7 @@ class shuttle_publisher #(type T = byte);
 
   // `publish_serial`: background single-chain, in-order callbacks
   // (topic-level FIFO); returns the completion handle immediately.
-  function shuttle_handle publish_serial(T msg, shuttle_trigger trig = null);
+  function shuttle_publication publish_serial(T msg, shuttle_trigger trig = null);
     byte payload[];
     int kind;
     longint arg;
@@ -99,7 +99,7 @@ class shuttle_publisher #(type T = byte);
 
   // `publish_concurrent`: background, one task per subscriber, concurrent
   // callbacks; returns the completion handle immediately.
-  function shuttle_handle publish_concurrent(T msg, shuttle_trigger trig = null);
+  function shuttle_publication publish_concurrent(T msg, shuttle_trigger trig = null);
     byte payload[];
     int kind;
     longint arg;
@@ -119,7 +119,7 @@ class shuttle_publisher #(type T = byte);
   // It goes out through publish_now so that a nonblocking C++ requester has the answer on
   // its stack before this call returns (no task switch). `defer` keeps it correct even if
   // a blocking subscriber slipped onto the response topic before it was marked.
-  function shuttle_handle reply(T msg, shuttle_meta request);
+  function shuttle_publication reply(T msg, shuttle_meta request);
     byte payload[];
     pack_payload(msg, payload);
     return wrap(

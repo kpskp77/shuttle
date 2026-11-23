@@ -47,7 +47,7 @@ svdpi 后端是唯一带外部订阅者通道的构建，由四块关注点严�
 | `src/backend/svdpi/facade.cpp` | 外部门面：`ext_*`（字节帧发布、外部订阅者注册）与 `pub_*`（按 `pub_id` 的查询/等待）。只做 broker 编排；不认识 DPI。 |
 | `src/backend/svdpi/bridge.cpp` | `detail::backend` 实现：`dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery` 加帧拉取通道。 |
 | `src/backend/svdpi/svdpi_internal.hpp` | 目录私有头：`SvScopeGuard`、`FrameContext`、`g_frame`、线上编码常量、`ext_*`/`pub_*` 声明。 |
-| `sv/shuttle_pkg.sv` | SV 侧包：DPI import/export 声明、常量、订阅注册表与用户 API（`shuttle_publisher`、`shuttle_requester`、`shuttle_call`、`shuttle_subscription`、`shuttle_handle`、`shuttle_trigger`、`shuttle_mailbox`）。 |
+| `sv/shuttle_pkg.sv` | SV 侧包：DPI import/export 声明、常量、订阅注册表与用户 API（`shuttle_publisher`、`shuttle_requester`、`shuttle_call`、`shuttle_subscription`、`shuttle_publication`、`shuttle_trigger`、`shuttle_mailbox`）。 |
 
 声明与定义按"谁调用谁"切开：SV 调进 `dpi.cpp`，后者以 `shuttle::detail::*` 的名义调用
 `facade.cpp`；broker 经 `src/backend/backend.hpp` 的 5 入口契约调用 `bridge.cpp`；
@@ -188,7 +188,7 @@ DPI export 名是静态的——不可能"每个订阅者一个 export 函数"�
   现两个接口，但只有注册两次两个入口才都活——一次注册 = 一个入口，与 C++ 同规则。
 - `sv_sid` 的所有权在 SV 侧：注册表分配它、作为 `shuttle_c_subscribe` 的不透明
   `handle` 传给 C++，派发时 C++ 原样带回。两侧都不维护映射。`pub_id` 所有权是镜像：
-  C++ 在发布时分配，SV 存进 `shuttle_handle`。
+  C++ 在发布时分配，SV 存进 `shuttle_publication`。
 - 派发是两跳：export（`shuttle_sv_dispatch` / `_nb`）拉取载荷并组装 `shuttle_meta`，
   然后 `shuttle_registry::dispatch[_nb]` 按 id 路由到 `invoke` / `invoke_nb`。
 - 在途退订：`shuttle_registry::remove` 删掉 sink 并置 `retired_[id]`。之后到达的派发
@@ -202,7 +202,7 @@ DPI export 名是静态的——不可能"每个订阅者一个 export 函数"�
 
 ### wait_done 通过一个叶子 weave 等待挂起普通 SV 进程
 
-`shuttle_handle::wait_done()` 要把一个普通 `initial`/`always` 进程停住直到发布完成，
+`shuttle_publication::wait_done()` 要把一个普通 `initial`/`always` 进程停住直到发布完成，
 机制完全是 weave 的公开 C++ API：
 
 1. `shuttle_c_wait_pub` 先问 `pub_state(pub_id)`；已终态的发布不挂起直接回答。
@@ -266,7 +266,7 @@ broker 不知道自己跑在哪个后端上：纯 C++ 用法在两个后端下�
 | 句柄 | 分配方 | 持有方 | 经谁带回 |
 | --- | --- | --- | --- |
 | `sv_sid`（订阅者） | `shuttle_registry::add`（SV） | broker `Subscriber::handle`（不透明） | `shuttle_sv_dispatch[_nb]` 第一个实参 |
-| `pub_id`（发布） | 发布时的 broker（`PubState::id`） | `shuttle_handle::pub_id_`（SV） | 每次 `shuttle_c_pub_*` / `shuttle_c_wait_pub` 调用 |
+| `pub_id`（发布） | 发布时的 broker（`PubState::id`） | `shuttle_publication::pub_id_`（SV） | 每次 `shuttle_c_pub_*` / `shuttle_c_wait_pub` 调用 |
 
 边界 C++ 侧唯一的真正进程级状态——`g_frame`、retired 投递标志、last-error 字符串——
 作为普通全局是安全的，理由与拉取协议相同：单活跃进程契约保证任一时刻至多一个仿真

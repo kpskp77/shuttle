@@ -21,7 +21,7 @@ module shuttle_tests_trigger;
     automatic shuttle_subscription         sub = shuttle_subscribe("sv.t.trig", rec, "XMsg");
     automatic shuttle_publisher #(XMsg) pub = new("sv.t.trig");
     automatic XMsg                m   = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     m.addr = 7;
     m.data = 8;
     h = pub.publish_serial(m, shuttle_trigger::after_delay(200_000_000));  // 200ns
@@ -33,7 +33,7 @@ module shuttle_tests_trigger;
   endtask
 
   // A wait_pub deadline: the timeout leg fires, the frame stays pending and completes later.
-  // Exercised through shuttle_c_wait_pub directly because shuttle_handle::wait_done() turns a
+  // Exercised through shuttle_c_wait_pub directly because shuttle_publication::wait_done() turns a
   // timeout into $error by design (this file never calls $error).
   task automatic case_wait_timeout();
     automatic shuttle_publisher #(XMsg) pub = new("sv.t.timeout");
@@ -41,7 +41,7 @@ module shuttle_tests_trigger;
     automatic XMsg                m   = new();
     automatic int                 st  = -1;
     automatic shuttle_subscription         sub;
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
 
     sub = shuttle_subscribe("sv.t.timeout", rec, "XMsg");
     check(sub.id() != 0, "wait.timeout_subscribed");
@@ -65,7 +65,7 @@ module shuttle_tests_trigger;
     int             blk_count   = 0;
     int             wait_status = -1;
     string          wait_error  = "";
-    shuttle_handle  inner;
+    shuttle_publication  inner;
     shuttle_publisher #(XMsg) pub;
 
     virtual task invoke(input byte payload[], input shuttle_meta meta);
@@ -125,8 +125,8 @@ module shuttle_tests_trigger;
     automatic shuttle_publisher #(XMsg) pub   = new("sv.t.ev.trig");
     automatic XMsg                m     = new();
     automatic XMsg                m2    = new();
-    automatic shuttle_handle      h;
-    automatic shuttle_handle      h2;
+    automatic shuttle_publication      h;
+    automatic shuttle_publication      h2;
     automatic shuttle_subscription         later;
     m.addr  = 32'hA1;
     m2.addr = 32'hA2;
@@ -163,7 +163,7 @@ module shuttle_tests_trigger;
     automatic SelfWaitSink        sink = new();
     automatic shuttle_publisher #(XMsg) pub  = new("sv.t.selfwait");
     automatic XMsg                m    = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     automatic shuttle_subscription         sub  = shuttle_subscribe("sv.t.selfwait", sink, "XMsg");
     sink.pub = pub;
     m.addr = 32'hD1;

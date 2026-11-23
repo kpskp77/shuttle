@@ -5,7 +5,7 @@
 // "Wait for the next frame" instead of "let a callback handle each frame".
 // A mailbox **is one subscriber**: it registers through shuttle_subscribe_nb
 // (nonblocking entry — pushing into the queue never blocks), so it joins the
-// target set, counts in shuttle_handle::subscriber_count() and receives
+// target set, counts in shuttle_publication::subscriber_count() and receives
 // retained replays exactly like any other subscription.
 //
 // Whole implementation is pure SV: the queue is an SV queue and the wakeup

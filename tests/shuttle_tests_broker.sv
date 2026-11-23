@@ -23,7 +23,7 @@ module shuttle_tests_broker;
     automatic shuttle_subscription         snb  = shuttle_subscribe_nb("sv.t.dual", rec, "XMsg");  // nonblocking entry
     automatic shuttle_publisher #(XMsg) pub  = new("sv.t.dual");
     automatic XMsg                m    = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     m.addr = 32'h77;
     m.data = 32'h88;
 
@@ -59,7 +59,7 @@ module shuttle_tests_broker;
     automatic shuttle_subscription         sb  = shuttle_subscribe("sv.t.retired", b, "XMsg");
     automatic shuttle_publisher #(XMsg) pub = new("sv.t.retired");
     automatic XMsg                m   = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     m.addr = 9;
     m.data = 8'h3c;
     h = pub.publish_serial(m);  // the snapshot already includes a and b; the callbacks run later, on the background chain
@@ -86,7 +86,7 @@ module shuttle_tests_broker;
     automatic XMsg                mx    = new();
     automatic XMsg                mx2   = new();
     automatic YMsg                my    = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     mx.addr  = 5;
     mx.data  = 6;
     mx2.addr = 7;
@@ -113,7 +113,7 @@ module shuttle_tests_broker;
     automatic shuttle_publisher #(XMsg) bad = new("sv.t.bad.*");
     automatic shuttle_publisher #(XMsg) sib = new("sv.t.bad.ok");
     automatic XMsg                m   = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     m.addr = 1;
     m.data = 2;
     // wildcard topic: rejected, no handle, reason recorded (no phantom topic may be created, and no broadcast-like fanout)
@@ -130,7 +130,7 @@ module shuttle_tests_broker;
     automatic shuttle_subscription         sub = shuttle_subscribe_nb("sv.t.unsub", rec, "XMsg");
     automatic shuttle_publisher #(XMsg) pub = new("sv.t.unsub");
     automatic XMsg                m   = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     m.addr = 1;
     m.data = 1;
     h = pub.publish_now(m, SHUTTLE_NOW_SKIP);

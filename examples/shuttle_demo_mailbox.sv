@@ -21,7 +21,7 @@ module shuttle_demo_mailbox;
     automatic byte                         payload[];
     automatic shuttle_meta                 meta;
     automatic UartTx                       got;
-    automatic shuttle_handle               hm;
+    automatic shuttle_publication               hm;
     automatic bit                          got_ok;
 
     // A mailbox is an ordinary subscriber: it is a target of the publication (subscriber_count),

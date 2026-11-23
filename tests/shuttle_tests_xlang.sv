@@ -57,7 +57,7 @@ module shuttle_tests_xlang;
     automatic shuttle_publisher #(XMsg) ready_pub = new("xlang.sv_ready");
     automatic shuttle_publisher #(XMsg) to_cpp    = new("xlang.sv2cpp");
     automatic XMsg                m         = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     automatic bit                 ok;
 
     // 1) ready broadcast (retained): the C++ side receives it whether it subscribes before or after
@@ -118,7 +118,7 @@ module shuttle_tests_xlang;
     automatic MixedSink           sink  = new();
     automatic shuttle_publisher #(XMsg) ready = new("xlang.mixed.ready");
     automatic XMsg                note  = new();
-    automatic shuttle_handle      h;
+    automatic shuttle_publication      h;
     automatic shuttle_subscription         sub;
 
     sink.nested = new("xlang.mixed.mon");
@@ -158,7 +158,7 @@ module shuttle_tests_xlang;
     automatic shuttle_publisher #(XTrack) ready_pub = new("xlang.nest.ready");
     automatic shuttle_publisher #(XTrack) to_cpp    = new("xlang.nest.sv2cpp");
     automatic XTrack                m         = new();
-    automatic shuttle_handle        h;
+    automatic shuttle_publication        h;
     automatic bit                   ok;
 
     check(sub.id() != 0, "xlang.nest.subscribed");
@@ -208,7 +208,7 @@ module shuttle_tests_xlang;
     automatic shuttle_publisher #(XChain) ready_pub = new("xlang.inherit.ready");
     automatic shuttle_publisher #(XChain) to_cpp    = new("xlang.inherit.sv2cpp");
     automatic XChain               m         = new();
-    automatic shuttle_handle       h;
+    automatic shuttle_publication       h;
     automatic bit                  ok;
 
     check(sub.id() != 0, "xlang.inherit.subscribed");
@@ -258,7 +258,7 @@ module shuttle_tests_xlang;
     automatic shuttle_publisher #(XNsMsg) ready_pub = new("xlang.ns.ready");
     automatic shuttle_publisher #(XNsMsg) to_cpp    = new("xlang.ns.sv2cpp");
     automatic XNsMsg               m         = new();
-    automatic shuttle_handle       h;
+    automatic shuttle_publication       h;
     automatic bit                  ok;
 
     check(sub.id() != 0, "xlang.ns.subscribed");

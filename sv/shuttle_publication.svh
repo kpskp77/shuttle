@@ -4,7 +4,7 @@
 // ── Publication completion handle (corresponds to shuttle::Publication) ──
 // SV has no exceptions: subscriber failures surface via first_error(), and
 // the user decides how to handle them.
-class shuttle_handle;
+class shuttle_publication;
   local int pub_id_;
   function new(int pub_id);
     pub_id_ = pub_id;
@@ -84,7 +84,7 @@ class shuttle_trigger;
     return t;
   endfunction
   // Another publication completes (success or failure both count as done)
-  static function shuttle_trigger after_pub(shuttle_handle h);
+  static function shuttle_trigger after_pub(shuttle_publication h);
     shuttle_trigger t = new();
     t.kind = SHUTTLE_TRIG_PUB;
     t.arg  = h.id();

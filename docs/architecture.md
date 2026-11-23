@@ -490,7 +490,7 @@ long-running SV-side high-frequency regressions still need a periodic cleanup po
 `Publication` is a copyable `shared_ptr<Impl>`. `Subscription` is a `shared_ptr<Impl>` whose
 *last* destruction unsubscribes (`Impl::~Impl` → `Broker::remove_sub`); `unsubscribe()` is
 idempotent. The SV `shuttle_subscription` is an id pair plus an `active_` flag, does not unsubscribe on
-destruction (SV has no deterministic destruction), and the SV `shuttle_handle` mirrors
+destruction (SV has no deterministic destruction), and the SV `shuttle_publication` mirrors
 `Publication`'s methods over `pub_id`. "Unsubscribe takes effect immediately" means both: later
 frames no longer select the subscriber, and already-snapshotted frames skip it as retired.
 
