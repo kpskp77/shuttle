@@ -22,7 +22,11 @@
 //   7. case8 covers an inheritance chain (XHead → XMid → XChain) registered with
 //   SHUTTLE_REFLECT_DERIVED: each level delegates its base subobject to the base codec, so both
 //   directions exercise the delegated encoding against the SV `shuttle_base chain.
-//   8. case9 covers request/response in the *other* direction: an SV Requester calls a C++
+//   8. case9 covers a message type declared inside a C++ namespace, registered through a global
+//   unqualified alias so its type_tag stays an SV-legal name ("XNsMsg") and matches the SV class
+//   of the same name. Reflecting the qualified name would tag the frames "xlang_ns::XNsMsg",
+//   which no SV class can declare.
+//   9. case10 covers request/response in the *other* direction: an SV Requester calls a C++
 //   serve() responder. The SV side mints its corr_id through the shared counter
 //   (shuttle_c_take_corr_id), serve() echoes it back, and the SV-side response-topic mark
 //   (shuttle_c_mark_responses) refuses a blocking C++ subscriber on a topic no C++ responder
@@ -115,6 +119,22 @@ SHUTTLE_REFLECT(XHead, seq)
 SHUTTLE_REFLECT_DERIVED(XMid, XHead, level)
 SHUTTLE_REFLECT_DERIVED(XChain, XMid, flag)
 
+// Namespaced message type for case9: SHUTTLE_REFLECT can only run at global scope (it reopens
+// namespace shuttle), so a type declared inside a namespace is registered through a global
+// unqualified alias. The macro's first argument is also the type tag, so the alias spelling
+// "XNsMsg" is what class XNsMsg in tests/shuttle_tests_fixtures.sv declares as type_tag. Had the
+// qualified name been reflected, the tag would be "xlang_ns::XNsMsg" and the SV subscriber would
+// never match the frame — silently, since a tag mismatch only removes it from the target set.
+namespace xlang_ns {
+struct XNsMsg {
+  std::uint32_t code = 0;
+  std::int16_t delta = 0;
+};
+}  // namespace xlang_ns
+
+using XNsMsg = xlang_ns::XNsMsg;
+SHUTTLE_REFLECT(XNsMsg, code, delta)
+
 namespace {
 
 constexpr const char* kReadyTopic = "xlang.sv_ready";      // SV → C++ ready broadcast (retained)
@@ -130,6 +150,9 @@ constexpr const char* kNestFromSvTopic = "xlang.nest.sv2cpp";    // SV → C++, 
 constexpr const char* kInhReadyTopic = "xlang.inherit.ready";    // SV → C++ ready (retained)
 constexpr const char* kInhToSvTopic = "xlang.inherit.cpp2sv";    // C++ → SV, inheritance chain
 constexpr const char* kInhFromSvTopic = "xlang.inherit.sv2cpp";  // SV → C++, inheritance chain
+constexpr const char* kNsReadyTopic = "xlang.ns.ready";          // SV → C++ ready (retained)
+constexpr const char* kNsToSvTopic = "xlang.ns.cpp2sv";          // C++ → SV, namespaced C++ type
+constexpr const char* kNsFromSvTopic = "xlang.ns.sv2cpp";        // SV → C++, namespaced C++ type
 constexpr const char* kRqSvReadyTopic = "xlang.rqsv.ready";      // C++ → SV ready (retained)
 constexpr const char* kRqSvReqTopic = "xlang.rqsv.req";          // SV requester → C++ responder
 constexpr const char* kRqSvRespTopic = "xlang.rqsv.resp";        // C++ responder → SV requester
@@ -168,6 +191,13 @@ struct XlangState {
   weave::Event inh_ready_ev;
   std::vector<XChain> inh_got;
   std::vector<std::string> inh_tags;
+
+  // case9 state: a C++ type from a namespace, reflected through a global unqualified alias
+  shuttle::Subscription ns_ready;
+  shuttle::Subscription ns_from_sv;
+  weave::Event ns_ready_ev;
+  std::vector<XNsMsg> ns_got;
+  std::vector<std::string> ns_tags;
 };
 
 }  // namespace
@@ -421,13 +451,58 @@ void shuttle_tests_xlang() {
     }
   });
 
-  // case9: request/response the other way — an SV Requester calls this C++ serve() responder. The
+  // case9: a message type declared inside a C++ namespace, matched against the SV class of the
+  // same unqualified name through a global alias. The handshake mirrors case7/case8: the SV side
+  // subscribes first and announces readiness with a retained frame; the C++ frame must reach it
+  // tagged "XNsMsg" (the alias spelling — not "xlang_ns::XNsMsg"), and the SV reply must decode
+  // back here under the same tag. The ready frame's 6-byte wire length pins u32 + i16 with no
+  // padding, and the negative delta checks the signed field across the DPI.
+  run_case(__func__, "case9", [st] {
+    st->ns_ready = shuttle::subscribe_bytes(
+        kNsReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
+          expect(bytes.size() == 6, "the namespaced ready frame wire length should be 6 bytes");
+          expect(meta.type_tag == "XNsMsg",
+                 "the namespaced ready tag is the unqualified alias spelling");
+          st->ns_ready_ev.set();
+        });
+    for (int i = 0; i < 2000 && !st->ns_ready_ev.is_set(); ++i) weave::sleep(100_us);
+    expect(st->ns_ready_ev.is_set(), "never saw the SV-side ready broadcast (xlang.ns.ready)");
+
+    st->ns_from_sv = shuttle::subscribe<XNsMsg>(kNsFromSvTopic,
+                                                [st](const XNsMsg& m, const shuttle::Meta& meta) {
+                                                  st->ns_got.push_back(m);
+                                                  st->ns_tags.push_back(std::string(meta.type_tag));
+                                                });
+
+    shuttle::Publisher<XNsMsg> pub(kNsToSvTopic);
+    XNsMsg out;
+    out.code = 0xC0FFEE03u;
+    out.delta = -9;
+    auto h = pub.publish_serial(out);
+    expect_eq(static_cast<long long>(h.subscriber_count()), 1,
+              "the SV side should have 1 blocking subscriber");
+    h.wait();
+    expect(h.done() && h.failures().empty(), "the SV-side namespaced decode should not fail");
+
+    for (int i = 0; i < 200 && st->ns_got.size() < 1; ++i) weave::sleep(100_us);
+    expect_eq(static_cast<long long>(st->ns_got.size()), 1,
+              "one namespaced frame should come back SV → C++");
+    if (!st->ns_got.empty()) {
+      const XNsMsg& m = st->ns_got[0];
+      expect_eq(static_cast<long long>(m.code), 7, "the code field decoded from the SV publish");
+      expect_eq(static_cast<long long>(m.delta), -11, "the signed field from the SV publish");
+      expect(st->ns_tags[0] == "XNsMsg",
+             "the reply carries the alias tag, so it matched the reflected namespace type");
+    }
+  });
+
+  // case10: request/response the other way — an SV Requester calls this C++ serve() responder. The
   // SV side allocates its corr_id through shuttle_c_take_corr_id (one counter for both languages),
   // serve() copies meta.corr_id into the answer, and the SV reply table matches it. The second
   // assertion covers the other new DPI entry: the SV requester claims its response topic as a
   // response channel, so a blocking C++ subscriber on it is refused even though no C++ responder
   // ever touched that topic.
-  run_case(__func__, "case9", [] {
+  run_case(__func__, "case10", [] {
     auto hits = std::make_shared<std::size_t>(0);
     auto server = shuttle::serve<XRqReq, XRqResp>(
         kRqSvReqTopic, kRqSvRespTopic,

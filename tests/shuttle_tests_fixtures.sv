@@ -110,6 +110,20 @@ package shuttle_tests_fixtures;
     `shuttle_reflect_end
   endclass
 
+  // ── Namespaced C++ type (mirror XNsMsg in tests/shuttle_tests_xlang.cpp case10) ──
+  // The C++ struct lives in namespace xlang_ns and is reflected through the global alias
+  // `using XNsMsg = xlang_ns::XNsMsg`, so its type_tag is the unqualified spelling "XNsMsg" —
+  // exactly what shuttle_reflect_begin(XNsMsg) declares below. Wire order is u32 code then i16
+  // delta, 6 bytes, no padding.
+  class XNsMsg;
+    int unsigned code;
+    shortint     delta;
+    `shuttle_reflect_begin(XNsMsg)
+      `shuttle_field(code, shuttle_u32)
+      `shuttle_field(delta, shuttle_i16)
+    `shuttle_reflect_end
+  endclass
+
   // ── Implements both entries: shuttle_subscribe registers the blocking entry, shuttle_subscribe_nb the
   //    nonblocking entry (isomorphic to C++ subscribe(fn) / subscribe(nb(fn))) ─────────
   class Rec implements shuttle_sink, shuttle_sink_nb;

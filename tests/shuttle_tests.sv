@@ -65,6 +65,7 @@ module shuttle_tests;
     m_xlang.case_xlang_mixed();
     m_xlang.case_xlang_nested();
     m_xlang.case_xlang_inherit();
+    m_xlang.case_xlang_namespace();
     // SV-side request/response last: the cross-language half waits for the C++ responder, which the
     // C++ case9 registers only after its earlier cases — running it earlier would make both sides
     // wait for each other.

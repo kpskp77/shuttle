@@ -19,6 +19,7 @@
 void shuttle_demo_publish();
 void shuttle_demo_nested();
 void shuttle_demo_inherit();
+void shuttle_demo_namespace();
 void shuttle_demo_mailbox();
 void shuttle_demo_requester();
 void shuttle_demo_trigger();
@@ -28,6 +29,7 @@ WEAVE_TEST(shuttle_demo) {
   shuttle_demo_publish();
   shuttle_demo_nested();
   shuttle_demo_inherit();
+  shuttle_demo_namespace();
   shuttle_demo_mailbox();
   shuttle_demo_requester();
   shuttle_demo_trigger();

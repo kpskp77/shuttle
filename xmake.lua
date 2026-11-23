@@ -66,6 +66,7 @@ target("shuttle_examples_svdpi_vcs", function()
       "examples/shuttle_demo_publish.sv",
       "examples/shuttle_demo_nested.sv",
       "examples/shuttle_demo_inherit.sv",
+      "examples/shuttle_demo_namespace.sv",
       "examples/shuttle_demo_mailbox.sv",
       "examples/shuttle_demo_requester.sv",
       "examples/shuttle_demo.sv",

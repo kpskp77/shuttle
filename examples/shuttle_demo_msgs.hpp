@@ -2,9 +2,10 @@
 
 // Message types of the C++ half of the uart demo: the mirror of examples/shuttle_demo_msgs.sv.
 //
-// Every demo subject file (publish / nested / inherit / mailbox / requester / edge) includes this
-// header, so the wire types are declared once and cannot drift between the files. Member types
-// must belong to the codec subset (see include/shuttle/codec.hpp).
+// Every demo subject file that uses these uart wire types (publish / nested / inherit / mailbox /
+// requester / edge) includes this header, so the wire types are declared once and cannot drift
+// between the files; shuttle_demo_namespace.cpp declares its own namespaced type instead. Member
+// types must belong to the codec subset (see include/shuttle/codec.hpp).
 
 #include <cstdint>
 #include <shuttle/shuttle.hpp>

@@ -25,22 +25,24 @@ The systemc backend runs only the C++ demos, entered through `tests/shuttle_test
 | `shuttle_demo_publish.cpp` | C++ | publisher + typed subscribe (blocking and `nb`), all three publish flavors, retained topics, wildcard patterns, `subscribe_bytes`, introspection, multi-publisher |
 | `shuttle_demo_nested.cpp` | C++ | nested message types (a reflected struct holding two of another reflected struct) |
 | `shuttle_demo_inherit.cpp` | C++ | inherited message types (`SHUTTLE_REFLECT_DERIVED`, each level delegating its base subobject) |
+| `shuttle_demo_namespace.cpp` | C++ | a message type declared inside a namespace, reflected through a global unqualified alias so its `type_tag` matches the SV class |
 | `shuttle_demo_mailbox.cpp` | C++ | mailbox as subscriber, `recv(timeout)` drain, bounded queues (`drop_oldest`/`drop_newest`/`reject`), `OverflowPolicy::block` rejected at construction, copies sharing one queue, `close()`, request/response without a correlation id |
 | `shuttle_demo_requester.cpp` | C++ | `Requester`/`serve` with `corr_id` demultiplexing, concurrent in-flight calls, observer vs responder (`wait_for(n)`), responder timeout, a throwing responder surfacing as a `Failure` |
 | `shuttle_demo_trigger.cpp` | C++ | `Trigger`: `after(Event)` / `after(duration)` / `after(Task)` / `after_all`, handle completion orthogonal to trigger firing |
 | `shuttle_demo_edge.cpp` | C++ | failure and timeout edges: `publish_now` against a blocking entry (`CapabilityError`), the `wait(timeout)` verdict |
 | `shuttle_demo_msgs.hpp` | C++ | the wire types shared by the subject files (the mirror of `shuttle_demo_msgs.sv`) |
 | `shuttle_demo.cpp` | C++ (top) | the ordered call of the subject files and the only `WEAVE_TEST` of the C++ half |
-| `shuttle_demo.sv` | SV | `shuttle_publisher`/`shuttle_subscription`/`shuttle_subscribe_nb`, both entries on one class, `publish_now`/`publish_serial`/`publish_concurrent`, mailbox (pure SV), multi-publisher, nested message types, inherited message classes (`` `shuttle_base ``), a pure-SV requester with `shuttle_requester`/`shuttle_call` against a nonblocking responder (`shuttle_publisher::reply`), unsubscribe; also launches the C++ demos via `weave_run` |
+| `shuttle_demo.sv` | SV | `shuttle_publisher`/`shuttle_subscription`/`shuttle_subscribe_nb`, both entries on one class, `publish_now`/`publish_serial`/`publish_concurrent`, mailbox (pure SV), multi-publisher, nested message types, inherited message classes (`` `shuttle_base ``), a namespaced message class, a pure-SV requester with `shuttle_requester`/`shuttle_call` against a nonblocking responder (`shuttle_publisher::reply`), unsubscribe; also launches the C++ demos via `weave_run` |
 
 The C++ side mirrors that shape: `shuttle_demo_msgs.hpp` (the wire types), one subject file per
-demonstration (`shuttle_demo_publish.cpp`, `_nested.cpp`, `_inherit.cpp`, `_mailbox.cpp`,
-`_requester.cpp`, `_trigger.cpp`, `_edge.cpp`), and `shuttle_demo.cpp` as the only `WEAVE_TEST`,
-calling the subject functions in order.
+demonstration (`shuttle_demo_publish.cpp`, `_nested.cpp`, `_inherit.cpp`, `_namespace.cpp`,
+`_mailbox.cpp`, `_requester.cpp`, `_trigger.cpp`, `_edge.cpp`), and `shuttle_demo.cpp` as the only
+`WEAVE_TEST`, calling the subject functions in order.
 
 The SV side is one file per subject: `shuttle_demo_msgs.sv` (the wire classes), then
 `shuttle_demo_publish.sv`, `shuttle_demo_nested.sv`, `shuttle_demo_inherit.sv`,
-`shuttle_demo_mailbox.sv`, `shuttle_demo_requester.sv`. Each module holds the classes it
+`shuttle_demo_namespace.sv`, `shuttle_demo_mailbox.sv`, `shuttle_demo_requester.sv`. Each module
+holds the classes it
 demonstrates and runs standalone; `shuttle_demo.sv` holds only the instantiation, the call order and
 the C++ launch.
 

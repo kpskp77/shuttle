@@ -93,6 +93,25 @@ SHUTTLE_REFLECT(InhBase, seq)
 SHUTTLE_REFLECT_DERIVED(InhMid, InhBase, payload)
 SHUTTLE_REFLECT_DERIVED(InhDeep, InhMid, flag)
 
+// A message type declared inside a namespace (used by case13). SHUTTLE_REFLECT can only run at
+// global scope, so the type is registered through a global unqualified alias: the macro's first
+// argument doubles as the type tag, which makes the alias spelling "NsTx" the thing an SV class
+// must declare as type_tag. Reflecting the qualified name instead keeps the namespace in the tag
+// ("codec_ns::QualifiedTx"), a string no SV class can carry.
+namespace codec_ns {
+struct NsTx {
+  std::uint32_t addr = 0;
+  std::uint8_t code = 0;
+};
+struct QualifiedTx {
+  std::uint16_t v = 0;
+};
+}  // namespace codec_ns
+
+using NsTx = codec_ns::NsTx;
+SHUTTLE_REFLECT(NsTx, addr, code)
+SHUTTLE_REFLECT(codec_ns::QualifiedTx, v)
+
 // A type with no codec (used by the static-capability probe)
 struct NotReflected {
   int x = 0;
@@ -334,6 +353,26 @@ void shuttle_tests_codec() {
     expect_eq(static_cast<long long>(back.seq), 1, "inherited seq");
     expect_eq(static_cast<long long>(back.payload), 0xdeadbeef, "mid-level payload");
     expect_eq(static_cast<long long>(back.flag), 0x2a, "own flag");
+  });
+
+  // case13: a type declared inside a namespace — the global unqualified alias fixes the tag; the
+  // qualified spelling keeps the namespace in the tag, which is why the alias is the usable route
+  run_case(__func__, "case13", [] {
+    expect(shuttle::type_tag_of<codec_ns::NsTx>() == "NsTx",
+           "the tag is the alias spelling, not the namespace-qualified name");
+    expect(shuttle::has_codec_v<codec_ns::NsTx>, "the alias registered the original type");
+    NsTx tx{0x01020304, 0xAB};
+    expect_bytes(shuttle::encode(tx), hex({0x01, 0x02, 0x03, 0x04, 0xAB}),
+                 "a namespaced type encodes like any other struct");
+    const NsTx back = shuttle::decode<codec_ns::NsTx>(shuttle::encode(tx));
+    expect_eq(static_cast<long long>(back.addr), static_cast<long long>(tx.addr),
+              "namespaced round trip: addr");
+    expect_eq(static_cast<long long>(back.code), static_cast<long long>(tx.code),
+              "namespaced round trip: code");
+    expect(shuttle::type_tag_of<codec_ns::QualifiedTx>() == "codec_ns::QualifiedTx",
+           "reflecting the qualified name keeps the namespace in the tag");
+    expect_bytes(shuttle::encode(codec_ns::QualifiedTx{0x1234}), hex({0x12, 0x34}),
+                 "the qualified spelling still encodes normally");
   });
 
   report(__func__);

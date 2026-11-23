@@ -37,6 +37,19 @@ module shuttle_tests_xlang;
     endtask
   endclass
 
+  // ── Namespaced-type sink: decodes the C++-side XNsMsg and records its type tag ──
+  class NsRec implements shuttle_sink;
+    int     count = 0;
+    string  tag = "";
+    XNsMsg  last;
+    virtual task invoke(input byte payload[], input shuttle_meta meta);
+      XNsMsg m = XNsMsg::unpack(payload);
+      count++;
+      tag = meta.type_tag;
+      last = m;
+    endtask
+  endclass
+
   // ── Cross-language round trip: C++ side in tests/shuttle_tests_xlang.cpp ────────────────────
   task automatic case_xlang();
     automatic Rec                 rec       = new();
@@ -216,6 +229,50 @@ module shuttle_tests_xlang;
     h.wait_done();
     ok = (h.first_error() == "");
     check(ok, "xlang.inherit.no_failure");
+  endtask
+
+  // ── Namespaced C++ message type (mirror case10 of tests/shuttle_tests_xlang.cpp) ──
+  // The C++ struct is declared in namespace xlang_ns and reflected through a global unqualified
+  // alias, so its type_tag is "XNsMsg" — the string shuttle_reflect_begin(XNsMsg) declares here.
+  // Reflecting the qualified name on the C++ side would tag the frames "xlang_ns::XNsMsg", which
+  // no SV class can declare; the subscriber would then simply never be a target.
+  task automatic case_xlang_namespace();
+    automatic NsRec                rec       = new();
+    automatic shuttle_subscription          sub       = shuttle_subscribe("xlang.ns.cpp2sv", rec, "XNsMsg");
+    automatic shuttle_publisher #(XNsMsg) ready_pub = new("xlang.ns.ready");
+    automatic shuttle_publisher #(XNsMsg) to_cpp    = new("xlang.ns.sv2cpp");
+    automatic XNsMsg               m         = new();
+    automatic shuttle_handle       h;
+    automatic bit                  ok;
+
+    check(sub.id() != 0, "xlang.ns.subscribed");
+
+    // ready broadcast (retained): the C++ side subscribes after this and gets the frame replayed
+    ready_pub.set_retained(1);
+    m.code  = 1;
+    m.delta = 0;
+    h = ready_pub.publish_serial(m);
+    h.wait_done();
+    ok = (h.first_error() == "");
+    check(ok, "xlang.ns.ready_no_failure");
+
+    // wait for the C++-side frame; bounded so a broken handshake fails loudly
+    for (int i = 0; i < 5000 && rec.count < 1; i++) #(10us);
+    check(rec.count == 1, "xlang.ns.count");
+    check(rec.tag == "XNsMsg", "xlang.ns.tag_is_alias_spelling");
+    if (rec.last != null) begin
+      check(rec.last.code == 32'hC0FFEE03, "xlang.ns.code");
+      check(rec.last.delta == -9, "xlang.ns.delta");
+    end
+
+    // answer with another namespaced frame; wait_done returning means the C++ callback finished
+    m = new();
+    m.code  = 7;
+    m.delta = -11;
+    h = to_cpp.publish_serial(m);
+    h.wait_done();
+    ok = (h.first_error() == "");
+    check(ok, "xlang.ns.no_failure");
   endtask
 
 endmodule
