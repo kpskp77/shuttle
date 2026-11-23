@@ -3,7 +3,7 @@
 //
 // This file is an AGGREGATOR: the package body is split into functional
 // fragments (`include`d below, one concern per file — dpi / constants /
-// meta / subscription / mailbox / publication / publisher / requester / dispatch /
+// meta / subscription / mailbox / publication / publisher / requester / ref / dispatch /
 // codec), so each part can be read and reviewed on its own. Compile THIS file
 // only; the fragments are not standalone compilation units. The shuttle_reflect_begin
 // / shuttle_field / shuttle_reflect_end macros (sv/shuttle_reflect.svh) are
@@ -89,6 +89,7 @@ package shuttle_pkg;
   `include "shuttle_requester.svh"
   `include "shuttle_dispatch.svh"
   `include "shuttle_codec.svh"
+  `include "shuttle_ref.svh"
 
 endpackage : shuttle_pkg
 

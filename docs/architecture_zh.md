@@ -410,6 +410,69 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 派生句柄拷进基类型局部变量：VCS 2018.09 拒绝把派生句柄接到 `ref` 形参（`Error-[IRPC]`），
 而拷贝是安全的——生成的入口在进入 `__codec` 之前已经构造好句柄所指的对象。
 
+### 对象引用以内部 id 过线
+
+线上类型空间就是可编码的载荷：帧是带声明字段的值，所以带队列、嵌套句柄或接口的类天生
+当不了载荷。放宽格式不可行——句柄会破坏值语义，而 `chandle` 根本进不了 `{>>{...}}`。
+获准的绕法是 `sv/shuttle_ref.svh`：对象留在 SV 侧的表里，帧携带 4 字节引用，类型标签是
+`$typename(T)`。broker 对此一无所知——串行、并发、now、触发器、retained 重放与跨语言
+路由都照常作用于这条引用帧，只负责转发的 C++ 对端看到的就是一个普通的大端 u32。SV 侧用
+`shuttle_u32`（`pack_obj` / `unpack_into`）编码这个 u32，与反射过的 `logic [31:0]` 字段同一条
+编解码通路——线上格式只有一份，没有第二份。
+
+对外接口刻意沿用值通路已有的形状，所以用户代码里永远看不到 id：
+
+| 引用通路 | 对应的值通路 |
+|---|---|
+| `shuttle_ref_publisher #(T)::publish_now/serial/concurrent(obj, trig)` | `shuttle_publisher #(T)::publish_*` |
+| `set_retained(bit)` | 同上 |
+| `shuttle_ref_mailbox #(T)::new(topic[, capacity, overflow])`、`try_recv`/`recv`/`size`/`close` | `shuttle_mailbox` |
+| `shuttle_ref_subscription #(T)::blocking/nonblocking(topic, sink)` | `shuttle_subscribe` / `shuttle_subscribe_nb` |
+| `shuttle_ref_sink #(T)::on_msg(value, meta)` | `shuttle_sink::invoke`（替你解包） |
+| `typedef shuttle_ref_codec #(T) MyLink;` 配 `` `shuttle_field(obj, MyLink) `` | 声明字段的 codec（嵌套、向量、枚举同理） |
+
+`on_msg` 是 function：解析句柄不消耗仿真时间，与 `shuttle_responder::respond` 同一条规则。
+需要耗时的接收方把句柄塞进自己的 `shuttle_ref_mailbox` 或 task。
+
+`shuttle_requester`、`shuttle_serve`、`shuttle_mailbox` 都没有引用版本，也不需要：请求/响应本身
+承载任何反射过的消息，而消息可以在数据旁边携带一个对象。机制就是 codec——用
+`shuttle_ref_codec` 声明该字段（要过一层 typedef，因为 `` `shuttle_field `` 收的是 codec 名字），
+请求帧、回复帧、retained 帧或 mailbox 条目里放的就是引用而不是副本：
+
+```systemverilog
+typedef shuttle_ref_codec #(FObj) FObj_link;
+class AskObj;
+  FObj         obj;          // 线上 4 字节
+  logic [31:0] mode;
+  `shuttle_reflect_begin(AskObj)
+    `shuttle_field(obj, FObj_link)
+    `shuttle_field(mode, shuttle_u32)
+  `shuttle_reflect_end
+endclass
+shuttle_requester #(AskObj, RspVal) rq = new ("svc.ask", "svc.rsp");  // 原样使用
+```
+
+两种形态共用同一张表、同一套编码，所以对象可以从引用帧进来、通过值帧出去，
+在对端仍旧解析回同一个句柄。
+
+引用是表的索引而不是真引用，由此得出四条约束：
+
+- `T` 在每一侧都必须是同一个类类型（声明在 package 里，或放进两侧共同 include 的文件）：
+  表与标签按 `#(T)` 特化隔离，也没有运行时注册步骤。标签既然是 `$typename(T)`，package 作用域
+  的类发出的帧就带 `pkg::T`——C++ 对端用这个拼写反射一个只含 `std::uint32_t` 的结构体即可。
+- id 单调分配、永不复用，所以过期引用在投递处大声 `$error`，绝不静默指向更新的对象；
+  mailbox 把这类帧挡在队列之外，计入 `unresolved()`。
+- 表持强引用，所以发布方只在携带该引用的在途帧与 retained 帧都消费完之后才 `free(obj)`
+  或 `clear()`。retained 帧在重放时才重新查表——这既让发布后的字段改动对迟到的订阅者可见，
+  也让过早 `free` 变成大声报错而不是悬空读。
+- 同一对象重复发布只占一个引用，所以高频发布方不会逐帧撑大表；表只随不同对象增长，
+  而 `free` 是它唯一的收缩途径。
+
+机制是纯 SV——无 DPI 入口、无 broker 状态——因为只有持有方解析，另一侧把引用当数据。
+它不是第二条消息通路：帧照旧走 broker，带 broker 的计数、顺序与完成语义，引用只决定
+载荷里的数字是什么意思。整张对象图这样搬运是刻意的用户侧组合，与 `Mailbox` /
+`Requester` 同一思路。
+
 ### `Meta` 的字符串是视图，`pubs` 只登记外部发布
 
 `Meta::topic_name` / `Meta::type_tag` 是指向 broker 已有且永不迁移存储的
@@ -471,7 +534,8 @@ shuttle 提供仿真进程内的类型化发布-订阅投递调度，C++、Syste
   `shuttle::now_fs()` 式转发包装（曾经有过，已删）。
 
 已知限制：SV 侧 `$error` 不传回 C++（协议后果；严格错误通道需要扩展 `dispatch` 的返
-回值）；跨语言载荷是值语义、字段子集——无 variant、指针、引用或句柄；
+回值）；跨语言载荷是值语义、字段子集——线上无 variant、指针、引用或句柄，对象图只能
+以内部对象 id 过线（见上），不作为载荷；
 `TopicInfo::deferred`（topic 累计）与 `Publication::deferred()`（每帧）在两个粒度上共
 用一个名字。
 

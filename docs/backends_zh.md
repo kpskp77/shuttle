@@ -47,7 +47,7 @@ svdpi 后端是唯一带外部订阅者通道的构建，由四块关注点严�
 | `src/backend/svdpi/facade.cpp` | 外部门面：`ext_*`（字节帧发布、外部订阅者注册）与 `pub_*`（按 `pub_id` 的查询/等待）。只做 broker 编排；不认识 DPI。 |
 | `src/backend/svdpi/bridge.cpp` | `detail::backend` 实现：`dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery` 加帧拉取通道。 |
 | `src/backend/svdpi/svdpi_internal.hpp` | 目录私有头：`SvScopeGuard`、`FrameContext`、`g_frame`、线上编码常量、`ext_*`/`pub_*` 声明。 |
-| `sv/shuttle_pkg.sv` | SV 侧包：DPI import/export 声明、常量、订阅注册表与用户 API（`shuttle_publisher`、`shuttle_requester`、`shuttle_call`、`shuttle_responder`、`shuttle_serve`、`shuttle_subscription`、`shuttle_publication`、`shuttle_trigger`、`shuttle_mailbox`）。 |
+| `sv/shuttle_pkg.sv` | SV 侧包：DPI import/export 声明、常量、订阅注册表与用户 API（`shuttle_publisher`、`shuttle_requester`、`shuttle_call`、`shuttle_responder`、`shuttle_serve`、`shuttle_subscription`、`shuttle_publication`、`shuttle_trigger`、`shuttle_mailbox`、`shuttle_ref_publisher` / `shuttle_ref_mailbox` / `shuttle_ref_subscription` / `shuttle_ref_codec`）。 |
 
 声明与定义按"谁调用谁"切开：SV 调进 `dpi.cpp`，后者以 `shuttle::detail::*` 的名义调用
 `facade.cpp`；broker 经 `src/backend/backend.hpp` 的 5 入口契约调用 `bridge.cpp`；

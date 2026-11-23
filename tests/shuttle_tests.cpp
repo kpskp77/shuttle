@@ -27,6 +27,7 @@ void shuttle_tests_trigger();
 void shuttle_tests_mailbox();
 void shuttle_tests_requester();
 #ifdef SHUTTLE_TESTS_XLANG
+void shuttle_tests_ref();
 void shuttle_tests_xlang();
 #endif
 
@@ -38,6 +39,7 @@ WEAVE_TEST(shuttle_tests) {
   shuttle_tests_mailbox();
   shuttle_tests_requester();
 #ifdef SHUTTLE_TESTS_XLANG
+  shuttle_tests_ref();
   shuttle_tests_xlang();
 #endif
 }

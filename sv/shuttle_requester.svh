@@ -58,7 +58,7 @@ endclass
 // corr_id echo through shuttle_publisher::reply — so the responder never sees
 // bytes or correlation:
 //
-//   class Doubler extends shuttle_responder #(Rq, Rsp);
+//   class Doubler implements shuttle_responder #(Rq, Rsp);
 //     virtual function Rsp respond(input Rq req, input shuttle_meta meta);
 //       Rsp r = new(); r.data = req.op * 2; return r;
 //     endfunction

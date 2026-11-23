@@ -25,22 +25,23 @@ SV 发布。systemc 后端只跑 C++ 演示，入口是 `tests/shuttle_tests_mai
 | `shuttle_demo_nested.cpp` | C++ | 嵌套消息类型（一个反射结构体内含两个同类型反射结构体） |
 | `shuttle_demo_inherit.cpp` | C++ | 继承消息类型（`SHUTTLE_REFLECT_DERIVED`，每层把基类子对象委派给基类 codec） |
 | `shuttle_demo_namespace.cpp` | C++ | 声明在命名空间里的消息类型：经全局非限定别名反射，`type_tag` 与 SV 类对得上 |
+| `shuttle_demo_ref.cpp` | C++ | 只看到引用的线路形态（`struct RefId { uint32_t object; }`）：一个转发方，用 retained 帧报到、原样转发帧，并（有界地）等 SV 侧回报往返完成 |
 | `shuttle_demo_mailbox.cpp` | C++ | 邮箱即订阅者、`recv(timeout)` 排空、有界队列（`drop_oldest`/`drop_newest`/`reject`）、构造时拒绝 `OverflowPolicy::block`、拷贝共享同一队列、`close()`、无关联号的请求/应答 |
 | `shuttle_demo_requester.cpp` | C++ | `Requester`/`serve` 与 `corr_id` 去复用、并发在途调用、旁观者与响应者之分（`wait_for(n)`）、响应方超时、抛异常的响应者落为 `Failure` |
 | `shuttle_demo_trigger.cpp` | C++ | `Trigger`：`after(Event)` / `after(duration)` / `after(Task)` / `after_all`，句柄完成与触发解耦 |
 | `shuttle_demo_edge.cpp` | C++ | 失败与超时边界：`publish_now` 碰到 blocking 入口（`CapabilityError`）、`wait(timeout)` 的判定值 |
 | `shuttle_demo_msgs.hpp` | C++ | 各对象文件共用的线路层消息类型（`shuttle_demo_msgs.sv` 的镜像） |
 | `shuttle_demo.cpp` | C++（顶层） | 按顺序调用各对象文件，C++ 侧唯一的 `WEAVE_TEST` |
-| `shuttle_demo.sv` | SV | `shuttle_publisher`/`shuttle_subscription`/`shuttle_subscribe_nb`、一个类挂两个入口、`publish_now`/`publish_serial`/`publish_concurrent`、邮箱（纯 SV）、多 publisher、嵌套消息类型、继承消息类（`` `shuttle_base ``）、命名空间消息类、纯 SV 请求者（`shuttle_requester`/`shuttle_call` 对接 nonblocking 响应者的 `shuttle_publisher::reply`）、退订；并经 `weave_run` 启动 C++ 演示 |
+| `shuttle_demo.sv` | SV | `shuttle_publisher`/`shuttle_subscription`/`shuttle_subscribe_nb`、一个类挂两个入口、`publish_now`/`publish_serial`/`publish_concurrent`、邮箱（纯 SV）、多 publisher、嵌套消息类型、继承消息类（`` `shuttle_base ``）、命名空间消息类、对象引用（`shuttle_ref_publisher`/`shuttle_ref_mailbox`/`shuttle_ref_subscription` 共用一个对象，经 C++ 转发方回环后解回同一个句柄）、经 `shuttle_ref_codec` 在请求/应答里携带引用（`shuttle_requester`/`shuttle_serve` 原样使用）、纯 SV 请求者（`shuttle_requester`/`shuttle_call` 对接 nonblocking 响应者的 `shuttle_publisher::reply`）、退订；并经 `weave_run` 启动 C++ 演示 |
 
 C++ 侧与之一一对应：`shuttle_demo_msgs.hpp`（线路层类型）、每个演示一个对象文件
-（`shuttle_demo_publish.cpp`、`_nested.cpp`、`_inherit.cpp`、`_namespace.cpp`、`_mailbox.cpp`、
-`_requester.cpp`、`_trigger.cpp`、`_edge.cpp`），`shuttle_demo.cpp` 作为 C++ 侧唯一的 `WEAVE_TEST`
-按顺序调用它们。
+（`shuttle_demo_publish.cpp`、`_nested.cpp`、`_inherit.cpp`、`_namespace.cpp`、`_ref.cpp`、
+`_mailbox.cpp`、`_requester.cpp`、`_trigger.cpp`、`_edge.cpp`），`shuttle_demo.cpp` 作为 C++ 侧唯一的
+`WEAVE_TEST` 按顺序调用它们。
 SV 侧一个对象一个文件：`shuttle_demo_msgs.sv`（线路层消息类），之后是 `shuttle_demo_publish.sv`、
 `shuttle_demo_nested.sv`、`shuttle_demo_inherit.sv`、`shuttle_demo_namespace.sv`、
-`shuttle_demo_mailbox.sv`、`shuttle_demo_requester.sv`。每个模块自带它所演示的类，可单独运行；
-`shuttle_demo.sv` 只负责实例化、调用顺序与启动 C++ 演示。
+`shuttle_demo_ref.sv`、`shuttle_demo_mailbox.sv`、`shuttle_demo_requester.sv`。每个模块自带它所演示的类，
+可单独运行；`shuttle_demo.sv` 只负责实例化、调用顺序与启动 C++ 演示。
 
 ## 预期输出（svdpi 后端）
 
