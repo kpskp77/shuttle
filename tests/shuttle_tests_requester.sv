@@ -46,8 +46,12 @@ module shuttle_tests_requester;
     endfunction
   endclass
 
-  // ── Cross-language request/response: C++ Requester side in shuttle_tests_requester.cpp case11 ─────────
-  // The ready broadcast is retained, so the C++ side may subscribe before or after it is published.
+  // ── Cross-language request/response: the responder service the C++ requester case (case5 in
+  //    tests/shuttle_tests_xlang.cpp) calls ─────────
+  // Subscribe, announce readiness (retained — the C++ side may subscribe before or after it is
+  // published), then rendezvous with the C++ case through xlang_barrier. The task runs in the
+  // forked cross-language group (see shuttle_tests.sv), so its position in the SV case list
+  // carries no timing meaning.
   task automatic case_rq_xlang();
     automatic SvRqSink            sink  = new();
     automatic shuttle_subscription         sub   = shuttle_subscribe("rq.xlang.req", sink, "XRqReq");
@@ -58,6 +62,8 @@ module shuttle_tests_requester;
     ready.set_retained(1);
     void'(ready.publish_serial(note));
     check(sub.id() != 0, "rq_xlang.responder_registered");
+    xlang_barrier("case5");
+    g_xlang_done++;
   endtask
 
   // ── SV-side request/response with both ends in SV: the requester allocates its corr_id through
@@ -151,9 +157,12 @@ module shuttle_tests_requester;
     check(rq.valid(), "rqsv.valid");
     check(marked.valid(), "rqsv.marked_valid");
 
-    // The C++ responder announces itself with a retained frame, so subscribing first is enough —
-    // but it registers only after its own earlier cases, so this wait spans them (bounded so a
-    // broken handshake fails loudly instead of hanging the run).
+    // Rendezvous with C++ case10: its serve() responder is registered before the C++ barrier,
+    // so once both sides pass, the request below always has its target.
+    xlang_barrier("case10");
+
+    // The C++ responder also announces itself with a retained frame; the wait cannot span other
+    // cases anymore, but stays bounded so a broken handshake fails loudly instead of hanging.
     for (int i = 0; i < 100_000 && ready.size() == 0; i++) #(10us);  // up to 1s
     check(ready.size() == 1, "rqsv.ready_seen");
 
@@ -166,6 +175,7 @@ module shuttle_tests_requester;
       if (all.size() == 1) check(all[0].data == 42, "rqsv.reply_value");
       check(rq.stale_responses() == 0, "rqsv.no_stale");
     end
+    g_xlang_done++;
   endtask
 
 endmodule

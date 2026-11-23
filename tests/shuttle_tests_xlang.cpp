@@ -1,14 +1,14 @@
 // Cross-language round-trip self-checks (svdpi backend only): C++ → SV and SV → C++
 // publish/subscribe interoperability.
 //
-// Paired with the xlang section of tests/shuttle_tests.sv; the handshake order is:
-//   1. the SV side first subscribes for C++→SV, then publishes one frame on "xlang.sv_ready"
-//   (retained);
-//   2. the C++ side subscribes to "xlang.sv_ready" (retained guarantees delivery even if SV
-//   published first),
-//      then publishes 3 frames in order on "xlang.cpp2sv" and waits for each — completion means all
-//      3 SV-side callbacks have already finished (that is exactly the Publication completion
-//      semantics);
+// Paired with the cross-language tasks in tests/shuttle_tests.sv (forked concurrently on the SV
+// side). Every case pair rendezvouses through xlang_barrier("<case>") before touching business
+// topics: each side publishes a retained marker on its own handshake topic and waits for the
+// peer's, so the pairing is order-free and adding a case needs no call-list timing. Cases:
+//   1. case1 waits for the SV-side ready signal on "xlang.sv_ready" (retained);
+//   2. case2 publishes 3 frames in order on "xlang.cpp2sv", waiting for each — completion means
+//   all 3 SV-side callbacks have already finished (that is exactly the Publication completion
+//   semantics);
 //   3. once the SV side confirms the 3 frames, it publishes 3 frames on "xlang.sv2cpp";
 //   4. the C++ side waits for and validates these 3 frames (content, type_tag, monotonic seq);
 //   5. case6 covers the one shape that used to break: a *mixed* target set on a single topic — an
@@ -59,6 +59,13 @@ using shuttle_test::expect;
 using shuttle_test::expect_eq;
 using shuttle_test::report;
 using shuttle_test::run_case;
+
+// Handshake marker for the per-case rendezvous: one byte, no asserted fields. The SV mirror is
+// class XHs in tests/shuttle_tests_runner.sv; both sides only care that a frame arrives.
+struct XHs {
+  std::uint8_t v = 0;
+};
+SHUTTLE_REFLECT(XHs, v)
 
 // Request/response payloads for the Requester ↔ SV-responder case (the SV mirror is
 // SvRqReq/SvRqResp in tests/shuttle_tests.sv; the type_tag must match the SHUTTLE_REFLECT
@@ -159,6 +166,26 @@ constexpr const char* kRqSvRespTopic = "xlang.rqsv.resp";        // C++ responde
 constexpr const char* kRqSvMarkRespTopic =
     "xlang.rqsv.mark.resp";  // response topic marked by SV only (no C++ responder)
 
+// Per-case rendezvous with the SV side (the mirror task is xlang_barrier in tests/
+// shuttle_tests_runner.sv): publish a retained marker on "xlang.hs.cpp.<name>", then wait
+// (bounded — the bound is a watchdog, not the synchronization) for the SV marker on
+// "xlang.hs.sv.<name>". The retained replay makes the pairing order-free, so a new
+// cross-language case needs exactly one xlang_barrier("<case>") on each side and no call-list
+// timing to reason about. Chained cases need no barrier of their own: case2/3/4 pair with the
+// same SV task as case1, whose barrier already proves that task passed its registration point.
+void xlang_barrier(const char* name) {
+  weave::Event ev;
+  shuttle::Subscription peer = shuttle::subscribe_bytes(
+      "xlang.hs.sv." + std::string(name),
+      [&ev](const std::vector<std::byte>&, const shuttle::Meta&) { ev.set(); });
+  shuttle::Publisher<XHs> mine("xlang.hs.cpp." + std::string(name));
+  mine.set_retained(true);
+  mine.publish_serial(XHs{1}).wait();
+  for (int i = 0; i < 2000 && !ev.is_set(); ++i) weave::sleep(100_us);
+  expect(ev.is_set(), "xlang_barrier: the SV peer never showed up for this case");
+  (void)peer;
+}
+
 // State shared across cases (subscription handles must outlive the test, so they live in a heap
 // holder)
 struct XlangState {
@@ -206,8 +233,10 @@ void shuttle_tests_xlang() {
   auto st = std::make_shared<XlangState>();
 
   // case1: wait for the SV-side ready signal (subscribing to "xlang.sv_ready"; retained semantics
-  // guarantee no loss)
+  // guarantee no loss). The barrier first proves the SV task has subscribed on "xlang.cpp2sv" and
+  // published its retained ready frame.
   run_case(__func__, "case1", [st] {
+    xlang_barrier("case1");
     st->ready = shuttle::subscribe_bytes(
         kReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
           ++st->ready_frames;
@@ -279,10 +308,10 @@ void shuttle_tests_xlang() {
   });
 
   // case5: cross-language request/response — a C++ Requester calls the SV responder registered by
-  // case_rq_xlang in tests/shuttle_tests.sv (it registers first and broadcasts readiness as a
-  // retained frame). The SV side copies meta.corr_id into its response frame, so the C++ reply
-  // table can match the answer across the language boundary.
+  // case_rq_xlang in tests/shuttle_tests_requester.sv. The barrier proves the responder exists
+  // and its retained ready frame is already latched, so the mailbox recv below cannot miss it.
   run_case(__func__, "case5", [] {
+    xlang_barrier("case5");
     auto ready = shuttle::mailbox_bytes("rq.xlang.ready");
     expect(ready.recv(50_ms).has_value(), "the SV responder announced readiness");
 
@@ -303,6 +332,7 @@ void shuttle_tests_xlang() {
   // callback that blocks fails with "weave: blocking primitive outside task context" and shows up
   // as a subscriber failure instead of a delivery.
   run_case(__func__, "case6", [st] {
+    xlang_barrier("case6");
     st->mixed_ready = shuttle::subscribe_bytes(
         kMixedReadyTopic,
         shuttle::nb([st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
@@ -367,6 +397,7 @@ void shuttle_tests_xlang() {
   // both sides; the ready frame's 20-byte wire length checks the inline nested layout
   // (u32 id + 2 x (i32 x + i32 y), no length prefix).
   run_case(__func__, "case7", [st] {
+    xlang_barrier("case7");
     st->nest_ready = shuttle::subscribe_bytes(
         kNestReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
           expect(bytes.size() == 20, "the nested ready frame wire length should be 20 bytes");
@@ -410,6 +441,7 @@ void shuttle_tests_xlang() {
 
   // case8: inheritance chain — each level delegates its base subobject to the base codec
   run_case(__func__, "case8", [st] {
+    xlang_barrier("case8");
     st->inh_ready = shuttle::subscribe_bytes(
         kInhReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
           expect(bytes.size() == 7, "the chain ready frame wire length should be 4 + 2 + 1 bytes");
@@ -458,6 +490,7 @@ void shuttle_tests_xlang() {
   // back here under the same tag. The ready frame's 6-byte wire length pins u32 + i16 with no
   // padding, and the negative delta checks the signed field across the DPI.
   run_case(__func__, "case9", [st] {
+    xlang_barrier("case9");
     st->ns_ready = shuttle::subscribe_bytes(
         kNsReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
           expect(bytes.size() == 6, "the namespaced ready frame wire length should be 6 bytes");
@@ -512,6 +545,10 @@ void shuttle_tests_xlang() {
           return XRqResp{req.op * 2};
         }));
     (void)server;
+
+    // Rendezvous only after the responder exists: the SV side sends its request as soon as both
+    // sides pass the barrier, so a publish-before-register would race the request.
+    xlang_barrier("case10");
 
     // Announce readiness only once the responder exists: the SV side sends its request as soon as
     // it sees this frame.

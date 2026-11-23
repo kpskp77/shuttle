@@ -67,6 +67,9 @@ module shuttle_tests_xlang;
     h = ready_pub.publish_serial(m);
     h.wait_done();
 
+    // rendezvous with C++ case1 (registration above is complete, so case2's publish has a target)
+    xlang_barrier("case1");
+
     // 2) wait until the C++ side has sent all 3 frames (10us steps, up to 50ms of simulation time)
     for (int i = 0; i < 5000 && rec.blk_count < 3; i++) #(10us);
 
@@ -86,6 +89,7 @@ module shuttle_tests_xlang;
       ok = (h.first_error() == "");
       check(ok, "xlang.sv2cpp.no_failure");
     end
+    g_xlang_done++;
   endtask
 
   // A sink that publishes from inside its own callback and then suspends. That nested publish
@@ -130,6 +134,9 @@ module shuttle_tests_xlang;
     h.wait_done();
     check(h.done() && h.first_error() == "", "xlang.mixed.ready_no_failure");
 
+    // rendezvous with C++ case6 (the sink and the nested publisher above are ready)
+    xlang_barrier("case6");
+
     // the frame itself comes from the C++ side (0xA1/0xB2); bounded so a broken handshake fails loudly
     for (int i = 0; i < 20000 && sink.count == 0; i++) #(10us);
     check(sink.count == 1, "xlang.mixed.sink_delivered");
@@ -137,6 +144,7 @@ module shuttle_tests_xlang;
       check(sink.last.addr == 32'hA1, "xlang.mixed.sink_payload_addr");
       check(sink.last.data == 32'hB2, "xlang.mixed.sink_payload_data");
     end
+    g_xlang_done++;
   endtask
 
   // ── Cross-language nested message types: C++ side in tests/shuttle_tests_xlang.cpp case7 ─────────
@@ -163,6 +171,9 @@ module shuttle_tests_xlang;
     ok = (h.first_error() == "");
     check(ok, "xlang.nest.ready_no_failure");
 
+    // rendezvous with C++ case7
+    xlang_barrier("case7");
+
     // wait for the C++-side nested frame; bounded so a broken handshake fails loudly
     for (int i = 0; i < 5000 && rec.count < 1; i++) #(10us);
     check(rec.count == 1, "xlang.nest.count");
@@ -183,6 +194,7 @@ module shuttle_tests_xlang;
     h.wait_done();
     ok = (h.first_error() == "");
     check(ok, "xlang.nest.no_failure");
+    g_xlang_done++;
   endtask
 
   // ── Inheritance chain, both directions (mirror case8 of tests/shuttle_tests_xlang.cpp) ──
@@ -211,6 +223,9 @@ module shuttle_tests_xlang;
     ok = (h.first_error() == "");
     check(ok, "xlang.inherit.ready_no_failure");
 
+    // rendezvous with C++ case8
+    xlang_barrier("case8");
+
     // wait for the C++-side frame; bounded so a broken handshake fails loudly
     for (int i = 0; i < 5000 && rec.count < 1; i++) #(10us);
     check(rec.count == 1, "xlang.inherit.count");
@@ -229,9 +244,10 @@ module shuttle_tests_xlang;
     h.wait_done();
     ok = (h.first_error() == "");
     check(ok, "xlang.inherit.no_failure");
+    g_xlang_done++;
   endtask
 
-  // ── Namespaced C++ message type (mirror case10 of tests/shuttle_tests_xlang.cpp) ──
+  // ── Namespaced C++ message type (mirror case9 of tests/shuttle_tests_xlang.cpp) ──
   // The C++ struct is declared in namespace xlang_ns and reflected through a global unqualified
   // alias, so its type_tag is "XNsMsg" — the string shuttle_reflect_begin(XNsMsg) declares here.
   // Reflecting the qualified name on the C++ side would tag the frames "xlang_ns::XNsMsg", which
@@ -256,6 +272,9 @@ module shuttle_tests_xlang;
     ok = (h.first_error() == "");
     check(ok, "xlang.ns.ready_no_failure");
 
+    // rendezvous with C++ case9
+    xlang_barrier("case9");
+
     // wait for the C++-side frame; bounded so a broken handshake fails loudly
     for (int i = 0; i < 5000 && rec.count < 1; i++) #(10us);
     check(rec.count == 1, "xlang.ns.count");
@@ -273,6 +292,7 @@ module shuttle_tests_xlang;
     h.wait_done();
     ok = (h.first_error() == "");
     check(ok, "xlang.ns.no_failure");
+    g_xlang_done++;
   endtask
 
 endmodule

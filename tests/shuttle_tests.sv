@@ -8,8 +8,9 @@
 //
 // Composition:
 //   · every suite module owns its classes and its case tasks, and runs standalone;
-//   · sv_cases below is the only coupling: the order of the calls, because cases share one broker
-//     and one simulation timeline;
+//   · sv_cases below is the only coupling: local cases run in call order (one broker, one timeline);
+//     the cross-language cases are forked into their own processes and rendezvous with their C++
+//     peers through xlang_barrier, so their order is free;
 //   · run_cpp_tests launches the C++-side tests (WEAVE_TEST in tests/*.cpp) via weave_run; both
 //     sides share one broker, so they see each other.
 //
@@ -36,12 +37,22 @@ module shuttle_tests;
   shuttle_tests_xlang     m_xlang();
   shuttle_tests_requester m_requester();
 
-  // ── SV-side case driver: local cases first, then the cross-language round trip ──────────────────────
+  // ── SV-side case driver: local cases in this process, cross-language cases forked alongside ──
   initial begin : sv_cases
-    // The request/response responder is a service: register it (and broadcast readiness) before
-    // anything else, otherwise the C++ Requester test would wait for it while this block waits for
-    // the C++ xlang tests — a circular wait resolved only by a timeout.
-    m_requester.case_rq_xlang();
+    // The cross-language cases rendezvous with their C++ peers through xlang_barrier (one barrier
+    // per case pair), so each runs in its own process: their order relative to each other and to
+    // the local cases carries no timing meaning, and a new case is just a new forked task plus one
+    // barrier call on each side; the g_xlang_done counter below collects the group
+    // before the verdict.
+    fork
+      m_requester.case_rq_xlang();
+      m_xlang.case_xlang();
+      m_xlang.case_xlang_mixed();
+      m_xlang.case_xlang_nested();
+      m_xlang.case_xlang_inherit();
+      m_xlang.case_xlang_namespace();
+      m_requester.case_rq_sv_requester();
+    join_none
     m_publish.case_now_sync();
     m_publish.case_now_blocking();
     m_publish.case_publish_serial();
@@ -61,16 +72,11 @@ module shuttle_tests;
     m_trigger.case_edge_trigger();
     m_trigger.case_self_wait();
     m_mailbox.case_mailbox();
-    m_xlang.case_xlang();
-    m_xlang.case_xlang_mixed();
-    m_xlang.case_xlang_nested();
-    m_xlang.case_xlang_inherit();
-    m_xlang.case_xlang_namespace();
-    // SV-side request/response last: the cross-language half waits for the C++ responder, which the
-    // C++ case9 registers only after its earlier cases — running it earlier would make both sides
-    // wait for each other.
+    // SV-side request/response stays in this process: both ends are SV, so it needs no barrier.
     m_requester.case_sv_requester();
-    m_requester.case_rq_sv_requester();
+    // fork...join_none only starts the group; the counter (one increment per task end) is the
+    // join, because `wait fork` would also collect weave's C++-spawned delivery processes.
+    wait (g_xlang_done == 7);
     g_sv_done = 1;
     $display("[sv] %0d passed, %0d failed", g_pass, g_fail);
   end
