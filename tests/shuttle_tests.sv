@@ -2,7 +2,7 @@
 // shuttle_tests.sv — the top of the SV-side test suite of shuttle (on a real simulator, VCS)
 //
 // Compile order: weave_pkg.sv (../weave/sv) → shuttle_pkg.sv (../../sv) → shuttle_tests_fixtures.sv →
-//                shuttle_tests_runner.sv → shuttle_tests_publish/broker/trigger/mailbox/xlang/
+//                shuttle_tests_runner.sv → shuttle_tests_publish/broker/trigger/mailbox/ref/xlang/
 //                requester.sv → this file (vcs is handed the list in this order by xmake.lua).
 // Run: xmake run shuttle_tests_svdpi_vcs (compiled and executed by tests/run-eda.sh).
 //
@@ -34,6 +34,7 @@ module shuttle_tests;
   shuttle_tests_broker    m_broker();
   shuttle_tests_trigger   m_trigger();
   shuttle_tests_mailbox   m_mailbox();
+  shuttle_tests_ref       m_ref();
   shuttle_tests_xlang     m_xlang();
   shuttle_tests_requester m_requester();
 
@@ -51,6 +52,7 @@ module shuttle_tests;
       m_xlang.case_xlang_nested();
       m_xlang.case_xlang_inherit();
       m_xlang.case_xlang_namespace();
+      m_ref.case_ref_xlang();
       m_requester.case_rq_sv_requester();
     join_none
     m_publish.case_now_sync();
@@ -72,11 +74,12 @@ module shuttle_tests;
     m_trigger.case_edge_trigger();
     m_trigger.case_self_wait();
     m_mailbox.case_mailbox();
+    m_ref.run_cases();
     // SV-side request/response stays in this process: both ends are SV, so it needs no barrier.
     m_requester.case_sv_requester();
     // fork...join_none only starts the group; the counter (one increment per task end) is the
     // join, because `wait fork` would also collect weave's C++-spawned delivery processes.
-    wait (g_xlang_done == 7);
+    wait (g_xlang_done == 8);
     g_sv_done = 1;
     $display("[sv] %0d passed, %0d failed", g_pass, g_fail);
   end

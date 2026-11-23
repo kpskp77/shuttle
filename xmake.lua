@@ -67,6 +67,7 @@ target("shuttle_examples_svdpi_vcs", function()
       "examples/shuttle_demo_nested.sv",
       "examples/shuttle_demo_inherit.sv",
       "examples/shuttle_demo_namespace.sv",
+      "examples/shuttle_demo_ref.sv",
       "examples/shuttle_demo_mailbox.sv",
       "examples/shuttle_demo_requester.sv",
       "examples/shuttle_demo.sv",
@@ -93,7 +94,7 @@ if get_config("backend") == "systemc" then
     -- excludes the cross-language suite, which needs the SV peer and is compiled only in the
     -- svdpi backend target (the top leaves it out without SHUTTLE_TESTS_XLANG)
     add_files("tests/*.cpp")
-    remove_files("tests/shuttle_tests_xlang.cpp")
+    remove_files("tests/shuttle_tests_ref.cpp", "tests/shuttle_tests_xlang.cpp")
     add_packages("weave")
   end)
 else
@@ -126,6 +127,7 @@ else
         "tests/shuttle_tests_broker.sv",
         "tests/shuttle_tests_trigger.sv",
         "tests/shuttle_tests_mailbox.sv",
+        "tests/shuttle_tests_ref.sv",
         "tests/shuttle_tests_xlang.sv",
         "tests/shuttle_tests_requester.sv",
         "tests/shuttle_tests.sv",

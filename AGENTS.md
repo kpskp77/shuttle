@@ -62,6 +62,14 @@ no locks, no atomics, no threads anywhere in the broker.
   nonblocking, bounded mailboxes reject `OverflowPolicy::block` at construction, and overflow
   accounting uses `overflowed()` vs `Subscription::dropped()` as the two existing channels. The SV
   mailbox is pure SV (`shuttle_subscribe_nb` + weave events) — no DPI entry for it.
+- Object references cross the wire as a 4-byte internal id: the only user-facing surface is
+  `shuttle_ref_publisher` / `shuttle_ref_mailbox` / `shuttle_ref_subscription` (+ the
+  `shuttle_ref_sink` callback), tagged `$typename(T)`; the id table is internal, ids are monotonic
+  and never reused, and `free(obj)` / `clear()` are the only lifetime verbs. No user-facing
+  `alloc` / `get` / `free`, no DPI entry, no broker state. A reference inside a value message
+  rides the ordinary codec surface (`shuttle_ref_codec #(T)` behind a typedef, used with
+  `` `shuttle_field ``): no `shuttle_ref_requester` / `shuttle_ref_serve` / `shuttle_ref_mailbox`
+  exists, and none is added.
 - Exception classes have out-of-line definitions (a key function) — header-only exceptions break
   cross-DSO `catch` in simv with `undefined symbol`.
 - SV packing is `{>>{...}}` (declaration order, MSB-first per field), matching the C++ `Writer`
@@ -109,6 +117,7 @@ just test-all      # full suites, both backends: tests/*.cpp + tests/shuttle_tes
 | New internal data model | `src/broker/model.hpp` only (backend-independent) |
 | New DPI entry | `src/backend/svdpi/dpi.cpp` + `sv/shuttle_pkg.sv` + the tables in `docs/backends.md` |
 | New backend | `src/backend/<name>/` implementing the 5 entries of `backend.hpp` + the `add_files` line in `xmake.lua` + a chapter in `docs/backends.md` |
+| New SV-only API (no DPI) | `sv/shuttle_<name>.svh` + an `` `include `` line in `sv/shuttle_pkg.sv` + the API list in `docs/backends.md` |
 | New example subject | `examples/shuttle_demo_<subject>.cpp` exposing `void shuttle_demo_<subject>()` (called by `examples/shuttle_demo.cpp`) and `examples/shuttle_demo_<subject>.sv` (listed in the SV compile order in `xmake.lua`) + a row in `examples/README.md` |
 | New test case | `caseN` in `tests/shuttle_tests_<suite>.cpp` + the case task in `tests/shuttle_tests_<suite>.sv`; a new suite also needs its call in `tests/shuttle_tests.cpp` / `tests/shuttle_tests.sv` and the SV file in the `xmake.lua` list |
 | New rule / guarantee | this file (imperative, diff-checkable); its *why* goes to `docs/architecture.md` |

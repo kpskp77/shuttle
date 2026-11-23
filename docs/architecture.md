@@ -469,6 +469,78 @@ unpack leg of `` `shuttle_base `` copies the derived handle into a base-typed lo
 2018.09 rejects a derived handle for a `ref` formal (`Error-[IRPC]`), and the copy is safe because
 the generated entry points have already constructed the object the handle refers to.
 
+### Object references cross the wire as an internal id
+
+The wire's type space is the encodable payloads: a frame is a value with declared fields, so a
+class carrying a queue, a nested handle or an interface cannot be a payload. Widening the format is
+not an option — a handle breaks value semantics, and `chandle` cannot enter `{>>{...}}` at all. The
+sanctioned indirection is `sv/shuttle_ref.svh`: the object stays in an SV-side table, the frame
+carries a 4-byte reference, and its type tag is `$typename(T)`. Nothing in the broker learns about
+it — serial, concurrent, now, triggers, retained replays and cross-language routing apply to the
+reference frame unchanged, and a C++ peer that only routes it back sees one big-endian u32.
+The SV side encodes that u32 through `shuttle_u32` (`pack_obj` / `unpack_into`), the same codec a
+reflected `logic [31:0]` field uses, so there is one wire format, not two.
+
+The user-facing surface deliberately keeps the shapes the value path already has, so the table
+never appears in user code:
+
+| Reference path | Value path it mirrors |
+|---|---|
+| `shuttle_ref_publisher #(T)::publish_now/serial/concurrent(obj, trig)` | `shuttle_publisher #(T)::publish_*` |
+| `set_retained(bit)` | the same |
+| `shuttle_ref_mailbox #(T)::new(topic[, capacity, overflow])`, `try_recv`/`recv`/`size`/`close` | `shuttle_mailbox` |
+| `shuttle_ref_subscription #(T)::blocking/nonblocking(topic, sink)` | `shuttle_subscribe` / `shuttle_subscribe_nb` |
+| `shuttle_ref_sink #(T)::on_msg(value, meta)` | `shuttle_sink::invoke` (unpacked for you) |
+| `typedef shuttle_ref_codec #(T) MyLink;` + `` `shuttle_field(obj, MyLink) `` | a codec for a declared field (nested, vector, enum) |
+
+`on_msg` is a function: resolving a handle cannot consume simulation time, the same rule as
+`shuttle_responder::respond`. A receiver that needs time queues the handle in its own
+`shuttle_ref_mailbox` or task.
+
+There is no reference flavour of `shuttle_requester` / `shuttle_serve` / `shuttle_mailbox`, and
+none is needed: request/response carries any reflected message, and a message may carry an object
+next to its data. The codec is the whole mechanism — declare the field with `shuttle_ref_codec`
+(through a typedef, because `` `shuttle_field `` takes a codec name) and the request, the reply,
+the retained frame or the mailbox entry hold a reference instead of a copy:
+
+```systemverilog
+typedef shuttle_ref_codec #(FObj) FObj_link;
+class AskObj;
+  FObj         obj;          // 4 bytes on the wire
+  logic [31:0] mode;
+  `shuttle_reflect_begin(AskObj)
+    `shuttle_field(obj, FObj_link)
+    `shuttle_field(mode, shuttle_u32)
+  `shuttle_reflect_end
+endclass
+shuttle_requester #(AskObj, RspVal) rq = new ("svc.ask", "svc.rsp");  // unchanged
+```
+
+The two forms share one table and one encoding, so an object can enter through a reference frame,
+leave inside a value frame, and still resolve to the same handle on the far side.
+
+Four constraints follow from the reference being a table index:
+
+- `T` must be the *same* class type on every side that names it (declare it in a package or in a
+  file both sides include): the table and the tag are per-`#(T)` specialization, and no runtime
+  registration step exists. Because the tag is `$typename(T)`, a package-scope class tags its
+  frames `pkg::T` — a C++ mirror reflects that exact spelling with a single `std::uint32_t` field.
+- ids are allocated monotonically and never reused, so a stale reference is a loud `$error` at
+  delivery and never a silent alias onto a newer object; the mailbox keeps such frames out of the
+  queue and counts them in `unresolved()`.
+- the table holds a strong reference, so the publisher calls `free(obj)` (or `clear()`) only
+  after every in-flight and retained frame carrying that reference has been consumed. Retained
+  frames re-resolve at replay time — which is what makes a post-publish mutation visible to a late
+  subscriber, and also what turns an early free into a loud failure instead of a dangling read.
+- the same object published twice keeps one reference, so a hot publisher does not grow the table
+  per frame; growth follows distinct objects, and `free` is the only way it shrinks.
+
+The mechanism is pure SV — no DPI entry, no broker state — because only the owning side resolves;
+the other side treats the reference as data. It is not a second messaging path: the frame still
+runs through the broker with the broker's counters, ordering and completion semantics, and the
+reference only decides what the payload's number means. Packaging a whole object graph this way is
+deliberate user-level composition, in the same spirit as `Mailbox` / `Requester`.
+
 ### `Meta` strings are views, and `pubs` holds only external publishes
 
 `Meta::topic_name` / `Meta::type_tag` are `std::string_view`s into storage the broker already
@@ -534,7 +606,8 @@ in SystemVerilog, and across the DPI boundary. Deliberately not provided:
 
 Known limitations: SV-side `$error` does not propagate back to C++ (a protocol consequence; a
 strict error channel would extend `dispatch`'s return value); cross-language payloads are
-value-semantics with a declared-field subset — no variants, pointers, references or handles;
+value-semantics with a declared-field subset — no variants, pointers, references or handles on the
+wire, so an object graph crosses as internal object ids (see above), never as a payload;
 `TopicInfo::deferred` (topic-cumulative) and `Publication::deferred()` (per-frame) share a name
 across two granularities.
 
