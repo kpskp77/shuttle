@@ -14,25 +14,21 @@ module shuttle_demo_requester;
   import shuttle_pkg::*;
   import shuttle_demo_msgs::*;
 
-  // ── Responder: answers in its nonblocking entry and hands the request's frame header to
-  //    `pub.reply`, which echoes meta.corr_id — the answer never mentions the id ──
-  class UartEchoNb implements shuttle_sink_nb;
-    shuttle_publisher #(UartTx) pub;
-    function new(string resp_topic);
-      pub = new (resp_topic);
-    endfunction
-    virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
-      UartTx req  = UartTx::unpack(payload);
+  // ── Responder: answers in a nonblocking entry; shuttle_serve owns the response publisher and
+  //    echoes meta.corr_id through pub.reply — the answer never mentions the id ──
+  class UartEcho extends shuttle_responder #(UartTx, UartTx);
+    virtual function UartTx respond(input UartTx req, input shuttle_meta meta);
       UartTx resp = new();
       resp.addr = req.addr;
       resp.data = req.data + 1;
-      void'(pub.reply(resp, meta));
+      return resp;
     endfunction
   endclass
 
   task automatic run();
-    automatic UartEchoNb                          svc  = new ("uart0.rpc.resp");
-    automatic shuttle_subscription                ssub = shuttle_subscribe_nb("uart0.rpc.req", svc, "UartTx");
+    automatic UartEcho                            hdl = new();
+    automatic shuttle_serve #(UartTx, UartTx)     svc = shuttle_serve #(UartTx, UartTx)::nonblocking(
+        "uart0.rpc.req", "uart0.rpc.resp", hdl);
     automatic shuttle_requester #(UartTx, UartTx) rq   = new ("uart0.rpc.req", "uart0.rpc.resp");
     automatic UartTx                              each[$];
     automatic shuttle_call #(UartTx)              call;
@@ -41,6 +37,7 @@ module shuttle_demo_requester;
     automatic UartTx                              tx = new();
 
     if (!rq.valid()) $error("requester: %0s", rq.last_error());
+    if (!svc.valid()) $error("responder: %0s", svc.last_error());
     tx.addr = 32'h40;
     tx.data = 32'h1000;
 
@@ -59,7 +56,7 @@ module shuttle_demo_requester;
     call.wait_all(each, 1_000_000);  // 1us
     if (each.size() != 1 || each[0].data != 32'h1001) $error("requester: serial answer");
     $display("[rpc] corr_id=%0d answer=0x%08h", call.corr_id(), each[0].data);
-    ssub.unsubscribe();
+    svc.subscription().unsubscribe();
   endtask
 
 endmodule

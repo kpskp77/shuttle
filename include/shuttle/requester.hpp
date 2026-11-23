@@ -43,10 +43,12 @@
 // also what makes retained response topics harmless (still not recommended).
 //
 // ── Scope ───────────────────────────────────────────────────────────────
-// This is C++-side sugar; the SV side participates by subscribing to the request
-// topic and answering with `pub.reply(resp, meta)`, which echoes meta.corr_id into the
-// response frame (see docs/backends.md). Request and response topics must differ: a
-// responder publishes the response from inside its request callback, and using the same
+// This is C++-side sugar with an SV mirror: `shuttle_serve` (sv/shuttle_requester.svh)
+// takes a `shuttle_responder` and owns the same plumbing. The manual composition —
+// subscribe to the request topic and answer with `pub.reply(resp, meta)`, which echoes
+// meta.corr_id into the response frame (see docs/backends.md) — stays for responders that
+// must consume simulation time before answering. Request and response topics must differ:
+// a responder publishes the response from inside its request callback, and using the same
 // topic would put that frame behind the very callback that publishes it.
 
 #include <cstddef>

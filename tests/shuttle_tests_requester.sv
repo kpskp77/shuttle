@@ -16,33 +16,22 @@ module shuttle_tests_requester;
   import shuttle_tests_fixtures::*;
   import shuttle_tests_runner::*;
 
-  // Responder: answers op*2+1 and hands the request's frame header to `pub.reply`, which echoes
-  // meta.corr_id for us — the response never mentions the id itself.
-  class SvRqSink implements shuttle_sink;
-    virtual task invoke(input byte payload[], input shuttle_meta meta);
-      XRqReq                 req  = XRqReq::unpack(payload);
-      XRqResp                resp = new();
-      shuttle_publisher #(XRqResp) pub = new("rq.xlang.resp");
+  // ── Responder logic behind shuttle_serve: the service owns the response publisher and the
+  //    corr_id echo (through pub.reply), so the responder only computes the answer ──────────
+  class SvRqPlusOne extends shuttle_responder #(XRqReq, XRqResp);
+    virtual function XRqResp respond(input XRqReq req, input shuttle_meta meta);
+      XRqResp resp = new();
       resp.data = req.op * 2 + 1;
-      pub.reply(resp, meta);
-    endtask
+      return resp;
+    endfunction
   endclass
 
-  // ── Nonblocking responder for the SV-requester cases: answers op*2 and hands the request's
-  //    frame header to `pub.reply`, which echoes meta.corr_id for us ────────────────────────
-  class SvRqNb implements shuttle_sink_nb;
-    int                    count = 0;
-    shuttle_publisher #(XRqResp) pub;
-    function new(string resp_topic);
-      pub   = new (resp_topic);
-      count = 0;
-    endfunction
-    virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
-      XRqReq  req  = XRqReq::unpack(payload);
+  // ── Same doubling used by the SV-local cases ──
+  class SvRqDouble extends shuttle_responder #(XRqReq, XRqResp);
+    virtual function XRqResp respond(input XRqReq req, input shuttle_meta meta);
       XRqResp resp = new();
       resp.data = req.op * 2;
-      count++;
-      void'(pub.reply(resp, meta));
+      return resp;
     endfunction
   endclass
 
@@ -53,15 +42,16 @@ module shuttle_tests_requester;
   // forked cross-language group (see shuttle_tests.sv), so its position in the SV case list
   // carries no timing meaning.
   task automatic case_rq_xlang();
-    automatic SvRqSink            sink  = new();
-    automatic shuttle_subscription         sub   = shuttle_subscribe("rq.xlang.req", sink, "XRqReq");
+    automatic SvRqPlusOne                    hdl = new();
+    automatic shuttle_serve #(XRqReq, XRqResp) svc = shuttle_serve #(XRqReq, XRqResp)::blocking(
+        "rq.xlang.req", "rq.xlang.resp", hdl);
     automatic shuttle_publisher #(XMsg) ready = new("rq.xlang.ready");
     automatic XMsg                note  = new();
     note.addr = 32'h1;
     note.data = 32'h0;
     ready.set_retained(1);
     void'(ready.publish_serial(note));
-    check(sub.id() != 0, "rq_xlang.responder_registered");
+    check(svc.valid(), "rq_xlang.responder_registered");
     xlang_barrier("case5");
     g_xlang_done++;
   endtask
@@ -70,8 +60,9 @@ module shuttle_tests_requester;
   //    shuttle_c_take_corr_id (the counter C++ shares), an nb responder answers inside the publish
   //    call, and the reply is routed back by that id ─────────────────────────────────
   task automatic case_sv_requester();
-    automatic SvRqNb                               svc  = new ("sv.rq.resp");
-    automatic shuttle_subscription                          ssub = shuttle_subscribe_nb("sv.rq.req", svc, "XRqReq");
+    automatic SvRqDouble                           hdl = new();
+    automatic shuttle_serve #(XRqReq, XRqResp)     svc = shuttle_serve #(XRqReq, XRqResp)::nonblocking(
+        "sv.rq.req", "sv.rq.resp", hdl);
     automatic shuttle_requester #(XRqReq, XRqResp) rq   = new ("sv.rq.req", "sv.rq.resp");
     automatic XRqReq                               req  = new();
     automatic XRqResp                              resp;
@@ -79,11 +70,12 @@ module shuttle_tests_requester;
     automatic shuttle_call #(XRqResp)              call;
     automatic shuttle_requester #(XRqReq, XRqResp) same;
     automatic shuttle_requester #(XRqReq, XRqResp) nameless;
+    automatic shuttle_serve #(XRqReq, XRqResp)     same_svc;
     automatic bit                                  ok;
     automatic time                                 t0;
 
     check(rq.valid(), "svrq.valid");
-    check(ssub.id() != 0, "svrq.responder_registered");
+    check(svc.valid() && svc.subscription().id() != 0, "svrq.responder_registered");
     check(rq.req_topic() == "sv.rq.req" && rq.resp_topic() == "sv.rq.resp", "svrq.topics");
     req.op = 21;
 
@@ -138,6 +130,10 @@ module shuttle_tests_requester;
     nameless = new ("", "sv.rq.nameless.resp");
     check(!same.valid() && same.last_error() != "", "svrq.same_topic_invalid");
     check(!nameless.valid() && nameless.last_error() != "", "svrq.empty_topic_invalid");
+
+    // serve validates its topics before registering and reports the same way
+    same_svc = shuttle_serve #(XRqReq, XRqResp)::nonblocking("sv.rq.same", "sv.rq.same", hdl);
+    check(!same_svc.valid() && same_svc.last_error() != "", "svrq.serve_same_topic_invalid");
   endtask
 
   // ── Cross-language request/response, SV requester side: the C++ responder is case9 of

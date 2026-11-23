@@ -51,6 +51,122 @@ class shuttle_response_sink implements shuttle_sink_nb;
   endfunction
 endclass
 
+// ── Serve: the responder's half of request/response ────────────────────
+// Counterpart of shuttle::serve() in include/shuttle/requester.hpp. The user
+// implements shuttle_responder (one typed function); the service owns everything
+// else — the response publisher, the response-channel mark, unpacking, and the
+// corr_id echo through shuttle_publisher::reply — so the responder never sees
+// bytes or correlation:
+//
+//   class Doubler extends shuttle_responder #(Rq, Rsp);
+//     virtual function Rsp respond(input Rq req, input shuttle_meta meta);
+//       Rsp r = new(); r.data = req.op * 2; return r;
+//     endfunction
+//   endclass
+//   svc = shuttle_serve #(Rq, Rsp)::nonblocking("sv.rq.req", "sv.rq.resp", new Doubler());
+//   if (!svc.valid()) $fatal(1, "%s", svc.last_error());
+//
+// The entry is chosen by which factory is called — ::blocking(...) answers from
+// the serial chain (the export task), ::nonblocking(...) inline on the caller's
+// stack — one-to-one with C++ serve(handler) vs serve(nb(handler)) and with
+// shuttle_subscribe vs shuttle_subscribe_nb. respond must not consume simulation
+// time (SV functions cannot suspend): a responder that needs time before
+// answering keeps the manual composition — a shuttle_sink that later calls
+// pub.reply(resp, meta).
+virtual class shuttle_responder #(type TReq, type TResp);
+  pure virtual function TResp respond(input TReq req, input shuttle_meta meta);
+endclass
+
+// Delivery adapter: implements both entry interfaces; shuttle_serve registers
+// exactly one of them (the entry is decided by the factory call, never inferred
+// from the object). invoke being a task and invoke_nb a function only routes
+// the frame; the answer itself is the same zero-time function in both.
+class shuttle_serve_sink #(type TReq, type TResp) implements shuttle_sink, shuttle_sink_nb;
+  local shuttle_responder #(TReq, TResp) handler_;
+  local shuttle_publisher #(TResp)       pub_;
+  function new(shuttle_responder #(TReq, TResp) handler, shuttle_publisher #(TResp) pub);
+    handler_ = handler;
+    pub_     = pub;
+  endfunction
+  virtual task invoke(input byte payload[], input shuttle_meta meta);
+    answer(payload, meta);
+  endtask
+  virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
+    answer(payload, meta);
+  endfunction
+  local function void answer(input byte payload[], input shuttle_meta meta);
+    TReq  req  = TReq::unpack(payload);
+    TResp resp = handler_.respond(req, meta);
+    void'(pub_.reply(resp, meta));
+  endfunction
+endclass
+
+// ── shuttle_serve ──────────────────────────────────────────────────────
+// Owns the responder plumbing for one service: validates the two topic names,
+// marks the response topic (blocking-entry subscribers on it are refused from
+// here on), subscribes on the request pattern, and answers every request
+// through shuttle_publisher::reply, which echoes the request's corr_id into the
+// response frame. Failures are reported through valid()/last_error() — never
+// silently, never by $error from here.
+class shuttle_serve #(type TReq, type TResp);
+  local shuttle_subscription sub_;
+  local string               error_;
+
+  static function shuttle_serve #(TReq, TResp) blocking(string req_pattern, string resp_topic,
+                                                        shuttle_responder #(TReq, TResp) handler);
+    return make(req_pattern, resp_topic, handler, 1'b1);
+  endfunction
+
+  static function shuttle_serve #(TReq, TResp) nonblocking(string req_pattern, string resp_topic,
+                                                           shuttle_responder #(TReq, TResp) handler);
+    return make(req_pattern, resp_topic, handler, 1'b0);
+  endfunction
+
+  function bit valid();
+    return sub_ != null;
+  endfunction
+
+  function string last_error();
+    return error_;
+  endfunction
+
+  function shuttle_subscription subscription();
+    return sub_;
+  endfunction
+
+  local static function shuttle_serve #(TReq, TResp) make(string req_pattern, string resp_topic,
+                                                          shuttle_responder #(TReq, TResp) handler,
+                                                          bit blocking_entry);
+    shuttle_serve #(TReq, TResp) svc = new();
+    shuttle_publisher #(TResp) pub;
+    shuttle_serve_sink #(TReq, TResp) sink;
+    svc.error_ = "";
+    if (req_pattern.len() == 0 || resp_topic.len() == 0) begin
+      svc.error_ = "shuttle: serve needs two non-empty topic names";
+      return svc;
+    end
+    if (req_pattern == resp_topic) begin
+      svc.error_ = "shuttle: request and response topics must differ";
+      return svc;
+    end
+    // Mark before subscribing: from here on a blocking-entry subscriber on the
+    // response topic is refused (it would hold the topic's chain and delay
+    // every reply on it).
+    if (shuttle_c_mark_responses(resp_topic) != 0) begin
+      svc.error_ = shuttle_c_last_error();
+      return svc;
+    end
+    pub  = new (resp_topic);
+    sink = new (handler, pub);
+    if (blocking_entry)
+      svc.sub_ = shuttle_subscribe(req_pattern, sink, TReq::type_tag);
+    else
+      svc.sub_ = shuttle_subscribe_nb(req_pattern, sink, TReq::type_tag);
+    if (svc.sub_ == null) svc.error_ = shuttle_c_last_error();
+    return svc;
+  endfunction
+endclass
+
 // ── Call: one outstanding request and the replies belonging to it ──────
 class shuttle_call #(type TResp);
   local int unsigned   corr_id_;
