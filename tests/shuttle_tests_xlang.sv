@@ -93,10 +93,10 @@ module shuttle_tests_xlang;
   endtask
 
   // A sink that publishes from inside its own callback and then suspends. That nested publish
-  // forces the simulator to run a C++ frame in the middle of the outer delivery; with weave <= 1.1.0
-  // the outer frame came back with no current task, so the next C++ subscriber that blocked threw
+  // forces the simulator to run a C++ frame in the middle of the outer delivery; older weave builds
+  // came back from it with no current task, so the next C++ subscriber that blocked threw
   // "weave: blocking primitive outside task context" (../weave/bugs.md; fixed by keying the task
-  // identity per simulation process in weave v1.2.0).
+  // identity per simulation process).
   class MixedSink implements shuttle_sink;
     int                 count = 0;
     XMsg                last;

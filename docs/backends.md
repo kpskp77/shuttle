@@ -189,7 +189,7 @@ The consequences:
 - `dispatch` and `dispatch_nb` (bridge.cpp) construct a `SvScopeGuard` around
   the export call — these are the entries whose visibility can be polluted.
 - The publish imports may indirectly drive weave (creating tasks, suspending),
-  yet need no scope switch of their own: weave ≥ 1.2.0's DPI backend wraps
+  yet need no scope switch of their own: weave's DPI backend wraps
   every one of its own imports in its scope guard, so its exports resolve in
   whatever scope the caller happens to be in. Shuttle therefore never calls
   weave's exports directly and never switches scope for `weave_pkg`; the early

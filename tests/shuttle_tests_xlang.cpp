@@ -14,9 +14,9 @@
 //   5. case6 covers the one shape that used to break: a *mixed* target set on a single topic — an
 //   SV blocking subscriber registered first, then blocking C++ subscribers that consume time. The
 //   SV callback publishes a nested frame and suspends, so the simulator runs a nested C++ frame in
-//   the middle of the outer delivery; weave <= 1.1.0 came back from it with no current task and the
-//   next blocking C++ callback threw "weave: blocking primitive outside task context" (fixed by
-//   keying task identity per simulation process in weave v1.2.0).
+//   the middle of the outer delivery; older weave builds came back from it with no current task
+//   and the next blocking C++ callback threw "weave: blocking primitive outside task context"
+//   (fixed by keying task identity per simulation process).
 //   6. case7 covers nested message types (struct XPoint inside struct XTrack): C++ → SV decode via
 //   the SV-side three-piece macros, SV → C++ decode via Codec<XTrack> recursing Codec<XPoint>.
 //   7. case8 covers an inheritance chain (XHead → XMid → XChain) registered with
@@ -328,9 +328,9 @@ void shuttle_tests_xlang() {
 
   // case6: a mixed target set — SV blocking entry first, blocking C++ subscribers after it. The SV
   // sink publishes a nested frame and suspends for one time step, so a nested C++ frame runs inside
-  // the outer delivery; with the frame identity not restored (weave <= 1.1.0) the *next* C++
-  // callback that blocks fails with "weave: blocking primitive outside task context" and shows up
-  // as a subscriber failure instead of a delivery.
+  // the outer delivery; with the frame identity not restored the *next* C++ callback that blocks
+  // fails with "weave: blocking primitive outside task context" and shows up as a subscriber
+  // failure instead of a delivery.
   run_case(__func__, "case6", [st] {
     xlang_barrier("case6");
     st->mixed_ready = shuttle::subscribe_bytes(
@@ -377,7 +377,7 @@ void shuttle_tests_xlang() {
     expect(
         h.failures().empty(),
         "no subscriber may fail when the SV entry runs ahead of the C++ ones (task identity must "
-        "survive the nested frame, see weave v1.2.0)");
+        "survive the nested frame)");
     expect_eq(static_cast<long long>(st->mixed_hits), 1, "the C++ subscriber blocks and completes");
     expect_eq(static_cast<long long>(st->mixed_mon_hits), 1,
               "the frame published from inside the SV callback reaches a C++ subscriber");

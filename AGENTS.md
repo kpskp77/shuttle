@@ -77,7 +77,7 @@ no locks, no atomics, no threads anywhere in the broker.
 - SV packing is `{>>{...}}` (declaration order, MSB-first per field), matching the C++ `Writer`
   big-endian byte order; strings carry a 32-bit length prefix. Never `{<<{...}}`.
 - Call `shuttle_pkg` exports only under `SvScopeGuard`; never call weave's exports directly and
-  never reintroduce `WeaveScopeGuard` / `SHUTTLE_WEAVE_SV_PACKAGE` (weave ≥ 1.2.0 guards its own
+  never reintroduce `WeaveScopeGuard` / `SHUTTLE_WEAVE_SV_PACKAGE` (weave guards its own
   imports).
 - `add_headerfiles` in `xmake.lua` stays `include/(shuttle/**.hpp)` — a narrower glob silently
   drops `detail/abi.hpp` from installed packages.

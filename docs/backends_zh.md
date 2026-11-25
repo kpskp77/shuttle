@@ -156,8 +156,8 @@ VCS 2018.09 上实测：SV 进程调用过返回 `string` 的 import（如 `shut
 
 - `dispatch` 与 `dispatch_nb`（bridge.cpp）在 export 调用外面套 `SvScopeGuard`——这些
   是可被污染的入口。
-- 发布 import 可能间接驱动 weave（建任务、挂起），却不需要自己做作用域切换：weave ≥
-  1.2.0 的 DPI 后端在每个自己的 import 外面套了作用域守卫，所以它的 export 在调用方
+- 发布 import 可能间接驱动 weave（建任务、挂起），却不需要自己做作用域切换：weave 的
+  DPI 后端在每个自己的 import 外面套了作用域守卫，所以它的 export 在调用方
   碰巧处于的任何作用域里都能解析。shuttle 因此从不直接调用 weave 的 export，也从不
   为 `weave_pkg` 切作用域；早年的 `WeaveScopeGuard` / `SHUTTLE_WEAVE_SV_PACKAGE` 方案
   被删，正因为从 dpi.cpp import weave 的 export 会绕过 weave 自己的守卫，并把 shuttle

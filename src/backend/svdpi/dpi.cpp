@@ -152,8 +152,8 @@ int shuttle_c_publish_now(const char* topic, const char* type_tag, const svOpenA
                           int now_policy, unsigned int corr_id) {
   // These imports may indirectly drive weave (creating tasks/events/suspending
   // waits). No scope switch is needed for that: weave's DPI backend fixes the
-  // svScope around every one of its own imports (weave >= 1.2.0), so its
-  // exports resolve whatever scope the caller happens to be in.
+  // svScope around every one of its own imports, so its exports resolve
+  // whatever scope the caller happens to be in.
   try {
     const shuttle::Publication pub =
         shuttle::detail::ext_pub_now(topic ? topic : "", type_tag ? type_tag : "",
