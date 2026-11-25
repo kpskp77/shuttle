@@ -206,7 +206,8 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
       return;
     }
     // A frame whose chain is held by the very SV process that waits for it can
-    // never complete; diagnose it here instead of suspending forever.
+    // never complete; the check ends the run (weave::fatal → $fatal) instead of
+    // suspending forever.
     shuttle::detail::pub_check_self_blocked(pub_id);
 
     auto wake = std::make_shared<weave::Event>();

@@ -25,10 +25,13 @@ scheduling, terminal-state accounting, entry selection — live in
   other's symbols. Switching backend = switching directory, so every entry of
   the backend contract must have a definition in whichever directory is
   compiled (see "Adding a backend").
-- The `weave` dependency is required as `weave >=1.2.0` with
-  `configs = { shared = true, backend = get_config("backend") }`, so shuttle
-  and weave always build against the same backend; svdpi additionally requires
-  the `svdpi` package, systemc the `systemc` package (both shared).
+- The `weave` dependency is required with
+  `configs = { shared = true, backend = get_config("backend") }`, so shuttle and
+  weave always build against the same backend. The floor is weave 0.1.0, the first
+  release under the current numbering (renumbered from the earlier 1.x line without
+  a code change) and the one that carries `weave::fatal`, which the self-wait
+  diagnosis reports through; svdpi additionally requires the `svdpi` package,
+  systemc the `systemc` package (both shared).
 - What each build compiles: `src/*.cpp` (publication, subscription,
   introspection, exception, trigger — backend-agnostic translation units) plus
   `src/broker/*.cpp` (routing, dispatch, model) plus one backend directory.
@@ -262,8 +265,9 @@ public C++ API:
    publication is answered without suspending.
 2. `pub_check_self_blocked(pub_id)` runs before any suspension: a frame whose
    delivery chain is held by the very process waiting for it can never
-   complete, so this throws `weave::DeadlockError`, which the wait maps to
-   `SHUTTLE_WAIT_FAILED` with the diagnosis in `shuttle_c_last_error()`.
+   complete, so this ends the run through `weave::fatal` — the diagnosis and the
+   wait graph reach the simulator log, and the wait never returns (an exception
+   would only be catchable and turn the hang into a silent one).
 3. Otherwise it registers a `pub_on_complete` hook that sets a private
    `weave::Event`, and suspends the calling SV process on
    `Event::wait()` — a leaf wait that weave allows without a task identity,

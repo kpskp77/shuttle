@@ -165,14 +165,15 @@ per-订阅者变体。
 在回调里对本 topic 发布并 `wait()` 新帧，在任何先进先出设计下都死锁——`serial` 里内
 层帧排在本帧之后；`concurrent` 下只要目标集包含发布者自己的注册，同理。诊断依赖
 `ChainLink::owner`：`detail::check_self_blocked` 在挂起**之前**运行于
-`Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub`，当 `blocked_by` 中任
-何链的 owner 是当前任务时抛错。
+`Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub`，`blocked_by` 中任何链的
+owner 是当前任务时，经 `weave::fatal` 结束仿真。
 
 为什么放在等待处：对本 topic 只发布不等待（中继/转发）是合法用法，而那时链尾确实由
-当前回调的投递任务持有——同一个观察在入队处判定必然误报。C++ 抛
-`weave::DeadlockError`（记为常规 `Failure`）；SV 返回 `SHUTTLE_WAIT_FAILED`，诊断文本
-在 `shuttle_c_last_error()`。仍然诊断不到的是两个*无关*任务之间的环——链所有权只能证
-明"在等自己"，证明不了任意等待图。
+当前回调的投递任务持有——同一个观察在入队处判定必然误报。为什么是致命而不是异常：这
+一帧永远不会产生可交回的结果，能 catch 就只会把诊断变成静默挂死；报告走核心判定契约
+违例的同一个 `weave::fatal`，带等待图，两个后端分别以 `$fatal` / `SC_REPORT_FATAL` 收尾。
+仍然诊断不到的是两个*无关*任务之间的环——链所有权只能证明"在等自己"，证明不了任意
+等待图。
 
 ### 退订立即生效；在途投递记为 retired
 

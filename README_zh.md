@@ -162,9 +162,9 @@ SHUTTLE CPP DEMO PASSED
 
 新用户最先踩的是**挂死：回调在等一帧只能由它自己投递的帧**。`serial`/`concurrent`
 按链先进先出，所以在回调里向自己的 topic 发布并 `wait()` 新帧，必然死锁。shuttle 在
-等待处给出诊断：C++ 抛 `weave::DeadlockError`（记为常规 `Failure`），SV 侧
-`wait_done()` 返回 `SHUTTLE_WAIT_FAILED`，诊断文本在 `shuttle_c_last_error()` 里。合法
-的近亲用法——回调里只发布不等待（中继）——工作正常，所以检查只能放在等待点。中继到
+等待处给出诊断：`weave::fatal` 打印诊断与等待图并结束仿真（仿真器侧是 `$fatal`）——
+这一帧永远不会产生等待者要的结果，抛异常只会被 catch 掉，留下一个挂死的仿真。合法的
+近亲用法——回调里只发布不等待（中继）——工作正常，所以检查只能放在等待点。中继到
 别的 topic，或者用 `Mailbox`。
 
 其余问题都能从计数读出：`h.failures()` 列出每个失败目标的 `{subscriber, error}`，

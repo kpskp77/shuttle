@@ -25,8 +25,17 @@ test-sc:
 test-vcs:
     xmake f --backend=svdpi -y && xmake run shuttle_tests_svdpi_vcs
 
-# run the whole test suite (cross-language included)
-test-all: test-sc test-vcs
+# fatal-path payloads (a self-blocked wait ends the run through weave::fatal): the judgement is
+# inverted — the run must die with the "weave: fatal:" headline instead of printing a pass marker
+test-fatal-sc:
+    xmake f --backend=systemc -y && xmake run shuttle_tests_fatal_sc_run
+
+# both halves on VCS: the C++ wait through weave_run, then the SV wait through shuttle_c_wait_pub
+test-fatal-vcs:
+    xmake f --backend=svdpi -y && xmake run shuttle_tests_fatal_cpp_vcs && xmake run shuttle_tests_fatal_sv_vcs
+
+# run the whole test suite (cross-language and fatal paths included)
+test-all: test-sc test-fatal-sc test-vcs test-fatal-vcs
 
 # clean
 clean:

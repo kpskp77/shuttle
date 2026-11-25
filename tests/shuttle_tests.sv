@@ -72,7 +72,6 @@ module shuttle_tests;
     m_publish.case_snapshot();
     m_trigger.case_event();
     m_trigger.case_edge_trigger();
-    m_trigger.case_self_wait();
     m_mailbox.case_mailbox();
     m_ref.run_cases();
     // SV-side request/response stays in this process: both ends are SV, so it needs no barrier.

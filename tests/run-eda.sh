@@ -10,6 +10,13 @@
 #   SHUTTLE_PASS_MARKER  output marker the run must print (default: SHUTTLE DEMO PASSED)
 #   SHUTTLE_SV_PKG       shuttle package (default: sv/shuttle_pkg.sv)
 #
+# --expect-fatal inverts the judgement: the payload deliberately ends the run (a self-blocked wait,
+# tests/shuttle_tests_fatal.cpp / tests/shuttle_tests_fatal_sv.sv), so the run must be terminated
+# with the "weave: fatal:" headline and must never print the pass marker. Anything else is a
+# failure — a diagnosis that is caught or swallowed has to be visible as one. Each --expect <text>
+# adds a fixed-string match the log must also satisfy (the payload's own wording), so the report
+# path cannot pass on the generic headline alone.
+#
 # The runtime environment (xmake run sets `LD_LIBRARY_PATH` for this target's dependencies) is
 # enough for simv to find libshuttle.so → libweave.so and their simlog/spdlog dependencies;
 # do NOT assemble LD_LIBRARY_PATH yourself here (it would override xmake's prepared search
@@ -20,6 +27,27 @@ set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "$here/.." && pwd)
 weave_root=$(cd -- "$root/../weave" && pwd)
+expect_fatal=0
+expects=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --expect-fatal)
+    expect_fatal=1
+    shift
+    ;;
+  --expect)
+    if [[ $# -lt 2 ]]; then
+      echo "[svdpi-test] --expect needs a text argument" >&2
+      exit 2
+    fi
+    expects+=("$2")
+    shift 2
+    ;;
+  *)
+    break
+    ;;
+  esac
+done
 lib=${1:-}
 sv_pkg=${SHUTTLE_SV_PKG:-$root/sv/shuttle_pkg.sv}
 sv_tbs=()
@@ -42,7 +70,7 @@ if [[ -z $vcs ]]; then
   exit 0
 fi
 if [[ -z $lib || ! -f $lib ]]; then
-  echo "[svdpi-test] usage: run-eda.sh <payload.so> [<testbench.sv>...]" >&2
+  echo "[svdpi-test] usage: run-eda.sh [--expect-fatal] [--expect <text>]... <payload.so> [<testbench.sv>...]" >&2
   exit 2
 fi
 lib=$(cd -- "$(dirname -- "$lib")" && pwd)/$(basename -- "$lib")
@@ -74,6 +102,28 @@ simv_status=0
 (cd "$work" && timeout 300 ./simv -sv_root "$libdir" -sv_lib "$base" \
     >run.log 2>&1 </dev/null) || simv_status=$?
 cat "$work/run.log"
+
+if [[ $expect_fatal == 1 ]]; then
+  # Inverted judgement (see the header): the pass marker must be absent and the fatal headline
+  # present. The exit status is not required to be non-zero — VCS is not documented to fail every
+  # $fatal flow, so the log markers stay authoritative, exactly as they are for the normal run.
+  if grep -qF "$marker" "$work/run.log"; then
+    echo "[svdpi-test] FAIL: the run reached the pass marker instead of dying on the fatal path" >&2
+    exit 1
+  fi
+  if ! grep -q "weave: fatal:" "$work/run.log"; then
+    echo "[svdpi-test] FAIL: no 'weave: fatal:' headline in the log, see $work/run.log" >&2
+    exit 1
+  fi
+  for want in ${expects[@]+"${expects[@]}"}; do
+    if ! grep -qF -- "$want" "$work/run.log"; then
+      echo "[svdpi-test] FAIL: the log lacks the expected text: $want" >&2
+      exit 1
+    fi
+  done
+  echo "[svdpi-test] ok $base (fatal path: the run was terminated)"
+  exit 0
+fi
 
 if [[ $simv_status -ne 0 ]]; then
   echo "[svdpi-test] FAIL: simv exited non-zero, see $work/run.log" >&2

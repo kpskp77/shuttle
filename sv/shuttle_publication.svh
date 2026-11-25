@@ -27,9 +27,8 @@ class shuttle_publication;
     if (status == SHUTTLE_WAIT_TIMEOUT)
       $error("shuttle: wait on Publication %0d timed out", pub_id_);
     else if (status == SHUTTLE_WAIT_FAILED) begin
-      // A subscriber failure carries its own text; an internal error (for instance a frame whose
-      // chain is held by the very process waiting for it, see detail::check_self_blocked) only
-      // has the DPI error channel.
+      // A subscriber failure carries its own text; an internal error only has the DPI error
+      // channel.
       automatic string why = first_error();
       if (why == "") why = shuttle_c_last_error();
       $error("shuttle: wait on Publication %0d failed: %s", pub_id_, why);

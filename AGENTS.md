@@ -37,7 +37,9 @@ no locks, no atomics, no threads anywhere in the broker.
   completion. `ChainLink::owner` is written only by the delivery unit (start: own task id; finish:
   −1 before `ev.set()`), never by the publisher. `Broker::remove_sub` erases the id's tail slot.
 - Self-wait diagnosis (`detail::check_self_blocked`) runs before the suspension in
-  `Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub` — never at enqueue.
+  `Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub` — never at enqueue. It ends the
+  run through `weave::fatal`; no exception type for it exists or is added (`catch` would only turn
+  the diagnosis into a silent hang).
 - Unsubscribe-during-flight is terminal state `retired` from both sources: C++
   (`Subscriber::removed`, checked in `deliver` before the kind dispatch) and SV (registry
   `retired_[id]` → `shuttle_c_sub_retired` → `take_retired_delivery()`). It counts into `dropped`,
@@ -120,6 +122,7 @@ just test-all      # full suites, both backends: tests/*.cpp + tests/shuttle_tes
 | New SV-only API (no DPI) | `sv/shuttle_<name>.svh` + an `` `include `` line in `sv/shuttle_pkg.sv` + the API list in `docs/backends.md` |
 | New example subject | `examples/shuttle_demo_<subject>.cpp` exposing `void shuttle_demo_<subject>()` (called by `examples/shuttle_demo.cpp`) and `examples/shuttle_demo_<subject>.sv` (listed in the SV compile order in `xmake.lua`) + a row in `examples/README.md` |
 | New test case | `caseN` in `tests/shuttle_tests_<suite>.cpp` + the case task in `tests/shuttle_tests_<suite>.sv`; a new suite also needs its call in `tests/shuttle_tests.cpp` / `tests/shuttle_tests.sv` and the SV file in the `xmake.lua` list |
+| Test body that must end the run | `WEAVE_TEST` body in `tests/shuttle_tests_fatal.cpp` (+ the SV top when the SV entry is what dies) + its `xmake.lua` payload target/phoney run + the `justfile` recipe in `test-all` |
 | New rule / guarantee | this file (imperative, diff-checkable); its *why* goes to `docs/architecture.md` |
 | Positioning, mapping, quick start | `README.md` (+ `README_zh.md`) |
 
@@ -150,6 +153,11 @@ downwards only.
   (weave orders registered tests by name, so an explicit call list is the contract).
 - Cross-language suites are compiled out of the systemc build (`SHUTTLE_TESTS_XLANG` is defined only
   by the svdpi target), never skipped at run time.
+- A body that ends the run on purpose (the self-wait fatal path) lives in
+  `tests/shuttle_tests_fatal.cpp` plus one SV top per half (`tests/shuttle_tests_fatal_cpp.sv` via
+  `weave_run`, `tests/shuttle_tests_fatal_sv.sv` from a plain SV process), is excluded from the
+  suite targets by `remove_files`, and is judged with inverted expectation only
+  (`tests/expect_fatal.sh`, `tests/run-eda.sh --expect-fatal`). It prints no pass marker.
 - Assertion bodies stay backend-agnostic in `tests/shuttle_tests_<suite>.cpp`; anything svdpi-only
   belongs in a file excluded from the systemc target by `remove_files` in `xmake.lua` (as
   `tests/shuttle_tests_xlang.cpp` is) and must not compile into the systemc suite.

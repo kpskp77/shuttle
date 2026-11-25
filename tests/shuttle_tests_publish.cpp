@@ -556,32 +556,10 @@ void shuttle_tests_publish() {
     expect_eq(static_cast<long long>(fast_done), 2, "no duplicate deliveries");
   });
 
-  // case20: waiting for a frame that is queued behind the waiting task itself can never finish.
-  // The wait diagnoses it (weave::DeadlockError) instead of hanging the simulation.
+  // case20: the same publish from a callback is legal when it does not wait — the diagnosis must
+  // not fire on fire-and-forget (publishing on your own topic is a normal relay). The waiting
+  // variant cannot live here: it ends the run (weave::fatal), see tests/shuttle_tests_fatal.cpp
   run_case(__func__, "case20", [] {
-    shuttle::Publisher<PubMsg> pub("pub.selfwait");
-    bool diagnosed = false;
-    std::size_t delivered = 0;
-    auto sub =
-        shuttle::subscribe<PubMsg>("pub.selfwait", [&](const PubMsg& m, const shuttle::Meta&) {
-          ++delivered;
-          if (m.v != 1) return;
-          std::vector<shuttle::Publication> inner;
-          inner.push_back(pub.publish_serial(PubMsg{2}));
-          try {
-            inner.back().wait();
-          } catch (const weave::DeadlockError&) {
-            diagnosed = true;  // frame 2 sits behind frame 1, whose delivery is this callback
-          }
-        });
-    pub.publish_serial(PubMsg{1}).wait();
-    expect(diagnosed, "a self-blocked frame is reported, not hung on");
-    expect_eq(static_cast<long long>(delivered), 2, "the diagnosing callback still completes");
-  });
-
-  // case21: the same publish from a callback is legal when it does not wait — the diagnosis must
-  // not fire on fire-and-forget (publishing on your own topic is a normal relay)
-  run_case(__func__, "case21", [] {
     shuttle::Publisher<PubMsg> pub("pub.selfpub");
     std::string order;
     std::vector<shuttle::Publication> inner;
@@ -594,30 +572,6 @@ void shuttle_tests_publish() {
     outer.wait();
     for (auto& h : inner) h.wait();
     expect(order == "12", "fire-and-forget publishing from a callback is not a deadlock");
-  });
-
-  // case22: the per-subscriber chain of publish_concurrent gets the same diagnosis
-  run_case(__func__, "case22", [] {
-    shuttle::Publisher<PubMsg> pub("pub.selfwait.par");
-    bool diagnosed = false;
-    std::size_t hits = 0;
-    std::vector<shuttle::Publication> inner;
-    auto sub =
-        shuttle::subscribe<PubMsg>("pub.selfwait.par", [&](const PubMsg& m, const shuttle::Meta&) {
-          ++hits;
-          if (m.v != 1) return;
-          inner.push_back(pub.publish_concurrent(PubMsg{2}));
-          try {
-            inner.back().wait();
-          } catch (const weave::DeadlockError&) {
-            diagnosed = true;
-          }
-        });
-    auto outer = pub.publish_concurrent(PubMsg{1});
-    outer.wait();
-    for (auto& h : inner) h.wait();
-    expect(diagnosed, "publish_concurrent diagnoses the same self-wait");
-    expect_eq(static_cast<long long>(hits), 2, "both frames still reach the subscriber");
   });
 
   report(__func__);

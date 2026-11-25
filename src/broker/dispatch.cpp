@@ -10,11 +10,13 @@
 #include <memory>
 #include <optional>
 #include <shuttle/detail/wait.hpp>
+#include <shuttle/exception.hpp>
 #include <shuttle/trigger.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+#include <weave/debug.hpp>
 #include <weave/event.hpp>
 #include <weave/sync.hpp>
 #include <weave/task.hpp>
@@ -130,17 +132,23 @@ int current_task_id() {
 // callback that publishes on its own topic and does not wait for the result is
 // legitimate (fire-and-forget), and its chain link is owned by that callback's
 // task too.
+//
+// The diagnosis ends the run through weave::fatal instead of throwing: a catch
+// could only swallow it, and the frame is unrecoverable — the waiter cannot be
+// handed a result that nothing will ever produce. Same call the core makes for
+// its own contract violations, so the report carries the wait graph.
 void check_self_blocked(const std::shared_ptr<PubState>& pub) {
   if (pub->done_flag) return;
   const std::optional<weave::Task> me = weave::current_task();
   if (!me) return;
   for (const ChainLinkPtr& link : pub->blocked_by) {
     if (link && link->owner == me->id()) {
-      throw weave::DeadlockError(
+      const std::string why =
           "shuttle: publication " + std::to_string(pub->id) + " on topic '" +
           std::string(pub->topic_view) +
           "' can never start: its delivery chain is held by the task that is now waiting for "
-          "it (a subscriber callback published on its own topic and waited for the result)");
+          "it (a subscriber callback published on its own topic and waited for the result)";
+      weave::fatal(why);
     }
   }
 }

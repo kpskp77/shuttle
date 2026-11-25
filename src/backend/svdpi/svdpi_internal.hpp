@@ -190,10 +190,10 @@ void pub_wait(int pub_id, std::int64_t timeout_fs, int* status);
 // Publication completion state: 0=in progress 1=completed, no failures
 // 2=completed, with failures -1=unknown pub_id
 int pub_state(int pub_id);
-// Throws weave::DeadlockError when the frame can never start because the task
-// that awaits it is the task that holds its delivery chain. Called by the DPI
-// wait entry before it suspends, so a hung SV process becomes a diagnosed
-// $error instead of a dead simulation.
+// Ends the run through weave::fatal when the frame can never start because the
+// task that awaits it is the task that holds its delivery chain. Called by the
+// DPI wait entry before it suspends, so a hung SV process becomes a diagnosed
+// death instead of a dead simulation.
 void pub_check_self_blocked(int pub_id);
 // Register an "on completion" callback (meaningful only while the pub is
 // incomplete; must not block). There must be no suspension point between the

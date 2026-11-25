@@ -184,15 +184,17 @@ Publishing to the same topic inside a callback and then `wait()`ing on the new f
 under any FIFO design — in `serial` the inner frame queues behind the current one, and in
 `concurrent` the same is true whenever the target set includes the publisher's own registration.
 The diagnosis relies on `ChainLink::owner`: `detail::check_self_blocked` runs *before* the
-suspension in `Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub`, and throws when
-any link in `blocked_by` is owned by the current task.
+suspension in `Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub`, and ends the run
+through `weave::fatal` when any link in `blocked_by` is owned by the current task.
 
 Why the wait site: publishing to one's own topic *without* waiting (relay/forward) is legal, and in
 that case the tail really is held by the current callback's delivery task — the same observation
-that must not throw at enqueue time. C++ throws `weave::DeadlockError` (recorded as an ordinary
-`Failure`); SV returns `SHUTTLE_WAIT_FAILED` with the diagnosis in `shuttle_c_last_error()`. What
-stays undiagnosed is a cycle between two *unrelated* tasks — chain ownership only proves
-"waiting for oneself", not an arbitrary wait graph.
+that must not count as a violation at enqueue time. Why a fatal and not an exception: the frame has
+no result to hand back, so a `catch` could only turn the diagnosis into a silent hang; the report
+(the same `weave::fatal` entry the core uses for contract violations) carries the wait graph and
+ends the simulation on both backends (`$fatal` / `SC_REPORT_FATAL`). What stays undiagnosed is a
+cycle between two *unrelated* tasks — chain ownership only proves "waiting for oneself", not an
+arbitrary wait graph.
 
 ### Unsubscribe takes effect immediately; in-flight deliveries retire
 

@@ -170,10 +170,11 @@ missed frame. What the examples exercise per file: [examples/README.md](examples
 The failure every new user hits first is a **hang: a callback waits on a frame that can only be
 delivered by itself**. `serial`/`concurrent` are FIFO per chain, so publishing to your own topic
 inside a callback and `wait()`ing on the new frame deadlocks by construction. Shuttle diagnoses it
-at the wait: C++ throws `weave::DeadlockError` (recorded as a normal `Failure`), and SV
-`wait_done()` returns `SHUTTLE_WAIT_FAILED` with the diagnosis text in `shuttle_c_last_error()`.
-The legal sibling — publishing to your own topic *without* waiting (relay) — works fine, which is
-why the check lives at the wait site. Relay to a different topic, or use a `Mailbox`.
+at the wait: `weave::fatal` prints the diagnosis together with the wait graph and ends the run
+(`$fatal` on the simulator side), because the frame will never produce the result the wait is
+after — a throw could only be caught and leave the simulation hung. The legal sibling — publishing
+to your own topic *without* waiting (relay) — works fine, which is why the check lives at the wait
+site. Relay to a different topic, or use a `Mailbox`.
 
 Everything else is counter-readable: `h.failures()` lists `{subscriber, error}` per failed target,
 `shuttle_c_last_error()` / `shuttle::last_error()` carries the latest immediate-call failure, and

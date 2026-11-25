@@ -19,9 +19,11 @@ SystemVerilog DPI 边界，回答"边界为什么长这样"与"到底什么穿�
 - 没有 `SHUTTLE_BACKEND_*` 宏，后端 TU 外面没有 `#if`：两个后端目录互不 include，
   也看不到对方的符号。换后端 = 换目录，所以后端契约的每个条目都必须有定义在编译进
   来的那个目录里（见 "Adding a backend"）。
-- `weave` 依赖按 `weave >=1.2.0`、`configs = { shared = true, backend =
-  get_config("backend") }` 引入，shuttle 与 weave 永远按同一后端构建；svdpi 额外依赖
-  `svdpi` 包，systemc 额外依赖 `systemc` 包（均为 shared）。
+- `weave` 依赖按 `configs = { shared = true, backend = get_config("backend") }`
+  引入，shuttle 与 weave 永远按同一后端构建。下限是 weave 0.1.0——当前编号下的第一个
+  发布版本（从早先的 1.x 线重排而来，代码没有改动），也是带 `weave::fatal` 的那个
+  版本，自我等待诊断就经它上报；svdpi 额外依赖 `svdpi` 包，systemc 额外依赖
+  `systemc` 包（均为 shared）。
 - 每次构建编译什么：`src/*.cpp`（publication、subscription、introspection、
   exception、trigger——后端无关翻译单元）加 `src/broker/*.cpp`（路由、dispatch、
   model）加一个后端目录。svdpi 下该目录是 `facade.cpp` + `bridge.cpp` + `dpi.cpp`；
@@ -209,8 +211,8 @@ DPI export 名是静态的——不可能"每个订阅者一个 export 函数"�
 
 1. `shuttle_c_wait_pub` 先问 `pub_state(pub_id)`；已终态的发布不挂起直接回答。
 2. `pub_check_self_blocked(pub_id)` 在任何挂起之前运行：交付链被等待进程自己持有的帧
-   永远等不到完成，所以这里抛 `weave::DeadlockError`，wait 把它映射成
-   `SHUTTLE_WAIT_FAILED`，诊断文本进 `shuttle_c_last_error()`。
+   永远等不到完成，所以这里经 `weave::fatal` 结束仿真——诊断与等待图进仿真器日志，
+   wait 不再返回（改成异常只会被 catch 掉，把挂死变成静默挂死）。
 3. 否则注册一个 `pub_on_complete` 钩子来 set 一个私有 `weave::Event`，并让调用进程
    在 `Event::wait()` 上挂起——weave 允许不带任务身份的叶子等待，而这正是一个普通
    SV 进程的身份。
