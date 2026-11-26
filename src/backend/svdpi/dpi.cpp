@@ -291,22 +291,6 @@ int shuttle_c_take_corr_id() {
   return static_cast<int>(shuttle::detail::take_corr_id());
 }
 
-// Claim `topic` as a response channel, exactly as the C++ Requester and serve()
-// do: from here on a blocking-entry subscription on it is refused. Returns 0 on
-// success, 1 on failure (reason in shuttle_c_last_error).
-int shuttle_c_mark_responses(const char* topic) {
-  try {
-    shuttle::detail::topic_mark_responses(topic ? topic : "");
-    return 0;
-  } catch (const std::exception& e) {
-    set_last_error(e.what());
-    return 1;
-  } catch (...) {
-    set_last_error("shuttle: unknown exception");
-    return 1;
-  }
-}
-
 const char* shuttle_c_last_error() {
   return last_error().c_str();
 }

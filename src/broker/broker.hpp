@@ -52,9 +52,6 @@ public:
   std::vector<std::shared_ptr<Subscriber>> match_subs(std::string_view topic, std::string_view tag);
   std::size_t name_matched_count(std::string_view topic) const;
   Topic& topic_for(std::string_view name);
-  // Response-channel marking and its enforcement at registration.
-  void mark_response_topic(std::string_view name);
-  void check_response_topic(std::string_view pattern) const;
   void check_filter_early(const Subscriber& sub);
   void check_bind_compat(std::string_view topic, std::string_view tag);
   void now_preflight(std::string_view topic, std::string_view tag, NowPolicy policy);

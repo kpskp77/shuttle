@@ -26,13 +26,11 @@ import "DPI-C" context function int shuttle_c_subscribe(
     string topic, int caps, string type_tag, int sv_sid);
 import "DPI-C" context function void shuttle_c_unsubscribe(int sv_sid);
 import "DPI-C" context function void shuttle_c_set_retained(string topic, bit retained);
-// Request/response: the corr_id allocation point and the response-channel mark.
-// Both live on the C++ side (the Requester's counter and the broker's response
-// table), so an SV Requester shares one id sequence and one marking with C++.
-// shuttle_c_take_corr_id never returns 0; shuttle_c_mark_responses returns 0 on
-// success and non-zero on failure (reason in shuttle_c_last_error).
+// Request/response: the corr_id allocation point.
+// The correlation id sequence lives on the C++ side (the Requester's counter),
+// so an SV Requester shares one id sequence with C++.
+// shuttle_c_take_corr_id never returns 0.
 import "DPI-C" context function int shuttle_c_take_corr_id();
-import "DPI-C" context function int shuttle_c_mark_responses(string topic);
 import "DPI-C" context function string shuttle_c_last_error();
 
 // Frame-pull protocol: before calling shuttle_sv_dispatch[_nb], C++ sets the

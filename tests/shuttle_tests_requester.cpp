@@ -257,39 +257,31 @@ void shuttle_tests_requester() {
     expect_eq(static_cast<long long>(call.queued()), 0, "the resp was taken out of the slot");
   });
 
-  // case12: the response topic is a response channel — a blocking subscriber on it is refused at
-  // registration instead of silently delaying every resp on the topic
+  // case12: a response topic is an ordinary topic with one delivery rule — a blocking entry on it
+  // registers fine (wildcard included) but is never a reply target: the skip is counted in its
+  // dropped(), while nonblocking watchers receive every reply and tell it apart by corr_id
   run_case(__func__, "case12", [] {
     auto server = shuttle::serve<RqReq, RqResp>(
         "rq.mark.req", "rq.mark.resp",
         [](const RqReq& req, const shuttle::Meta&) { return RqResp{req.op}; });
     (void)server;
 
-    bool refused = false;
-    try {
-      auto bad =
-          shuttle::subscribe<RqResp>("rq.mark.resp", [](const RqResp&, const shuttle::Meta&) {});
-      (void)bad;
-    } catch (const shuttle::CapabilityError& e) {
-      refused = std::string(e.what()).find("response topic") != std::string::npos;
-    }
-    expect(refused, "a blocking subscriber on a response topic is refused");
+    // Blocking observers register without complaint — the response topic is not special at
+    // registration — but replies never reach them.
+    std::size_t blocking_seen = 0;
+    auto blocking = shuttle::subscribe<RqResp>(
+        "rq.mark.resp", [&blocking_seen](const RqResp&, const shuttle::Meta&) { ++blocking_seen; });
+    auto wildcard = shuttle::subscribe<RqResp>(
+        "rq.>", [&blocking_seen](const RqResp&, const shuttle::Meta&) { ++blocking_seen; });
 
-    // A wildcard blocker would swallow the topic later, so patterns are matched, not compared.
-    bool wildcard_refused = false;
-    try {
-      auto bad = shuttle::subscribe<RqResp>("rq.>", [](const RqResp&, const shuttle::Meta&) {});
-      (void)bad;
-    } catch (const shuttle::CapabilityError&) {
-      wildcard_refused = true;
-    }
-    expect(wildcard_refused,
-           "a wildcard blocking subscriber covering the response topic is refused");
-
-    // The nonblocking form is the supported way to watch responses.
+    // The nonblocking form is the supported way to watch responses; corr_id marks a reply.
     std::size_t seen = 0;
+    bool reply_corr = false;
     auto watcher = shuttle::subscribe<RqResp>(
-        "rq.mark.resp", shuttle::nb([&seen](const RqResp&, const shuttle::Meta&) { ++seen; }));
+        "rq.mark.resp", shuttle::nb([&seen, &reply_corr](const RqResp&, const shuttle::Meta& meta) {
+          ++seen;
+          reply_corr = meta.corr_id != 0;
+        }));
 
     shuttle::Requester<RqReq, RqResp> client("rq.mark.req", "rq.mark.resp");
     auto call = client.send_serial(RqReq{7});
@@ -297,7 +289,14 @@ void shuttle_tests_requester() {
               "the request still targets only the responder");
     auto resps = call.wait_all(1_ms);
     expect_eq(static_cast<long long>(resps.size()), 1, "the resp still arrives");
-    expect_eq(static_cast<long long>(seen), 1, "the nonblocking watcher saw it");
+    expect_eq(static_cast<long long>(seen), 1, "the nonblocking watcher saw the reply");
+    expect(reply_corr, "the reply carries a corr_id, a hand-published frame would carry 0");
+    expect_eq(static_cast<long long>(blocking_seen), 0,
+              "the blocking observer never saw the reply");
+    expect_eq(static_cast<long long>(blocking.dropped()), 1,
+              "the skipped reply is counted for the observer");
+    expect_eq(static_cast<long long>(wildcard.dropped()), 1,
+              "and for the wildcard observer covering the topic");
   });
 
   report(__func__);

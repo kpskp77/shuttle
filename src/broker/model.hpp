@@ -117,12 +117,6 @@ struct Topic {
   // Unbound = byte-stream-only publications; the optional makes "bound but
   // without an operation table" inexpressible.
   std::optional<Binding> binding;
-  // Set once this topic is used as a response channel (Requester / serve mark
-  // it). A response topic is latency-critical: a blocking subscriber would hold
-  // the topic's serial chain between frames and delay every reply, which a
-  // requester cannot tell apart from "no responder" — so register_sub refuses
-  // a blocking entry on it (see Broker::check_response_topic).
-  bool carries_responses = false;
   bool retained_on = false;
   std::shared_ptr<const Envelope> retained_env;
   std::uint64_t seq = 0;

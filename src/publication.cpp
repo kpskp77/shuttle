@@ -52,10 +52,6 @@ void topic_declare(const std::string& topic, const TypeOps* ops) {
   // different DSOs have different addresses but identical semantics.
 }
 
-void topic_mark_responses(const std::string& topic) {
-  Broker::get().mark_response_topic(topic);
-}
-
 Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, const TypeOps* ops,
                     NowPolicy policy, std::uint32_t corr_id) {
   Broker& b = Broker::get();

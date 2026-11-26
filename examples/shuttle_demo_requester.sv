@@ -4,9 +4,9 @@
 // Compile order: weave_pkg.sv → shuttle_pkg.sv → shuttle_demo_msgs.sv → this file.
 // Counterpart of the C++ shuttle::Requester in shuttle_demo_requester.cpp. The id comes from
 // shuttle_c_take_corr_id() — the same counter C++ draws from — and every reply is routed back by
-// it, so two in-flight calls cannot mix up their answers. The response topic is claimed as a
-// response channel first, exactly like the C++ side, which is why a blocking observer there would
-// be refused.
+// it, so two in-flight calls cannot mix up their answers. Replies go out with `skip`, so a
+// blocking observer on the response topic never sees them; watch replies with a nonblocking
+// entry and tell them apart from hand-published frames by meta.corr_id (nonzero means a reply).
 // ============================================================================
 
 module shuttle_demo_requester;

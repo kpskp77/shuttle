@@ -140,18 +140,12 @@ module shuttle_tests_requester;
   //    tests/shuttle_tests_xlang.cpp (serve() with an nb handler plus a retained ready frame) ─────────────
   task automatic case_rq_sv_requester();
     automatic shuttle_mailbox                      ready = new ("xlang.rqsv.ready", "XMsg");
-    automatic shuttle_requester #(XRqReq, XRqResp) rq    = new ("xlang.rqsv.req", "xlang.rqsv.resp");
-    // A requester with no responder anywhere: its only purpose is the response-channel mark, which
-    // the C++ side then proves (a blocking C++ subscriber on it must be refused) — no C++ code ever
-    // marks that topic.
-    automatic shuttle_requester #(XRqReq, XRqResp) marked = new ("xlang.rqsv.mark.req",
-                                                                 "xlang.rqsv.mark.resp");
+    automatic shuttle_requester #(XRqReq, XRqResp) rq = new ("xlang.rqsv.req", "xlang.rqsv.resp");
     automatic XRqReq                  req = new();
     automatic XRqResp                 all[$];
     automatic shuttle_call #(XRqResp) call;
 
     check(rq.valid(), "rqsv.valid");
-    check(marked.valid(), "rqsv.marked_valid");
 
     // Rendezvous with C++ case10: its serve() responder is registered before the C++ barrier,
     // so once both sides pass, the request below always has its target.

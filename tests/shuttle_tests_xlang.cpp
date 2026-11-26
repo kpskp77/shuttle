@@ -28,9 +28,9 @@
 //   which no SV class can declare.
 //   9. case10 covers request/response in the *other* direction: an SV Requester calls a C++
 //   serve() responder. The SV side mints its corr_id through the shared counter
-//   (shuttle_c_take_corr_id), serve() echoes it back, and the SV-side response-topic mark
-//   (shuttle_c_mark_responses) refuses a blocking C++ subscriber on a topic no C++ responder
-//   ever touched.
+//   (shuttle_c_take_corr_id), serve() echoes it back, and the reply (published with
+//   NowPolicy::skip) never reaches the blocking C++ observer on the response topic — the skip
+//   shows up in its dropped().
 //
 // After both sides finish their assertions, run_cpp_tests in tests/shuttle_tests.sv renders the
 // verdict.
@@ -163,8 +163,6 @@ constexpr const char* kNsFromSvTopic = "xlang.ns.sv2cpp";        // SV → C++, 
 constexpr const char* kRqSvReadyTopic = "xlang.rqsv.ready";      // C++ → SV ready (retained)
 constexpr const char* kRqSvReqTopic = "xlang.rqsv.req";          // SV requester → C++ responder
 constexpr const char* kRqSvRespTopic = "xlang.rqsv.resp";        // C++ responder → SV requester
-constexpr const char* kRqSvMarkRespTopic =
-    "xlang.rqsv.mark.resp";  // response topic marked by SV only (no C++ responder)
 
 // Per-case rendezvous with the SV side (the mirror task is xlang_barrier in tests/
 // shuttle_tests_runner.sv): publish a retained marker on "xlang.hs.cpp.<name>", then wait
@@ -532,9 +530,9 @@ void shuttle_tests_xlang() {
   // case10: request/response the other way — an SV Requester calls this C++ serve() responder. The
   // SV side allocates its corr_id through shuttle_c_take_corr_id (one counter for both languages),
   // serve() copies meta.corr_id into the answer, and the SV reply table matches it. The second
-  // assertion covers the other new DPI entry: the SV requester claims its response topic as a
-  // response channel, so a blocking C++ subscriber on it is refused even though no C++ responder
-  // ever touched that topic.
+  // assertion covers the response-channel delivery rule on the same exchange: a blocking C++
+  // observer on the response topic registers like anywhere else, but the reply (published with
+  // NowPolicy::skip) never reaches it — the skip shows up in its dropped().
   run_case(__func__, "case10", [] {
     auto hits = std::make_shared<std::size_t>(0);
     auto server = shuttle::serve<XRqReq, XRqResp>(
@@ -546,8 +544,14 @@ void shuttle_tests_xlang() {
         }));
     (void)server;
 
-    // Rendezvous only after the responder exists: the SV side sends its request as soon as both
-    // sides pass the barrier, so a publish-before-register would race the request.
+    // A blocking C++ observer on the response topic: legal to register, never a reply target.
+    std::size_t blocking_seen = 0;
+    auto blocking = shuttle::subscribe<XRqResp>(
+        kRqSvRespTopic,
+        [&blocking_seen](const XRqResp&, const shuttle::Meta&) { ++blocking_seen; });
+
+    // Rendezvous only after the responder and the observer exist: the SV side sends its request
+    // as soon as both sides pass the barrier, so a publish-before-register would race the request.
     xlang_barrier("case10");
 
     // Announce readiness only once the responder exists: the SV side sends its request as soon as
@@ -560,19 +564,10 @@ void shuttle_tests_xlang() {
     for (int i = 0; i < 2000 && *hits == 0; ++i) weave::sleep(100_us);
     expect_eq(static_cast<long long>(*hits), 1,
               "the SV requester's request reached the C++ responder");
-
-    bool refused = false;
-    std::string why;
-    try {
-      auto bad = shuttle::subscribe<XRqReq>(kRqSvMarkRespTopic,
-                                            [](const XRqReq&, const shuttle::Meta&) {});
-      (void)bad;
-    } catch (const shuttle::CapabilityError& e) {
-      refused = true;
-      why = e.what();
-    }
-    expect(refused, "the SV requester's response mark refuses a blocking C++ subscriber");
-    expect(why.find("response topic") != std::string::npos, "the refusal names the response topic");
+    expect_eq(static_cast<long long>(blocking_seen), 0,
+              "the blocking observer never saw the SV requester's reply");
+    expect_eq(static_cast<long long>(blocking.dropped()), 1,
+              "the skipped reply is counted in its dropped()");
   });
 
   report(__func__);

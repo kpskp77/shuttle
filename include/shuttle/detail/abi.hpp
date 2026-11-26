@@ -75,13 +75,6 @@ using ErasedCallback = std::function<void(const void* p, const Meta&)>;
 // Declare the topic's type binding; throws TypeMismatchError on conflict with an existing binding.
 void topic_declare(const std::string& topic, const TypeOps* ops);
 
-// Mark the topic as a response channel. Requester and serve call this for the
-// topic they listen on; afterwards a blocking-entry subscription on it is
-// refused with CapabilityError (a blocking subscriber would hold the topic's
-// serial chain and delay every reply). Marking is idempotent and only affects
-// later registrations; the topic name itself stays public.
-void topic_mark_responses(const std::string& topic);
-
 // pub_now (= the public API's publish_now): synchronously invokes all subscribers
 // with a nonblocking entry on the publisher's stack. The message has already
 // been copied at the call site (snapshot semantics). See NowPolicy for policy.

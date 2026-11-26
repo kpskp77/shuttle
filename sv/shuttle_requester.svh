@@ -8,10 +8,10 @@
 // shuttle_meta::corr_id, and the requester routes replies to the call that
 // asked for them.
 //
-// The two DPI entries this leans on are the reason the class is not pure SV: the
-// id counter and the response-channel mark are broker-level state, and an SV
-// requester must not mint ids of its own or the two languages could hand the
-// same one to two calls on a shared response topic.
+// The one DPI entry this leans on is the reason the class is not pure SV: the
+// id counter is broker-level state, and an SV requester must not mint ids of
+// its own or the two languages could hand the same one to two calls on a
+// shared response topic.
 //
 // Usage:
 //   shuttle_requester #(XRqReq, XRqResp) rq = new ("sv.rq.req", "sv.rq.resp");
@@ -54,9 +54,8 @@ endclass
 // ── Serve: the responder's half of request/response ────────────────────
 // Counterpart of shuttle::serve() in include/shuttle/requester.hpp. The user
 // implements shuttle_responder (one typed function); the service owns everything
-// else — the response publisher, the response-channel mark, unpacking, and the
-// corr_id echo through shuttle_publisher::reply — so the responder never sees
-// bytes or correlation:
+// else — the response publisher, unpacking, and the corr_id echo through
+// shuttle_publisher::reply — so the responder never sees bytes or correlation:
 //
 //   class Doubler implements shuttle_responder #(Rq, Rsp);
 //     virtual function Rsp respond(input Rq req, input shuttle_meta meta);
@@ -103,9 +102,8 @@ endclass
 
 // ── shuttle_serve ──────────────────────────────────────────────────────
 // Owns the responder plumbing for one service: validates the two topic names,
-// marks the response topic (blocking-entry subscribers on it are refused from
-// here on), subscribes on the request pattern, and answers every request
-// through shuttle_publisher::reply, which echoes the request's corr_id into the
+// subscribes on the request pattern, and answers every request through
+// shuttle_publisher::reply, which echoes the request's corr_id into the
 // response frame. Failures are reported through valid()/last_error() — never
 // silently, never by $error from here.
 class shuttle_serve #(type TReq, type TResp);
@@ -149,13 +147,8 @@ class shuttle_serve #(type TReq, type TResp);
       svc.error_ = "shuttle: request and response topics must differ";
       return svc;
     end
-    // Mark before subscribing: from here on a blocking-entry subscriber on the
-    // response topic is refused (it would hold the topic's chain and delay
-    // every reply on it).
-    if (shuttle_c_mark_responses(resp_topic) != 0) begin
-      svc.error_ = shuttle_c_last_error();
-      return svc;
-    end
+    // A response topic is an ordinary topic to the broker: replies go out with
+    // NowPolicy::skip, so a blocking entry here is simply never a reply target.
     pub  = new (resp_topic);
     sink = new (handler, pub);
     if (blocking_entry)
@@ -316,13 +309,6 @@ class shuttle_requester #(type TReq, type TResp) extends shuttle_reply_target;
     end
     if (req_topic == resp_topic) begin
       error_ = "shuttle: request and response topics must differ";
-      return;
-    end
-    // Mark before subscribing: from here on a blocking-entry subscriber on the
-    // response topic is refused (it would hold the topic's chain and delay every
-    // reply on it).
-    if (shuttle_c_mark_responses(resp_topic_) != 0) begin
-      error_ = shuttle_c_last_error();
       return;
     end
     sink_ = new (this);

@@ -117,13 +117,13 @@ class shuttle_publisher #(type T = byte);
   // publisher never has to think about correlation.
   //
   // It goes out through publish_now so that a nonblocking C++ requester has the answer on
-  // its stack before this call returns (no task switch). `defer` keeps it correct even if
-  // a blocking subscriber slipped onto the response topic before it was marked.
+  // its stack before this call returns (no task switch). `skip` keeps the rule that a blocking
+  // entry on the response topic is simply never a reply target (counted in skipped()).
   function shuttle_publication reply(T msg, shuttle_meta request);
     byte payload[];
     pack_payload(msg, payload);
     return wrap(
-        shuttle_c_publish_now(topic_, T::type_tag, payload, SHUTTLE_NOW_DEFER, request.corr_id),
+        shuttle_c_publish_now(topic_, T::type_tag, payload, SHUTTLE_NOW_SKIP, request.corr_id),
         "reply", 1'b1);
   endfunction
 

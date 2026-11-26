@@ -142,30 +142,6 @@ Topic& Broker::topic_for(std::string_view name) {
   return pos->second;
 }
 
-// ── Response channels ────────────────────────────────────────────────────
-
-void Broker::mark_response_topic(std::string_view name) {
-  check_topic_name(name);
-  topic_for(name).carries_responses = true;
-}
-
-// The only enforcement point of the response-channel contract. Refusing at
-// registration keeps the failure loud and early (invariant 4 style) instead of
-// turning into a reply that arrives late enough to be mistaken for a dead
-// responder. Patterns are matched, not compared: a wildcard blocker
-// ("dev.>") would otherwise slip through and swallow the topic later.
-void Broker::check_response_topic(std::string_view pattern) const {
-  for (const auto& [name, topic] : topics) {
-    if (!topic.carries_responses) continue;
-    if (!match(pattern, name)) continue;
-    throw CapabilityError(std::string("shuttle: subscription ") + std::string(pattern) +
-                          " matches the response topic " + name +
-                          "; register it with a nonblocking entry (nb() / "
-                          "shuttle_subscribe_nb) — a blocking subscriber there holds the "
-                          "topic's chain and delays every reply on it");
-  }
-}
-
 void Broker::check_filter_early(const Subscriber& sub) {
   if (sub.filter_tag.empty()) return;
   const auto it = topics.find(sub.pattern);
@@ -390,9 +366,6 @@ std::shared_ptr<Subscriber> Broker::register_sub(std::string pattern, SubKind ki
                                                  ErasedCallback cb, ByteCallback cb_bytes,
                                                  int handle) {
   check_pattern(pattern);
-  // A response topic may only be watched by nonblocking entries (no-op for
-  // topics that are not response channels).
-  if (cap == Capability::blocking) check_response_topic(pattern);
   auto sub = std::make_shared<Subscriber>();
   sub->id = next_sub_id++;
   sub->pattern = std::move(pattern);

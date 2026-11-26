@@ -278,9 +278,6 @@ public:
         resp_topic_(std::move(resp_topic)),
         table_(std::make_shared<detail::ResponseTable<TResp>>()) {
     detail::check_topics(req_topic_, resp_topic_);
-    // Claim the response topic before subscribing: from here on a blocking
-    // subscriber on it is refused (see topic_mark_responses).
-    detail::topic_mark_responses(resp_topic_);
     state_ = std::make_shared<State>(req_topic_, resp_topic_, table_);
   }
 
@@ -388,11 +385,12 @@ private:
 // one entry, and the entry must be visible at the call site (the SV API spells
 // the same distinction as shuttle_subscribe vs shuttle_subscribe_nb).
 //
-// The response goes out through publish_now, so with nb(handler) the whole round
-// trip completes on the requester's stack: no task switch, no simulation time
-// spent, and the requester holds the reply as soon as its send_now() returns.
-// The response topic is marked as a response channel, so a blocking subscriber
-// on it is refused at registration (see detail::topic_mark_responses).
+// The response goes out through publish_now with NowPolicy::skip, so with
+// nb(handler) the whole round trip completes on the requester's stack: no task
+// switch, no simulation time spent, and the requester holds the reply as soon
+// as its send_now() returns. A blocking entry on the response topic is never a
+// reply target (it is counted skipped); watch replies with nb() and tell them
+// apart by Meta::corr_id.
 namespace detail {
 
 template <typename TReq, typename TResp, typename F>
@@ -400,20 +398,17 @@ auto serve_body(std::string resp_topic, F&& handler) {
   static_assert(
       std::is_invocable_r_v<TResp, F&, const TReq&, const Meta&>,
       "shuttle: serve handler signature should be TResp(const TReq&, const shuttle::Meta&)");
-  // The response topic is a response channel: latency-critical, nonblocking
-  // watchers only. Claimed before the publisher exists so the first registration
-  // on it already sees the mark.
-  detail::topic_mark_responses(resp_topic);
   auto resp_pub = std::make_shared<Publisher<TResp>>(std::move(resp_topic));
   return [resp_pub, fn = std::forward<F>(handler)](const TReq& req, const Meta& meta) mutable {
     TResp resp = fn(req, meta);
     // Same as resp_pub->publish_now(resp), plus the correlation id that the
-    // public trio has no parameter for. `defer` keeps the frame correct even if a
-    // blocking subscriber slipped in before the mark: it is handed to the chain,
-    // while every nonblocking subscriber (in particular the requester) is served
-    // inline, so the reply exists before the publisher returns.
+    // public trio has no parameter for. `skip` keeps every blocking entry off
+    // the reply path for good: a reply is half of a rendezvous, and a copy
+    // queued behind a blocking observer's chain is a reply in name only. Every
+    // nonblocking subscriber (in particular the requester) is served inline, so
+    // the reply exists before the publisher returns.
     detail::pub_now(resp_pub->topic(), std::make_shared<const TResp>(std::move(resp)),
-                    detail::type_ops<TResp>(), NowPolicy::defer, meta.corr_id);
+                    detail::type_ops<TResp>(), NowPolicy::skip, meta.corr_id);
   };
 }
 
