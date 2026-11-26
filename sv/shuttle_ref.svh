@@ -36,6 +36,21 @@
 //     (or clear()) once no in-flight or retained frame carries it; a frame whose id was
 //     freed is a loud $error at delivery, never a silent alias onto another object.
 //   · ids are allocated monotonically and never reused.
+//
+// One class, several reference types. SV has no overloading, so a class cannot implement
+// shuttle_ref_sink #(A) and shuttle_ref_sink #(B) at once — both declare on_msg, and the compiler
+// reports the second as "identifier previously declared". Three shapes work instead; pick by what
+// the receiver needs:
+//   · an open-ended type set: implement the untyped shuttle_sink / shuttle_sink_nb once and
+//     dispatch on meta.type_tag, one line per arm through shuttle_ref_msg #(T)::unpack(payload) —
+//     the mirror of T::unpack(payload) on the value path;
+//   · a type hierarchy: one shuttle_ref_sink #(Base), $cast down inside on_msg (the wire tag is
+//     then the base's name, so a subscriber filtering on a derived name does not match);
+//   · queue semantics: one shuttle_ref_mailbox #(T) per type, drained by one service loop — no
+//     adapter class at all.
+// Untyped callbacks that want to stay fully static use one 4-line adapter class per type (each
+// implementing shuttle_ref_sink #(T) and forwarding to a plain method of the owner): distinct
+// classes never share a method name, so nothing collides.
 
 // ── Internal id table (per #(T) specialization) ────────────────────────
 // by_id_ is the id → object map; ids_/objs_ is the reverse cache that keeps a re-published
@@ -111,6 +126,21 @@ function automatic int unsigned shuttle_ref_unpack(input byte payload[]);
   return id;
 endfunction
 
+// ── Whole-frame resolve: payload → handle ─────────────────────────────
+// For a sink that receives several reference types. A typed sink cannot be implemented twice by
+// one class (see the header), so such a receiver implements shuttle_sink_nb once and dispatches
+// on meta.type_tag — this is the one-liner per arm, and no id reaches the caller:
+//
+//   virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
+//     if (meta.type_tag == "FObj") last_f = shuttle_ref_msg #(FObj)::unpack(payload);
+//     else if (meta.type_tag == "SObj") last_s = shuttle_ref_msg #(SObj)::unpack(payload);
+//   endfunction
+class shuttle_ref_msg #(type T);
+  static function T unpack(input byte payload[]);
+    return shuttle_ref_table #(T)::of_id(shuttle_ref_unpack(payload));
+  endfunction
+endclass
+
 // ── Codec: a reference as a field of an ordinary message ───────────────
 // A value message may embed references; `shuttle_field` takes a codec *name*, so a
 // parameterized codec arrives through a typedef:
@@ -163,11 +193,11 @@ class shuttle_ref_cb #(type T) implements shuttle_sink, shuttle_sink_nb;
     sink_ = sink;
   endfunction
   virtual task invoke(input byte payload[], input shuttle_meta meta);
-    T obj = shuttle_ref_table #(T)::of_id(shuttle_ref_unpack(payload));
+    T obj = shuttle_ref_msg #(T)::unpack(payload);
     if (obj != null) sink_.on_msg(obj, meta);  // null = the table already reported it
   endtask
   virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
-    T obj = shuttle_ref_table #(T)::of_id(shuttle_ref_unpack(payload));
+    T obj = shuttle_ref_msg #(T)::unpack(payload);
     if (obj != null) sink_.on_msg(obj, meta);
   endfunction
 endclass

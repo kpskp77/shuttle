@@ -134,6 +134,60 @@ module shuttle_tests_ref;
     pub.free(obj);
   endtask
 
+  // One receiver, two reference types. SV has no overloading, so FMulti cannot implement
+  // shuttle_ref_sink #(FObj) and shuttle_ref_sink #(SObj) at once; it implements the untyped
+  // nonblocking entry once and resolves each arm through shuttle_ref_msg #(T)::unpack — the
+  // multi-type shape the ref header documents.
+  class SObj;
+    int v;
+    function new(int v_ = 0);
+      v = v_;
+    endfunction
+  endclass
+
+  class FMulti implements shuttle_sink_nb;
+    int  f_n;
+    int  s_n;
+    FObj last_f;
+    SObj last_s;
+    virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
+      if (meta.type_tag == "FObj") begin
+        last_f = shuttle_ref_msg #(FObj)::unpack(payload);
+        f_n++;
+      end else if (meta.type_tag == "SObj") begin
+        last_s = shuttle_ref_msg #(SObj)::unpack(payload);
+        s_n++;
+      end
+    endfunction
+  endclass
+
+  task automatic case_ref_multi();
+    automatic FMulti                     multi = new ();
+    automatic shuttle_ref_publisher #(FObj) fpub = new ("ref.multi.f", "FObj");
+    automatic shuttle_ref_publisher #(SObj) spub = new ("ref.multi.s", "SObj");
+    automatic FObj                       fobj = new (13, "thirteen");
+    automatic SObj                       sobj = new (14);
+    automatic shuttle_subscription        fsub = null;
+    automatic shuttle_subscription        ssub = null;
+    automatic shuttle_publication         h = null;
+    // The same sink object, two registrations: whichever tag the frame carries picks the arm.
+    fsub = shuttle_subscribe_nb("ref.multi.f", multi, "FObj");
+    ssub = shuttle_subscribe_nb("ref.multi.s", multi, "SObj");
+    check(fsub != null && ssub != null, "ref.multi_subscribed");
+    h = fpub.publish_serial(fobj);
+    if (h != null) h.wait_done();
+    h = spub.publish_serial(sobj);
+    if (h != null) h.wait_done();
+    check(multi.f_n == 1 && multi.last_f == fobj, "ref.multi_first_type");
+    check(multi.s_n == 1 && multi.last_s == sobj, "ref.multi_second_type");
+    // Nothing was dropped into the other arm.
+    check(multi.f_n + multi.s_n == 2, "ref.multi_no_extra_delivery");
+    fsub.unsubscribe();
+    ssub.unsubscribe();
+    fpub.free(fobj);
+    spub.free(sobj);
+  endtask
+
   task automatic case_ref_retained();
     automatic shuttle_ref_publisher #(FObj) pub = new ("ref.retained");
     automatic shuttle_ref_mailbox #(FObj) box = null;
@@ -274,6 +328,7 @@ module shuttle_tests_ref;
     case_ref_mutation();
     case_ref_modes();
     case_ref_callbacks();
+    case_ref_multi();
     case_ref_retained();
     case_ref_lifetime();
     case_ref_requester();

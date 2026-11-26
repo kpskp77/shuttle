@@ -428,10 +428,19 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 | `shuttle_ref_mailbox #(T)::new(topic[, capacity, overflow])`、`try_recv`/`recv`/`size`/`close` | `shuttle_mailbox` |
 | `shuttle_ref_subscription #(T)::blocking/nonblocking(topic, sink)` | `shuttle_subscribe` / `shuttle_subscribe_nb` |
 | `shuttle_ref_sink #(T)::on_msg(value, meta)` | `shuttle_sink::invoke`（替你解包） |
+| 非参数化 sink 里的 `shuttle_ref_msg #(T)::unpack(payload)` | `T::unpack(payload)` |
 | `typedef shuttle_ref_codec #(T) MyLink;` 配 `` `shuttle_field(obj, MyLink) `` | 声明字段的 codec（嵌套、向量、枚举同理） |
 
 `on_msg` 是 function：解析句柄不消耗仿真时间，与 `shuttle_responder::respond` 同一条规则。
 需要耗时的接收方把句柄塞进自己的 `shuttle_ref_mailbox` 或 task。
+
+SV 没有重载，一个类不能同时 implements `shuttle_ref_sink #(A)` 与 `shuttle_ref_sink #(B)`：两者
+都声明 `on_msg`，编译器把第二个当成重复声明拒掉。需要收多种引用类型的接收方改为实现一次非参数
+化的 `shuttle_sink_nb::invoke_nb(payload, meta)`（阻塞形式是 `shuttle_sink::invoke`），每个分支
+用 `shuttle_ref_msg #(T)::unpack(payload)` 解一行，`meta.type_tag` 选分支——与值通路上靠它选消息
+类型是同一个动作。有继承关系时保留类型化写法：只 implements 一个 `shuttle_ref_sink #(Base)`，
+在 `on_msg` 里 `$cast` 下转（此时线上的 tag 是基类名，按派生类名过滤的订阅者匹配不到）。队列式
+的接收方不需要任何适配类：每个类型一个 `shuttle_ref_mailbox #(T)`，由一个服务循环统一取。
 
 `shuttle_requester`、`shuttle_serve`、`shuttle_mailbox` 都没有引用版本，也不需要：请求/响应本身
 承载任何反射过的消息，而消息可以在数据旁边携带一个对象。机制就是 codec——用

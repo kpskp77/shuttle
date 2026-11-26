@@ -494,11 +494,23 @@ never appears in user code:
 | `shuttle_ref_mailbox #(T)::new(topic[, capacity, overflow])`, `try_recv`/`recv`/`size`/`close` | `shuttle_mailbox` |
 | `shuttle_ref_subscription #(T)::blocking/nonblocking(topic, sink)` | `shuttle_subscribe` / `shuttle_subscribe_nb` |
 | `shuttle_ref_sink #(T)::on_msg(value, meta)` | `shuttle_sink::invoke` (unpacked for you) |
+| `shuttle_ref_msg #(T)::unpack(payload)` inside an untyped sink | `T::unpack(payload)` |
 | `typedef shuttle_ref_codec #(T) MyLink;` + `` `shuttle_field(obj, MyLink) `` | a codec for a declared field (nested, vector, enum) |
 
 `on_msg` is a function: resolving a handle cannot consume simulation time, the same rule as
 `shuttle_responder::respond`. A receiver that needs time queues the handle in its own
 `shuttle_ref_mailbox` or task.
+
+SV has no overloading, so one class cannot implement `shuttle_ref_sink #(A)` and
+`shuttle_ref_sink #(B)`: both declare `on_msg`, and the compiler rejects the second as already
+declared. A receiver that takes several reference types implements the untyped
+`shuttle_sink_nb::invoke_nb(payload, meta)` (or the blocking `shuttle_sink::invoke`) once and
+resolves each arm with `shuttle_ref_msg #(T)::unpack(payload)` — one line per type, and
+`meta.type_tag` picks the arm exactly as it picks a message type on the value path. A type
+hierarchy keeps the typed shape instead: implement one `shuttle_ref_sink #(Base)` and `$cast`
+down inside `on_msg` (the wire tag is then the base's name, so a subscriber filtering on a derived
+name does not match). A queue-shaped receiver needs no adapter at all: one
+`shuttle_ref_mailbox #(T)` per type, drained by one service loop.
 
 There is no reference flavour of `shuttle_requester` / `shuttle_serve` / `shuttle_mailbox`, and
 none is needed: request/response carries any reflected message, and a message may carry an object
