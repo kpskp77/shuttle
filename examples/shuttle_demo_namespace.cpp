@@ -8,22 +8,22 @@
 // SHUTTLE_REFLECT can only run at global scope (it reopens namespace shuttle to specialize
 // Codec<T>), so a type declared in a namespace cannot be reflected in place. The global alias
 // below lifts the name out. Because the macro's first argument is also the type tag, the alias
-// spelling "UartCfg" is what the SV class declares as type_tag. Reflecting `demo_wire::UartCfg`
-// instead would tag every frame "demo_wire::UartCfg" — a string no SV class can carry, and the SV
+// spelling "UartCfg" is what the SV class declares as type_tag. Reflecting `demo_hw::UartCfg`
+// instead would tag every frame "demo_hw::UartCfg" — a string no SV class can carry, and the SV
 // subscriber would silently never enter the frame's target set.
 
 #include <cstdint>
 #include <shuttle/shuttle.hpp>
 #include <stdexcept>
 
-namespace demo_wire {
+namespace demo_hw {
 struct UartCfg {
   std::uint32_t baud = 0;
   std::uint8_t mode = 0;
 };
-}  // namespace demo_wire
+}  // namespace demo_hw
 
-using UartCfg = demo_wire::UartCfg;
+using UartCfg = demo_hw::UartCfg;
 SHUTTLE_REFLECT(UartCfg, baud, mode)
 
 void shuttle_demo_namespace() {

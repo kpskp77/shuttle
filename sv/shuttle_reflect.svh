@@ -1,6 +1,6 @@
 // shuttle_reflect_begin/shuttle_field/shuttle_reflect_end — the SV-side
 // message-codec generator; see sv/shuttle_codec.svh for the codec surface and
-// wire format these macros generate against.
+// byte layout these macros generate against.
 `ifndef SHUTTLE_REFLECT_SVH
 `define SHUTTLE_REFLECT_SVH
 

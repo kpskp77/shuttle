@@ -14,10 +14,10 @@ package shuttle_tests_fixtures;
 
   // ── Message classes: counterpart of `struct XMsg { uint32_t addr; uint32_t data; }` on the C++ side ──
   // All message classes use the generated codec (sv/shuttle_reflect.svh three-piece macros), which is
-  // byte-for-byte the C++ Writer's big-endian wire order.
+  // byte-for-byte the C++ Writer's big-endian byte order.
   // ── Message classes: counterpart of `struct XMsg { uint32_t addr; uint32_t data; }` on the C++ side ──
   // All message classes use the generated codec (sv/shuttle_reflect.svh three-piece macros), which is
-  // byte-for-byte the C++ Writer's big-endian wire order (verified on VCS; see the
+  // byte-for-byte the C++ Writer's big-endian byte order (verified on VCS; see the
   // "Simulator constraints" section of docs/backends.md).
   class XMsg;
     int unsigned addr;
@@ -84,7 +84,7 @@ package shuttle_tests_fixtures;
 
   // ── Inheritance chain (mirror XHead/XMid/XChain in tests/shuttle_tests_xlang.cpp case8) ──
   // Each level lists only its own fields and delegates its base subobject with `shuttle_base,
-  // the SV twin of SHUTTLE_REFLECT_DERIVED: wire order is the base encoding first, then the own
+  // the SV twin of SHUTTLE_REFLECT_DERIVED: byte order is the base encoding first, then the own
   // fields, so the chain stays byte-for-byte the C++ Codec<XChain> → Codec<XMid> → Codec<XHead>
   // delegation. A signed field at the middle level checks the sign convention across the DPI.
   class XHead;
@@ -113,7 +113,7 @@ package shuttle_tests_fixtures;
   // ── Namespaced C++ type (mirror XNsMsg in tests/shuttle_tests_xlang.cpp case10) ──
   // The C++ struct lives in namespace xlang_ns and is reflected through the global alias
   // `using XNsMsg = xlang_ns::XNsMsg`, so its type_tag is the unqualified spelling "XNsMsg" —
-  // exactly what shuttle_reflect_begin(XNsMsg) declares below. Wire order is u32 code then i16
+  // exactly what shuttle_reflect_begin(XNsMsg) declares below. Byte order is u32 code then i16
   // delta, 6 bytes, no padding.
   class XNsMsg;
     int unsigned code;

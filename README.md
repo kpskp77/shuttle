@@ -129,7 +129,7 @@ declared:
 struct Frame { std::uint32_t seq; };
 struct Pkt : Frame { std::uint32_t data; };
 SHUTTLE_REFLECT(Frame, seq)
-SHUTTLE_REFLECT_DERIVED(Pkt, Frame, data)   // wire = Frame encoding, then data
+SHUTTLE_REFLECT_DERIVED(Pkt, Frame, data)   // byte layout = Frame encoding, then data
 ```
 
 ```systemverilog
@@ -265,6 +265,6 @@ docs/               architecture.md / backends.md + Chinese twins (README_zh.md,
 
 - [architecture](docs/architecture.md): the broker model — snapshot semantics, the three publish
   paths, terminal-state accounting, and the key design decisions
-- [backends](docs/backends.md): the DPI protocol (import/export tables, on-wire format), the
+- [backends](docs/backends.md): the DPI protocol (import/export tables, byte layout), the
   systemc backend, ABI notes
 - [AGENTS.md](AGENTS.md): the constraint checklist every change is checked against

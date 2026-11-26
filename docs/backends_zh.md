@@ -3,7 +3,7 @@
 本文是 layer-3 按面拆分的一份：覆盖 shuttle 的两个仿真后端（svdpi、systemc）与 C++ ↔
 SystemVerilog DPI 边界，回答"边界为什么长这样"与"到底什么穿过了边界"，服务于做集成、
 移植或评审后端代码的人。它是 DPI 边界的权威定义：下面的 import/export 表、协议常量
-与线上格式即定义本身。改动必须满足的约束在 [AGENTS.md](../AGENTS.md)
+与字节布局即定义本身。改动必须满足的约束在 [AGENTS.md](../AGENTS.md)
 （见 "Guarantees" 与 "Pitfalls in this environment (already hit)"），定位与首次使用在
 [README.md](../README.md)，broker 内部——投递调度、终态 记账、入口选择——在
 [architecture.md](architecture.md)。
@@ -48,7 +48,7 @@ svdpi 后端是唯一带外部订阅者通道的构建，由四块关注点严�
 | `src/backend/svdpi/dpi.cpp` | DPI-C 面：`shuttle_c_*` import（仿真器调用）与 SV export 原型。只做 DPI 类型翻译与错误上报；无 broker 状态。 |
 | `src/backend/svdpi/facade.cpp` | 外部门面：`ext_*`（字节帧发布、外部订阅者注册）与 `pub_*`（按 `pub_id` 的查询/等待）。只做 broker 编排；不认识 DPI。 |
 | `src/backend/svdpi/bridge.cpp` | `detail::backend` 实现：`dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery` 加帧拉取通道。 |
-| `src/backend/svdpi/svdpi_internal.hpp` | 目录私有头：`SvScopeGuard`、`FrameContext`、`g_frame`、线上编码常量、`ext_*`/`pub_*` 声明。 |
+| `src/backend/svdpi/svdpi_internal.hpp` | 目录私有头：`SvScopeGuard`、`FrameContext`、`g_frame`、协议常量、`ext_*`/`pub_*` 声明。 |
 | `sv/shuttle_pkg.sv` | SV 侧包：DPI import/export 声明、常量、订阅注册表与用户 API（`shuttle_publisher`、`shuttle_requester`、`shuttle_call`、`shuttle_responder`、`shuttle_serve`、`shuttle_subscription`、`shuttle_publication`、`shuttle_trigger`、`shuttle_mailbox`、`shuttle_ref_publisher` / `shuttle_ref_mailbox` / `shuttle_ref_subscription` / `shuttle_ref_sink` / `shuttle_ref_msg` / `shuttle_ref_codec`）。 |
 
 声明与定义按"谁调用谁"切开：SV 调进 `dpi.cpp`，后者以 `shuttle::detail::*` 的名义调用
@@ -112,9 +112,9 @@ Export——由 `shuttle_pkg.sv` 提供，C++ broker 回调（原型在 bridge.c
 meta 字段作为独立 DPI 实参过界、不打包成字节，所以 C++ 日志与 SV `$display` 可以直接
 按 `(topic_name, topic_seq)` 对齐。
 
-### 常量与线上格式
+### 协议常量与帧元信息
 
-数值本身就是协议的一部分：SV 把它们拼成 `localparam`，C++ 用 `wire(...)` 对同样的
+数值本身就是协议的一部分：SV 把它们拼成 `localparam`，C++ 用 `code_of(...)` 对同样的
 数字比较（作用在 C++ 枚举上），两侧因此不会漂移。
 
 | 族 | 常量 |
@@ -131,8 +131,10 @@ meta 字段作为独立 DPI 实参过界、不打包成字节，所以 C++ 日�
 `type_tag`、`topic_seq`、`corr_id`、`time_fs`。只有 `corr_id` 由发布方写入（0 = 非关
 联交换）；其余由 broker 填，`time_fs` 来自 `weave::now()` 而非后端。
 
-载荷线上格式（由 `include/shuttle/codec.hpp` 定义，`shuttle_pkg.sv` 头部注释中的 SV
-消息类约定与之镜像）：
+### 载荷字节布局
+
+由 `include/shuttle/codec.hpp` 定义，`shuttle_pkg.sv` 头部注释中的 SV 消息类约定与之
+镜像：
 
 - 字段按声明序编码——无字段名、无填充、无对齐；嵌套 struct 递归展开。
 - 整数与浮点为大端（浮点取 IEEE-754 位模式）；枚举按其底层整数类型编码，所以 SV 基类

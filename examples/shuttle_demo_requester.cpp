@@ -50,7 +50,7 @@ SHUTTLE_REFLECT(RegResp, status, value)
 // ── Responder component: a register block ────────────────────────────────
 // It only knows its own address window and its own topics. It does not know who
 // asks, how many askers there are, or when. Declaring the subscription in the
-// constructor is the usual shape: the component is wired up at init and stays
+// constructor is the usual shape: the component is constructed at init and stays
 // registered for the whole simulation.
 class RegisterBlock {
 public:

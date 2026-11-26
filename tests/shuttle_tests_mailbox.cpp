@@ -234,10 +234,10 @@ void shuttle_tests_mailbox() {
     auto item = alias.try_recv();
     expect(item.has_value(), "the byte mailbox received the frame");
     // MbxResp is one uint32 field: 4 bytes, big-endian
-    expect_eq(static_cast<long long>(item->value.size()), 4, "wire length of MbxResp");
+    expect_eq(static_cast<long long>(item->value.size()), 4, "encoded length of MbxResp");
     expect(static_cast<unsigned char>(item->value[0]) == 0x01 &&
                static_cast<unsigned char>(item->value[3]) == 0x04,
-           "big-endian wire bytes, no decoding");
+           "big-endian encoded bytes, no decoding");
     expect_eq(static_cast<long long>(box.size()), 0, "both handles see the same drained queue");
   });
 

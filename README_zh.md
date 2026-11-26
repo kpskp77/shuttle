@@ -123,7 +123,7 @@ codec 编解码，同一个字段只在声明处写一次：
 struct Frame { std::uint32_t seq; };
 struct Pkt : Frame { std::uint32_t data; };
 SHUTTLE_REFLECT(Frame, seq)
-SHUTTLE_REFLECT_DERIVED(Pkt, Frame, data)   // 线格式 = Frame 编码 + data
+SHUTTLE_REFLECT_DERIVED(Pkt, Frame, data)   // 字节布局 = Frame 编码 + data
 ```
 
 ```systemverilog
@@ -250,5 +250,5 @@ docs/               architecture.md / backends.md 及中文孪生（README_zh.md
 ## 延伸阅读
 
 - [architecture](docs/architecture.md)：broker 模型——快照语义、三种发布路径、终态记账、关键设计决策
-- [backends](docs/backends.md)：DPI 协议（import/export 表、线上格式）、systemc 后端、ABI 说明
+- [backends](docs/backends.md)：DPI 协议（import/export 表、字节布局）、systemc 后端、ABI 说明
 - [AGENTS.md](AGENTS.md)：每次改动都要对照的约束清单

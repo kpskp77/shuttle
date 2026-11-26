@@ -198,7 +198,7 @@ module shuttle_tests_xlang;
   endtask
 
   // ── Inheritance chain, both directions (mirror case8 of tests/shuttle_tests_xlang.cpp) ──
-  // The C++ side registers XChain with SHUTTLE_REFLECT_DERIVED, so its wire form is the base
+  // The C++ side registers XChain with SHUTTLE_REFLECT_DERIVED, so its encoded form is the base
   // encoding followed by the own fields; the SV classes reach the same layout through
   // `shuttle_base. Decoding here proves both delegations agree byte for byte, and the frame going
   // back proves the SV pack order is what Codec<XChain> expects.

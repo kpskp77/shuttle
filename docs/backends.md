@@ -4,8 +4,8 @@ This document is the layer-3 surface split covering the two simulation backends
 (svdpi, systemc) and the C++ ↔ SystemVerilog DPI boundary of shuttle. It answers
 "why is the boundary shaped this way" and "what exactly crosses it" for people
 integrating, porting, or reviewing the backend code. It is the authority on the
-DPI boundary: the import/export tables, the protocol constants, and the on-wire
-format below are the definition. Rules a change must satisfy live in [AGENTS.md](../AGENTS.md)
+DPI boundary: the import/export tables, the protocol constants, and the byte
+layout below are the definition. Rules a change must satisfy live in [AGENTS.md](../AGENTS.md)
 (see "Guarantees" and "Pitfalls in this environment (already hit)"), positioning
 and first use live in [README.md](../README.md), and broker internals — delivery
 scheduling, terminal-state accounting, entry selection — live in
@@ -62,7 +62,7 @@ consists of four pieces with strictly separated concerns:
 | `src/backend/svdpi/dpi.cpp` | The DPI-C surface: `shuttle_c_*` imports (called by the simulator) and the SV export prototypes. Only DPI type translation and error reporting; no broker state. |
 | `src/backend/svdpi/facade.cpp` | The external facade: `ext_*` (byte-frame publish, external-subscription registration) and `pub_*` (per-`pub_id` queries/waits). Broker orchestration only; no DPI knowledge. |
 | `src/backend/svdpi/bridge.cpp` | The `detail::backend` implementation: `dispatch` / `dispatch_nb` / `note_retired_delivery` / `take_retired_delivery` plus the frame-pull channel. |
-| `src/backend/svdpi/svdpi_internal.hpp` | Private header of the directory: `SvScopeGuard`, `FrameContext`, `g_frame`, the on-wire codes, and the `ext_*`/`pub_*` declarations. |
+| `src/backend/svdpi/svdpi_internal.hpp` | Private header of the directory: `SvScopeGuard`, `FrameContext`, `g_frame`, the boundary codes, and the `ext_*`/`pub_*` declarations. |
 | `sv/shuttle_pkg.sv` | The SV-side package: the DPI import/export declarations, the constants, the subscription registry, and the user API (`shuttle_publisher`, `shuttle_requester`, `shuttle_call`, `shuttle_responder`, `shuttle_serve`, `shuttle_subscription`, `shuttle_publication`, `shuttle_trigger`, `shuttle_mailbox`, `shuttle_ref_publisher` / `shuttle_ref_mailbox` / `shuttle_ref_subscription` / `shuttle_ref_sink` / `shuttle_ref_msg` / `shuttle_ref_codec`). |
 
 Declarations and definitions are split along "who calls whom": SV calls into
@@ -136,10 +136,10 @@ Exports — provided by `shuttle_pkg.sv`, called back by the C++ broker
 The meta fields cross as separate DPI arguments, not as packed bytes, so C++
 logs and SV `$display` can align on `(topic_name, topic_seq)` directly.
 
-### Constants and the on-wire format
+### Protocol constants and the frame meta
 
 The numeric values are part of the protocol: SV spells them as `localparam`s
-and C++ compares against the same numbers (via `wire(...)` on the C++ enums),
+and C++ compares against the same numbers (via `code_of(...)` on the C++ enums),
 so the two sides cannot drift.
 
 | Family | Constants |
@@ -158,8 +158,10 @@ logical content on both sides: `topic_name`, `type_tag`, `topic_seq`,
 uncorrelated); the broker fills the rest, and `time_fs` comes from
 `weave::now()`, not from the backend.
 
-The payload wire format (defined by `include/shuttle/codec.hpp`, mirrored by
-the SV message-class convention in the `shuttle_pkg.sv` header):
+### Payload byte layout
+
+It is defined by `include/shuttle/codec.hpp`, mirrored by the SV message-class
+convention in the `shuttle_pkg.sv` header:
 
 - Fields are encoded in declaration order — no field names, no padding, no
   alignment; nested structs expand recursively.

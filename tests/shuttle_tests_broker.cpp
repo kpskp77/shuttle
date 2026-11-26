@@ -54,7 +54,7 @@ std::shared_ptr<ByteTaps> tap(shuttle::Subscription& keep, std::string pattern) 
         ++rec->frames;
         rec->topics.push_back(std::string(m.topic_name));
         rec->topics.push_back(
-            std::to_string(b.size()));  // also record the wire length to verify the encoding length
+            std::to_string(b.size()));  // also record the encoded length to verify the encoding
       }));
   return rec;
 }
@@ -87,8 +87,8 @@ void shuttle_tests_broker() {
     pub_ab.publish_now(BkrTx{2, 2}, shuttle::NowPolicy::skip);
 
     expect_eq(static_cast<long long>(rec->frames), 2, "\">\" received the multi-level topics");
-    // wire length = two u32s
-    expect(rec->topics.at(1) == "8" && rec->topics.at(3) == "8", "wire length is 8 bytes");
+    // encoded length = two u32s
+    expect(rec->topics.at(1) == "8" && rec->topics.at(3) == "8", "encoded length is 8 bytes");
   });
 
   // case3: an exact topic does not leak across topics

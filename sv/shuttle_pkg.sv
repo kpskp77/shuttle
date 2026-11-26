@@ -35,7 +35,7 @@
 //   register twice.
 //
 // Message class convention (no base class to inherit; used by shuttle_publisher #(T)).
-// Hand-written codecs stream-pack in declaration order (big-endian wire order):
+// Hand-written codecs stream-pack in declaration order (big-endian byte order):
 //   class Txn;
 //     int unsigned addr;
 //     int unsigned data;
@@ -51,13 +51,13 @@
 //   endclass
 // Note: a string field must first stream a 32-bit length prefix and then the
 //       bytes, i.e. {>>{32'(s.len()), s}}, aligned with the C++ Codec.
-// Wire-order hint: {>>{...}} yields "field declaration order + each field
+// Byte-order hint: {>>{...}} yields "field declaration order + each field
 //           MSB-first", exactly the C++ Writer's big-endian layout; {<<{...}}
 //           reverses the entire bit stream — never mix them up.
 // The recommended route is the generated codec instead — the three-piece
 // shuttle_reflect_begin / shuttle_field / shuttle_reflect_end macros
 // (sv/shuttle_reflect.svh) expand to this same convention plus the nested /
-// string / vector codecs, byte-for-byte equal to the C++ wire format:
+// string / vector codecs, byte-for-byte equal to the C++ byte layout:
 //   class Txn;
 //     logic [31:0] addr;                 // field type is free; the codec name
 //     string       tag;                  // carries the width contract

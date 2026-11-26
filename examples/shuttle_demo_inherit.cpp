@@ -3,7 +3,7 @@
 // Subject file of the C++ half of the uart demo (the SV mirror is
 // examples/shuttle_demo_<subject>.sv): exposes void shuttle_demo_<subject>(), called in
 // order by examples/shuttle_demo.cpp. Independent of the other subjects; see
-// examples/shuttle_demo_msgs.hpp for the wire types.
+// examples/shuttle_demo_msgs.hpp for the message types.
 
 #include <shuttle/shuttle.hpp>
 #include <stdexcept>
@@ -13,7 +13,7 @@
 void shuttle_demo_inherit() {
   // ── Inherited message types: each level delegates its base subobject to the base codec ──
   // Retained for the same reason as the burst above: the SV demo decodes the frame whenever it
-  // subscribes. The wire length is the sum over the chain (4 + 4 + 1 bytes).
+  // subscribes. The encoded length is the sum over the chain (4 + 4 + 1 bytes).
   UartTagged tag_last{};
   auto tag_sub = shuttle::subscribe<UartTagged>(
       "uart0.tag", [&tag_last](const UartTagged& t, const shuttle::Meta&) { tag_last = t; });

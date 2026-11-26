@@ -179,23 +179,23 @@ void pub_wait(int pub_id, std::int64_t timeout_fs, int* status) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
   if (!pub) {
     set_last_error("shuttle: unknown pub_id " + std::to_string(pub_id));
-    *status = wire(WaitStatus::failed);
+    *status = code_of(WaitStatus::failed);
     return;
   }
   if (timeout_fs <= 0) {  // the protocol spells "no deadline" as 0
     pub->done_ev.wait();
   } else if (!wait_pub_timed(pub, weave::duration(timeout_fs))) {
-    *status = wire(WaitStatus::timeout);
+    *status = code_of(WaitStatus::timeout);
     return;
   }
-  *status = wire(pub->failures.empty() ? WaitStatus::ok : WaitStatus::failed);
+  *status = code_of(pub->failures.empty() ? WaitStatus::ok : WaitStatus::failed);
 }
 
 long long pub_stat(int pub_id, int kind) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
-  // The on-wire kind is a bare int: validate the range before converting to
+  // The protocol value is a bare int: validate the range before converting to
   // the enum; out-of-range and unknown pub_id share the same answer.
-  if (!pub || kind < wire(PubStatKind::target_count) || kind > wire(PubStatKind::retired))
+  if (!pub || kind < code_of(PubStatKind::target_count) || kind > code_of(PubStatKind::retired))
     return kUnknownPub;
   switch (static_cast<PubStatKind>(kind)) {
     case PubStatKind::target_count:
@@ -215,8 +215,8 @@ long long pub_stat(int pub_id, int kind) {
 int pub_state(int pub_id) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
   if (!pub) return kUnknownPub;
-  if (!pub->done_flag) return wire(PubLifecycle::running);
-  return wire(pub->failures.empty() ? PubLifecycle::done : PubLifecycle::done_with_failures);
+  if (!pub->done_flag) return code_of(PubLifecycle::running);
+  return code_of(pub->failures.empty() ? PubLifecycle::done : PubLifecycle::done_with_failures);
 }
 
 void pub_check_self_blocked(int pub_id) {

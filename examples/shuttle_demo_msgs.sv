@@ -4,11 +4,11 @@
 // Compile order: weave_pkg.sv (../weave/sv) → shuttle_pkg.sv (../../sv) → this file →
 //                shuttle_demo_*.sv → shuttle_demo.sv
 //
-// Only wire types live here, one class per message shape; the sinks that decode them belong to
+// Only message types live here, one class per message shape; the sinks that decode them belong to
 // the module that demonstrates them. The three-piece macros (sv/shuttle_reflect.svh) generate the
 // whole message-class convention:
 //   · localparam string type_tag = "UartTx" — must equal the C++ struct name, validated at publish time;
-//   · pack()/unpack() byte-for-byte equal to the C++ Writer's big-endian wire order;
+//   · pack()/unpack() byte-for-byte equal to the C++ Writer's big-endian byte order;
 //   · each shuttle_field is a (field, codec) pair; the codec name carries the width/encoding
 //     contract while the field keeps whatever SV type you prefer (see sv/shuttle_codec.svh).
 // ============================================================================
@@ -44,7 +44,7 @@ package shuttle_demo_msgs;
 
   // ── Inherited message classes: counterpart of UartHeader/UartFrame/UartTagged in shuttle_demo_msgs.hpp ──
   // `shuttle_base(T)` encodes the direct base subobject through T's own codec, so each level lists
-  // only its own fields — the SV twin of SHUTTLE_REFLECT_DERIVED. Wire order is base first, then
+  // only its own fields — the SV twin of SHUTTLE_REFLECT_DERIVED. Byte order is base first, then
   // own fields, which is exactly the flat listing; here the inherited fields are written once.
   class UartHeader;
     int unsigned addr;

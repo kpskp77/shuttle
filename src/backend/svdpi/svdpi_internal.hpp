@@ -102,7 +102,7 @@ const std::byte* frame_data();
 
 }  // namespace backend
 
-// ── On-wire codes ────────────────────────────────────────────────────────
+// ── Protocol codes ───────────────────────────────────────────────────────
 // SV asks for these with bare ints, so every family gets a name on this side
 // too: the numbers are part of the DPI protocol (constant table in
 // docs/backends.md) and must not drift. Convert once at the boundary,
@@ -120,11 +120,11 @@ enum class PubLifecycle : int { running = 0, done = 1, done_with_failures = 2 };
 // done -> ok, deadline won -> timeout, failure present or internal error -> failed.
 enum class WaitStatus : int { ok = 0, timeout = 1, failed = 2 };
 
-// The wire carries ints, so the comparisons at the boundary read
-// `wire(WaitStatus::timeout)` instead of a bare 1. (Enums only: there is no
+// The protocol carries ints, so the comparisons there read
+// `code_of(WaitStatus::timeout)` instead of a bare 1. (Enums only: there is no
 // reason to spell an int this way.)
 template <class Code>
-constexpr int wire(Code code) noexcept {
+constexpr int code_of(Code code) noexcept {
   return static_cast<int>(code);
 }
 
@@ -174,8 +174,8 @@ void ext_unsub(int handle);
 // Publication completion tracking (pub_id assigned at publish time)
 bool pub_done(int pub_id);
 
-// Publication counter query kinds: the values correspond 1:1 to the on-wire
-// kinds 0-4 (see the constant table in docs/backends.md, invariant across
+// Publication counter query kinds: the values correspond 1:1 to the protocol
+// codes 0-4 (see the constant table in docs/backends.md, invariant across
 // DPI). The enum lets the compiler check switch exhaustiveness.
 enum class PubStatKind { target_count = 0, finished = 1, skipped = 2, deferred = 3, retired = 4 };
 

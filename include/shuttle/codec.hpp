@@ -1,9 +1,9 @@
 #pragma once
 
-// Message codec: the unified binary wire format for cross-language payloads, plus the C++-side
+// Message codec: the unified binary byte layout for cross-language payloads, plus the C++-side
 // serialization entry points.
 //
-// Wire format (semantics aligned with SV streaming operators; identical field order):
+// Byte layout (semantics aligned with SV streaming operators; identical field order):
 //   · fields are encoded in declaration order — no field names, no padding, no alignment;
 //   · integers/floats are written big-endian (matches the SV-side {>>{...}}
 //     stream: declaration order, each field most-significant byte first);
@@ -209,7 +209,7 @@ struct Codec<std::string> {
   static std::string decode(Reader& r) {
     const std::uint32_t n = r.u32();
     // A corrupt length must not trigger a huge allocation before the bounds
-    // check: every string byte is exactly one byte on the wire.
+    // check: every string byte is exactly one byte in the encoding.
     if (n > r.remaining())
       throw DecodeError("shuttle: decode out of bounds (string length exceeds remaining bytes)");
     std::string v(n, '\0');
@@ -235,7 +235,7 @@ struct Codec<std::vector<T, Alloc>> {
     static_assert(Codec<T>::available, "shuttle: vector element type is not encodable");
     if (v.size() > UINT32_MAX)
       throw PublishError("shuttle: vector exceeds uint32 element-count limit");
-    // Fixed-width elements have a known wire size: grow the buffer once.
+    // Fixed-width elements have a known encoded size: grow the buffer once.
     if constexpr (std::is_arithmetic_v<T>) w.reserve(w.size() + 4 + v.size() * sizeof(T));
     w.u32(static_cast<std::uint32_t>(v.size()));
     for (const T& e : v) Codec<T>::encode(w, e);

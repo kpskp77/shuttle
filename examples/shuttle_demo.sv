@@ -30,7 +30,7 @@ module shuttle_demo;
     m_publish.run();      // both entries, publish_now / serial / concurrent, retained, multi-publisher
     m_nested.run();       // retained UartBurst from the C++ side
     m_inherit.run();      // retained UartTagged from the C++ side
-    m_namespace.run();    // retained UartCfg whose C++ type lives in namespace demo_wire
+    m_namespace.run();    // retained UartCfg whose C++ type lives in namespace demo_hw
     m_ref.run();          // object references: published here, echoed by the C++ mirror, resolved here,
                           // and carried inside a request/response through shuttle_ref_codec
     m_mailbox.run();      // pure-SV mailbox, bounded queue, close()

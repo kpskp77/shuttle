@@ -10,7 +10,7 @@
 //   · they do share one broker and one simulation timeline, so the order is still part of the
 //     contract: the cross-language suite runs last (its SV peer registers the responder in the
 //     first SV case and answers C++ case9 only afterwards — see tests/shuttle_tests_requester.sv);
-//   · codec runs first: it asserts the wire format and touches no broker state.
+//   · codec runs first: it asserts the byte layout and touches no broker state.
 //
 // The systemc build has no SV peer, so xmake compiles this file without SHUTTLE_TESTS_XLANG and
 // the cross-language suite is left out entirely.

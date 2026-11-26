@@ -1,7 +1,7 @@
 `ifndef SHUTTLE_PUBLISHER_SVH
 `define SHUTTLE_PUBLISHER_SVH
 
-// ── Shared wire helpers ────────────────────────────────────────────────
+// ── Shared protocol helpers ────────────────────────────────────────────
 // Used by shuttle_publisher and shuttle_requester: both need the same conversion to
 // the DPI open-array form and the same trigger scalars.
 

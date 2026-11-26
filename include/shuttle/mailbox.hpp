@@ -265,7 +265,7 @@ Mailbox<T> mailbox(std::string pattern, SubOptions opts = {}) {
   return detail::MailboxAccess::make<T>(std::move(state), std::move(sub));
 }
 
-// Byte mailbox: the raw wire bytes, no codec (unregistered types, or frames
+// Byte mailbox: the raw bytes, no codec (unregistered types, or frames
 // published from SV whose type has no C++ counterpart).
 inline Mailbox<std::vector<std::byte>> mailbox_bytes(std::string pattern, SubOptions opts = {}) {
   detail::check_mailbox_options(opts);

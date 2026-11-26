@@ -65,8 +65,8 @@ Consequences that are used everywhere below:
   backend isolation: it is the only FFI-carrying backend, and its `facade.cpp` additionally sees
   broker internals (`broker/broker.hpp`, `detail/publication.hpp`). There will never be a second
   FFI caller.
-- The C++ ↔ SV boundary itself — payload passing, scope, the import/export tables, the on-wire
-  format — is defined authoritatively in [backends.md](backends.md).
+- The C++ ↔ SV boundary itself — payload passing, scope, the import/export tables, the byte layout
+  — is defined authoritatively in [backends.md](backends.md).
 - `include/shuttle/detail/abi.hpp` is a second public layer (stable ABI): installed and versioned,
   but user code includes it only indirectly through `publisher.hpp` / `subscription.hpp`, because
   the public templates (`Publisher<T>` / `subscribe<T>`) must see the `pub_*` / `sub_*`
@@ -432,7 +432,7 @@ body pulls it with `shuttle_c_frame_len()` + `shuttle_c_frame_payload(b)` — th
 2018.09's `svdpi.h` lacking `svCreateArray` — C++ cannot construct an open array — plus the
 lifetime problem of caller-stack arguments. The safety premise is the single-active-process
 contract: while the export executes, no other process can overwrite the parked frame. The full
-protocol — import/export tables, on-wire format, scope rules — is [backends.md](backends.md)'s
+protocol — import/export tables, byte layout, scope rules — is [backends.md](backends.md)'s
 subject; the decision recorded here is only that the bridge depends on the port contract, never
 the other way round.
 
@@ -453,15 +453,15 @@ above sound). Edge semantics are edge, not latch: a `fire()` before the wait reg
 
 `SHUTTLE_REFLECT_DERIVED(Derived, Base, own_fields...)` registers `Derived` by encoding the base
 subobject through `Codec<Base>` instead of repeating the inherited field names; the SV twin is
-`` `shuttle_base(Base) `` inside the derived class's three-piece block. Both produce the same wire
-bytes as listing every field flat at the leaf — the base encoding first, then the own fields —
+`` `shuttle_base(Base) `` inside the derived class's three-piece block. Both produce the same byte
+layout as listing every field flat at the leaf — the base encoding first, then the own fields —
 because the C++ base subobject is laid out before the derived members and the codec emits fields
 in declaration order. The delegation form is the one to write: at depth *n* a flat listing repeats
 the inherited names *n* times, and a base field added at level *k* edits every descendant. With
 delegation each level names its direct base once, so a chain composes and a base change touches
-only the base's own registration. Wire compatibility is what makes the two forms interchangeable:
-a leaf registered flat and a leaf registered by delegation decode each other, and existing frames
-need no migration.
+only the base's own registration. Byte-layout compatibility is what makes the two forms
+interchangeable: a leaf registered flat and a leaf registered by delegation decode each other, and
+existing frames need no migration.
 
 Constraints follow from the mechanism, not from taste: exactly one public base per level (the
 encode side passes `Derived` where `Base` is expected, decode assigns through
@@ -472,9 +472,9 @@ unpack leg of `` `shuttle_base `` copies the derived handle into a base-typed lo
 2018.09 rejects a derived handle for a `ref` formal (`Error-[IRPC]`), and the copy is safe because
 the generated entry points have already constructed the object the handle refers to.
 
-### Object references cross the wire as an internal id
+### Object references cross the boundary as an internal id
 
-The wire's type space is the encodable payloads: a frame is a value with declared fields, so a
+The encoded type space is the encodable payloads: a frame is a value with declared fields, so a
 class carrying a queue, a nested handle or an interface cannot be a payload. Widening the format is
 not an option — a handle breaks value semantics, and `chandle` cannot enter `{>>{...}}` at all. The
 sanctioned indirection is `sv/shuttle_ref.svh`: the object stays in an SV-side table, the frame
@@ -482,7 +482,7 @@ carries a 4-byte reference, and its type tag is `$typename(T)`. Nothing in the b
 it — serial, concurrent, now, triggers, retained replays and cross-language routing apply to the
 reference frame unchanged, and a C++ peer that only routes it back sees one big-endian u32.
 The SV side encodes that u32 through `shuttle_u32` (`pack_obj` / `unpack_into`), the same codec a
-reflected `logic [31:0]` field uses, so there is one wire format, not two.
+reflected `logic [31:0]` field uses, so there is one byte layout, not two.
 
 The user-facing surface deliberately keeps the shapes the value path already has, so the table
 never appears in user code:
@@ -508,8 +508,8 @@ declared. A receiver that takes several reference types implements the untyped
 resolves each arm with `shuttle_ref_msg #(T)::unpack(payload)` — one line per type, and
 `meta.type_tag` picks the arm exactly as it picks a message type on the value path. A type
 hierarchy keeps the typed shape instead: implement one `shuttle_ref_sink #(Base)` and `$cast`
-down inside `on_msg` (the wire tag is then the base's name, so a subscriber filtering on a derived
-name does not match). A queue-shaped receiver needs no adapter at all: one
+down inside `on_msg` (the encoded tag is then the base's name, so a subscriber filtering on a
+derived name does not match). A queue-shaped receiver needs no adapter at all: one
 `shuttle_ref_mailbox #(T)` per type, drained by one service loop.
 
 There is no reference flavour of `shuttle_requester` / `shuttle_serve` / `shuttle_mailbox`, and
@@ -521,7 +521,7 @@ the retained frame or the mailbox entry hold a reference instead of a copy:
 ```systemverilog
 typedef shuttle_ref_codec #(FObj) FObj_link;
 class AskObj;
-  FObj         obj;          // 4 bytes on the wire
+  FObj         obj;          // 4 bytes in the encoding
   logic [31:0] mode;
   `shuttle_reflect_begin(AskObj)
     `shuttle_field(obj, FObj_link)
@@ -621,8 +621,8 @@ in SystemVerilog, and across the DPI boundary. Deliberately not provided:
 
 Known limitations: SV-side `$error` does not propagate back to C++ (a protocol consequence; a
 strict error channel would extend `dispatch`'s return value); cross-language payloads are
-value-semantics with a declared-field subset — no variants, pointers, references or handles on the
-wire, so an object graph crosses as internal object ids (see above), never as a payload;
+value-semantics with a declared-field subset — no variants, pointers, references or handles in the
+encoding, so an object graph crosses as internal object ids (see above), never as a payload;
 `TopicInfo::deferred` (topic-cumulative) and `Publication::deferred()` (per-frame) share a name
 across two granularities.
 

@@ -4,7 +4,7 @@
 // Subject file of the C++ half of the uart demo (the SV mirror is
 // examples/shuttle_demo_<subject>.sv): exposes void shuttle_demo_<subject>(), called in
 // order by examples/shuttle_demo.cpp. Independent of the other subjects; see
-// examples/shuttle_demo_msgs.hpp for the wire types.
+// examples/shuttle_demo_msgs.hpp for the message types.
 
 #include <cstdint>
 #include <cstdio>

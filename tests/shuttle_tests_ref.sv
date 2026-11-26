@@ -5,7 +5,7 @@
 // shuttle_ref_mailbox and shuttle_ref_subscription, plus ride-along in a reflected message
 // (shuttle_ref_codec through the ordinary shuttle_requester / shuttle_serve). No id ever appears
 // on this side — the table that maps it is internal. The object class FObj carries a queue and a
-// nested handle, i.e. the things the wire fundamentally cannot hold, so resolving to the same
+// nested handle, i.e. the things the encoding fundamentally cannot hold, so resolving to the same
 // handle is the only way a receiver can see them at all.
 //
 // case_ref_xlang pairs with tests/shuttle_tests_ref.cpp, whose FObj struct mirrors the 4-byte

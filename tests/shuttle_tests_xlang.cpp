@@ -91,7 +91,7 @@ struct XMsg {
 SHUTTLE_REFLECT(XMsg, addr, data)
 
 // Nested message types for case7: a track is two points plus an id. SHUTTLE_REFLECT recurses
-// per field (Codec<XTrack> delegates to Codec<XPoint> for the point fields), so the wire format
+// per field (Codec<XTrack> delegates to Codec<XPoint> for the point fields), so the byte layout
 // is fields in declaration order with the nested structs expanded inline — no length prefix. The
 // SV mirror is class XPoint/XTrack in tests/shuttle_tests.sv, registered through the three-piece
 // macros with `shuttle_field(origin, XPoint)`: the field's codec is the nested class itself.
@@ -109,7 +109,7 @@ struct XTrack {
 SHUTTLE_REFLECT(XTrack, id, origin, dest)
 
 // Inheritance chain for case8: each level lists only its own fields and delegates its base
-// subobject to Codec<Base> via SHUTTLE_REFLECT_DERIVED, so the wire format is the base encoding
+// subobject to Codec<Base> via SHUTTLE_REFLECT_DERIVED, so the byte layout is the base encoding
 // followed by the own fields (here 4 + 2 + 1 bytes). The SV mirror is class
 // XHead/XMid/XChain in tests/shuttle_tests.sv, which reaches the same layout through
 // `shuttle_base. The middle level carries a signed field to pin the sign convention.
@@ -238,8 +238,8 @@ void shuttle_tests_xlang() {
     st->ready = shuttle::subscribe_bytes(
         kReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
           ++st->ready_frames;
-          // the ready frame shares the business-frame wire format: two 32-bit values
-          expect(bytes.size() == 8, "the ready frame wire length should be 8 bytes");
+          // the ready frame shares the business-frame byte layout: two 32-bit values
+          expect(bytes.size() == 8, "the ready frame encoded length should be 8 bytes");
           expect(meta.type_tag == "XMsg", "the ready frame type tag comes from the SV class XMsg");
           st->ready_ev.set();
         });
@@ -300,7 +300,7 @@ void shuttle_tests_xlang() {
     auto item = box.recv(1_ms);
     expect(item.has_value(), "the retained SV broadcast is replayed into a new C++ mailbox");
     expect_eq(static_cast<long long>(item->value.size()), 8,
-              "the ready frame keeps its wire length in the mailbox");
+              "the ready frame keeps its encoded length in the mailbox");
     expect(item->meta.type_tag == "XMsg", "type_tag survives the cross-language hop");
     expect(item->meta.topic_name == kReadyTopic, "metadata identifies the SV-published topic");
   });
@@ -334,7 +334,7 @@ void shuttle_tests_xlang() {
     st->mixed_ready = shuttle::subscribe_bytes(
         kMixedReadyTopic,
         shuttle::nb([st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
-          expect(bytes.size() == 8, "the mixed ready frame wire length should be 8 bytes");
+          expect(bytes.size() == 8, "the mixed ready frame encoded length should be 8 bytes");
           expect(meta.type_tag == "XMsg", "the mixed ready frame type tag comes from XMsg");
           st->mixed_ready_ev.set();
         }));
@@ -392,13 +392,13 @@ void shuttle_tests_xlang() {
   // codec); the SV response is decoded here by Codec<XTrack> recursing Codec<XPoint>. Handshake:
   // the SV side subscribes first and announces readiness with a retained frame, so the C++
   // publish below always has its target. Negative coordinates check two's-complement decoding on
-  // both sides; the ready frame's 20-byte wire length checks the inline nested layout
+  // both sides; the ready frame's 20-byte encoded length checks the inline nested layout
   // (u32 id + 2 x (i32 x + i32 y), no length prefix).
   run_case(__func__, "case7", [st] {
     xlang_barrier("case7");
     st->nest_ready = shuttle::subscribe_bytes(
         kNestReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
-          expect(bytes.size() == 20, "the nested ready frame wire length should be 20 bytes");
+          expect(bytes.size() == 20, "the nested ready frame encoded length should be 20 bytes");
           expect(meta.type_tag == "XTrack",
                  "the nested ready frame type tag comes from the SV class XTrack");
           st->nest_ready_ev.set();
@@ -442,7 +442,8 @@ void shuttle_tests_xlang() {
     xlang_barrier("case8");
     st->inh_ready = shuttle::subscribe_bytes(
         kInhReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
-          expect(bytes.size() == 7, "the chain ready frame wire length should be 4 + 2 + 1 bytes");
+          expect(bytes.size() == 7,
+                 "the chain ready frame encoded length should be 4 + 2 + 1 bytes");
           expect(meta.type_tag == "XChain",
                  "the chain ready frame type tag comes from the SV class XChain");
           st->inh_ready_ev.set();
@@ -485,13 +486,13 @@ void shuttle_tests_xlang() {
   // same unqualified name through a global alias. The handshake mirrors case7/case8: the SV side
   // subscribes first and announces readiness with a retained frame; the C++ frame must reach it
   // tagged "XNsMsg" (the alias spelling — not "xlang_ns::XNsMsg"), and the SV reply must decode
-  // back here under the same tag. The ready frame's 6-byte wire length pins u32 + i16 with no
+  // back here under the same tag. The ready frame's 6-byte encoded length pins u32 + i16 with no
   // padding, and the negative delta checks the signed field across the DPI.
   run_case(__func__, "case9", [st] {
     xlang_barrier("case9");
     st->ns_ready = shuttle::subscribe_bytes(
         kNsReadyTopic, [st](const std::vector<std::byte>& bytes, const shuttle::Meta& meta) {
-          expect(bytes.size() == 6, "the namespaced ready frame wire length should be 6 bytes");
+          expect(bytes.size() == 6, "the namespaced ready frame encoded length should be 6 bytes");
           expect(meta.type_tag == "XNsMsg",
                  "the namespaced ready tag is the unqualified alias spelling");
           st->ns_ready_ev.set();

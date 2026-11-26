@@ -110,7 +110,7 @@ Subscription subscribe(std::string topic, NonBlocking<F> cb, SubOptions opts = {
 }
 
 // ── Raw-byte subscription ───────────────────────────────────────────────
-// Consume the on-the-wire byte stream directly: for debugging / pass-through,
+// Consume the raw byte stream directly: for debugging / pass-through,
 // or for topics published from SV whose type is not registered on the C++ side.
 // Same two overloads as subscribe<T>: the entry follows the argument type, so
 // nb(cb) is the nonblocking entry and no runtime Capability is ever passed.

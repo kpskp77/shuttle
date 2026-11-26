@@ -44,7 +44,7 @@
 //   · an open-ended type set: implement the untyped shuttle_sink / shuttle_sink_nb once and
 //     dispatch on meta.type_tag, one line per arm through shuttle_ref_msg #(T)::unpack(payload) —
 //     the mirror of T::unpack(payload) on the value path;
-//   · a type hierarchy: one shuttle_ref_sink #(Base), $cast down inside on_msg (the wire tag is
+//   · a type hierarchy: one shuttle_ref_sink #(Base), $cast down inside on_msg (the encoded tag is
 //     then the base's name, so a subscriber filtering on a derived name does not match);
 //   · queue semantics: one shuttle_ref_mailbox #(T) per type, drained by one service loop — no
 //     adapter class at all.
@@ -104,10 +104,10 @@ class shuttle_ref_table #(type T);
   endfunction
 endclass
 
-// ── Wire form: one u32 through the standard codec ─────────────────────
+// ── Encoded form: one u32 through the standard codec ──────────────────
 // The reference is encoded by shuttle_u32, i.e. exactly the codec a reflected `logic [31:0]`
-// field uses, so the bytes are the C++ Reader/Writer's big-endian u32 with no second wire
-// format to keep in sync. A malformed frame (cannot happen through the broker) is reported
+// field uses, so the bytes are the C++ Reader/Writer's big-endian u32 with no second byte
+// layout to keep in sync. A malformed frame (cannot happen through the broker) is reported
 // once here and yields id 0, which no table entry ever has.
 function automatic void shuttle_ref_pack(input int unsigned id, output byte payload[]);
   byte q[$];
@@ -147,7 +147,7 @@ endclass
 //
 //   typedef shuttle_ref_codec #(FObj) FObj_link;
 //   class AskObj;
-//     FObj         obj;      // 4 bytes on the wire, resolved through the table
+//     FObj         obj;      // 4 bytes in the encoding, resolved through the table
 //     logic [31:0] mode;
 //     `shuttle_reflect_begin(AskObj)
 //       `shuttle_field(obj, FObj_link)

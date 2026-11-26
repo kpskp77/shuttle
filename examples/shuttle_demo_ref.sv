@@ -2,17 +2,17 @@
 // shuttle_demo_ref.sv — objects crossing the broker by reference
 //
 // Compile order: weave_pkg.sv → shuttle_pkg.sv → this file.
-// The C++ twin is examples/shuttle_demo_ref.cpp: it mirrors the wire form with `struct RefId
-// { uint32_t object; }` and forwards the frame untouched — a reference is data on the wire, only
-// the owning side resolves it. Both frames here declare the tag "RefId" explicitly: a
-// cross-language peer passes the mirror's spelling (the SV default $typename would carry the
-// declaring scope, e.g. "shuttle_demo_ref.Sample").
+// The C++ twin is examples/shuttle_demo_ref.cpp: it mirrors the encoded form with `struct
+// RefId { uint32_t object; }` and forwards the frame untouched — a reference is data in the
+// encoding, only the owning side resolves it. Both frames here declare the tag "RefId"
+// explicitly: a cross-language peer passes the mirror's spelling (the SV default $typename would
+// carry the declaring scope, e.g. "shuttle_demo_ref.Sample").
 //
 // What this module shows:
 //   · a publisher, a mailbox and a callback entry over one object — the same trio the value path
 //     has, with no id in sight;
 //   · the object survives the round trip through C++ and resolves back to the *same* handle, with
-//     its state (a queue the wire could never carry) intact;
+//     its state (a queue the encoding could never carry) intact;
 //   · `free(obj)` is the only lifetime verb, and an id nobody holds is a loud error, never a
 //     silent alias;
 //   · request/response carries a reference by declaring it as a field through `shuttle_ref_codec`:
@@ -24,7 +24,7 @@ module shuttle_demo_ref;
   timeunit 1ns; timeprecision 1ps;
   import shuttle_pkg::*;
 
-  // The object: a plain class, no reflection, free to hold anything the wire cannot.
+  // The object: a plain class, no reflection, free to hold anything the encoding cannot.
   class Sample;
     int unsigned seq;
     int unsigned hist[$];
@@ -54,7 +54,7 @@ module shuttle_demo_ref;
 
   // Request/response with a reference in the request. A reflected message may declare an object
   // field whose codec is shuttle_ref_codec (through a typedef, because `shuttle_field` takes a
-  // codec name), so the request carries 4 wire bytes and the responder sees the same handle.
+  // codec name), so the request carries 4 encoded bytes and the responder sees the same handle.
   typedef shuttle_ref_codec #(Sample) SampleLink;
 
   class SampleAsk;

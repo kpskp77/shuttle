@@ -57,7 +57,7 @@
   目录（由 `xmake.lua` 的 `add_files("src/backend/<backend>/**.cpp")` 选择）。svdpi 是
   后端隔离的唯一例外：它是唯一带 FFI 通道的后端，其 `facade.cpp` 额外可见 broker 内
   部（`broker/broker.hpp`、`detail/publication.hpp`）。永远不会有第二个 FFI 调用方。
-- C++ ↔ SV 边界本身——载荷传递、作用域、import/export 表、线上格式——的权威定义在
+- C++ ↔ SV 边界本身——载荷传递、作用域、import/export 表、字节布局——的权威定义在
   [backends.md](backends.md)。
 - `include/shuttle/detail/abi.hpp` 是第二公开层（稳定 ABI）：随包安装、随版本管理，但
   用户代码只经由 `publisher.hpp` / `subscription.hpp` 间接包含它，因为公开模板
@@ -379,7 +379,7 @@ C++→SV 投递不把载荷作为 DPI 实参传递：C++ 侧把编码后的帧�
 侧一次 `memcpy`。起因是 VCS 2018.09 的 `svdpi.h` 缺
 `svCreateArray`——C++ 构造不了 open array——外加调用方栈上实参的生命期问题。安全前提
 是单活跃进程契约：export 执行期间没有别的进程能覆盖停放中的帧。完整协议——
-import/export 表、线上格式、作用域规则——是 [backends.md](backends.md) 的主题；这里
+import/export 表、字节布局、作用域规则——是 [backends.md](backends.md) 的主题；这里
 只记录一条决策：桥依赖端口契约，端口契约永远不依赖桥。
 
 ### 延迟触发只传边沿名，永不传事件 id
@@ -402,7 +402,7 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 字段——因为 C++ 的基类子对象排在派生成员之前，而 codec 按声明顺序输出字段。应当写委托形式：
 深度为 *n* 时摊平写法把继承名重复 *n* 次，而在第 *k* 层新增一个基类字段要改动它的全部后代。
 委托下每层只写一次直接基类，链式组合，基类改动只落在基类自己的注册处。两种写法可互换正是因为
-线格式相同：摊平注册的叶子与委托注册的叶子互相解码，已有帧无需迁移。
+字节布局相同：摊平注册的叶子与委托注册的叶子互相解码，已有帧无需迁移。
 
 约束来自机制而非偏好：每层恰好一个公有基类（编码侧把 `Derived` 当 `Base` 传，解码侧经
 `static_cast<Base&>` 赋值）；派生注册出现时 `Codec<Base>` 必须已注册；只做透传、不带自有字段
@@ -410,15 +410,15 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 派生句柄拷进基类型局部变量：VCS 2018.09 拒绝把派生句柄接到 `ref` 形参（`Error-[IRPC]`），
 而拷贝是安全的——生成的入口在进入 `__codec` 之前已经构造好句柄所指的对象。
 
-### 对象引用以内部 id 过线
+### 对象引用以内部 id 过界
 
-线上类型空间就是可编码的载荷：帧是带声明字段的值，所以带队列、嵌套句柄或接口的类天生
+跨边界的类型空间就是可编码的载荷：帧是带声明字段的值，所以带队列、嵌套句柄或接口的类天生
 当不了载荷。放宽格式不可行——句柄会破坏值语义，而 `chandle` 根本进不了 `{>>{...}}`。
 获准的绕法是 `sv/shuttle_ref.svh`：对象留在 SV 侧的表里，帧携带 4 字节引用，类型标签是
 `$typename(T)`。broker 对此一无所知——串行、并发、now、触发器、retained 重放与跨语言
 路由都照常作用于这条引用帧，只负责转发的 C++ 对端看到的就是一个普通的大端 u32。SV 侧用
 `shuttle_u32`（`pack_obj` / `unpack_into`）编码这个 u32，与反射过的 `logic [31:0]` 字段同一条
-编解码通路——线上格式只有一份，没有第二份。
+编解码通路——字节布局只有一份，没有第二份。
 
 对外接口刻意沿用值通路已有的形状，所以用户代码里永远看不到 id：
 
@@ -440,7 +440,7 @@ SV 没有重载，一个类不能同时 implements `shuttle_ref_sink #(A)` 与 `
 化的 `shuttle_sink_nb::invoke_nb(payload, meta)`（阻塞形式是 `shuttle_sink::invoke`），每个分支
 用 `shuttle_ref_msg #(T)::unpack(payload)` 解一行，`meta.type_tag` 选分支——与值通路上靠它选消息
 类型是同一个动作。有继承关系时保留类型化写法：只 implements 一个 `shuttle_ref_sink #(Base)`，
-在 `on_msg` 里 `$cast` 下转（此时线上的 tag 是基类名，按派生类名过滤的订阅者匹配不到）。队列式
+在 `on_msg` 里 `$cast` 下转（此时编码里的 tag 是基类名，按派生类名过滤的订阅者匹配不到）。队列式
 的接收方不需要任何适配类：每个类型一个 `shuttle_ref_mailbox #(T)`，由一个服务循环统一取。
 
 `shuttle_requester`、`shuttle_serve`、`shuttle_mailbox` 都没有引用版本，也不需要：请求/响应本身
@@ -451,7 +451,7 @@ SV 没有重载，一个类不能同时 implements `shuttle_ref_sink #(A)` 与 `
 ```systemverilog
 typedef shuttle_ref_codec #(FObj) FObj_link;
 class AskObj;
-  FObj         obj;          // 线上 4 字节
+  FObj         obj;          // 编码里 4 字节
   logic [31:0] mode;
   `shuttle_reflect_begin(AskObj)
     `shuttle_field(obj, FObj_link)
@@ -543,8 +543,8 @@ shuttle 提供仿真进程内的类型化发布-订阅投递调度，C++、Syste
   `shuttle::now_fs()` 式转发包装（曾经有过，已删）。
 
 已知限制：SV 侧 `$error` 不传回 C++（协议后果；严格错误通道需要扩展 `dispatch` 的返
-回值）；跨语言载荷是值语义、字段子集——线上无 variant、指针、引用或句柄，对象图只能
-以内部对象 id 过线（见上），不作为载荷；
+回值）；跨语言载荷是值语义、字段子集——编码里没有 variant、指针、引用或句柄，对象图只能
+以内部对象 id 过界（见上），不作为载荷；
 `TopicInfo::deferred`（topic 累计）与 `Publication::deferred()`（每帧）在两个粒度上共
 用一个名字。
 

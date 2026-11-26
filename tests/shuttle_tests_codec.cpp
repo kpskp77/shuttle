@@ -1,11 +1,11 @@
-// Codec semantics self-checks: wire format (big-endian, length prefixes, declaration order)
+// Codec semantics self-checks: byte layout (big-endian, length prefixes, declaration order)
 //
 // The golden-byte assertions are the anchor of the cross-language contract: the expected
-// bytes in this file must match byte for byte the "Wire format" section of docs/backends.md
+// bytes in this file must match byte for byte the "Payload byte layout" section of docs/backends.md
 // and the SV-side examples/shuttle_demo.sv ({>>{...}} packing); any change on either side fails
 // here first.
 
-// Suite entry: void shuttle_tests_codec() is called first by tests/shuttle_tests.cpp (wire format
+// Suite entry: void shuttle_tests_codec() is called first by tests/shuttle_tests.cpp (byte layout
 // before any broker state exists); the [PASS] label is the function name.
 
 #include <array>
@@ -189,7 +189,7 @@ void shuttle_tests_codec() {
   run_case(__func__, "case1", [] {
     UartTx tx{0x12, 0x3C};
     expect_bytes(shuttle::encode(tx), hex({0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00, 0x3C}),
-                 "UartTx big-endian wire order");
+                 "UartTx big-endian byte order");
   });
 
   // case2: big-endian writing of integers of each width (two's complement for negatives)
@@ -335,7 +335,7 @@ void shuttle_tests_codec() {
     expect_bytes(shuttle::encode(back), enc, "24-field round trip is byte-stable");
   });
 
-  // case12: inheritance chain via SHUTTLE_REFLECT_DERIVED — each level's wire bytes are the
+  // case12: inheritance chain via SHUTTLE_REFLECT_DERIVED — each level's encoded bytes are the
   // base prefix plus its own fields; the chain composes through Codec<Base>
   run_case(__func__, "case12", [] {
     InhDeep d;

@@ -2,7 +2,7 @@
 // shuttle_demo_namespace.sv — a message class whose C++ twin is declared in a namespace
 //
 // Compile order: weave_pkg.sv → shuttle_pkg.sv → this file.
-// The C++ type is `demo_wire::UartCfg` in examples/shuttle_demo_namespace.cpp, reflected through
+// The C++ type is `demo_hw::UartCfg` in examples/shuttle_demo_namespace.cpp, reflected through
 // the global alias `UartCfg`: SHUTTLE_REFLECT must run at global scope and its first argument
 // doubles as the type tag, so "UartCfg" (the alias spelling) is the type_tag below. The C++ publish
 // is retained, so this subscriber sees the frame even when it registers after the publish.
@@ -12,7 +12,7 @@ module shuttle_demo_namespace;
   timeunit 1ns; timeprecision 1ps;
   import shuttle_pkg::*;
 
-  // ── Counterpart of `struct demo_wire::UartCfg { uint32_t baud; uint8_t mode; }` ──
+  // ── Counterpart of `struct demo_hw::UartCfg { uint32_t baud; uint8_t mode; }` ──
   class UartCfg;
     int unsigned baud;
     byte         mode;

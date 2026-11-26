@@ -62,7 +62,7 @@ no locks, no atomics, no threads anywhere in the broker.
   nonblocking, bounded mailboxes reject `OverflowPolicy::block` at construction, and overflow
   accounting uses `overflowed()` vs `Subscription::dropped()` as the two existing channels. The SV
   mailbox is pure SV (`shuttle_subscribe_nb` + weave events) — no DPI entry for it.
-- Object references cross the wire as a 4-byte internal id: the only user-facing surface is
+- Object references cross the boundary as a 4-byte internal id: the only user-facing surface is
   `shuttle_ref_publisher` / `shuttle_ref_mailbox` / `shuttle_ref_subscription` (+ the
   `shuttle_ref_sink` callback), tagged `$typename(T)`; the id table is internal, ids are monotonic
   and never reused, and `free(obj)` / `clear()` are the only lifetime verbs. No user-facing

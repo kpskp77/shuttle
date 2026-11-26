@@ -1,6 +1,6 @@
 // SV-side message codec: the C++-style message reflection counterpart for SystemVerilog.
 //
-// Wire format: byte-for-byte the C++ side (include/shuttle/codec.hpp) —
+// Byte layout: byte-for-byte the C++ side (include/shuttle/codec.hpp) —
 //   · fields encoded in declaration order; no names, no padding;
 //   · integers big-endian by width (u8/u16/u32/u64, signed = two's complement);
 //   · float/double: IEEE754 bit pattern, big-endian (shortreal/real);

@@ -1,4 +1,4 @@
-// Object-reference demo, C++ side: the wire is a reflected struct with one u32, and this file
+// Object-reference demo, C++ side: the encoding is a reflected struct with one u32, and this file
 // never sees an object.
 //
 // Subject file of the C++ half of the uart demo (the SV mirror is examples/shuttle_demo_ref.sv):
@@ -7,7 +7,7 @@
 // The SV half owns the objects and the table that numbers them. It publishes a reference on
 // "ref.demo.req"; this file forwards the frame untouched to "ref.demo.resp"; the SV mailbox there
 // resolves the id back to the *same* handle. That is the whole C++-side contract: a reference is
-// data on the wire, so a peer that only routes it needs no table, no lifetime rules and no
+// data in the encoding, so a peer that only routes it needs no table, no lifetime rules and no
 // knowledge of any object.
 //
 // The tag is "RefId" because the SV publisher declares it explicitly (a cross-language peer passes

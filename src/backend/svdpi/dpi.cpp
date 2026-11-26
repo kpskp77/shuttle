@@ -38,15 +38,15 @@
 
 namespace {
 
+using shuttle::detail::code_of;
 using shuttle::detail::kUnknownPub;
 using shuttle::detail::last_error;
 using shuttle::detail::PubLifecycle;
 using shuttle::detail::set_last_error;
 using shuttle::detail::TrigKind;
 using shuttle::detail::WaitStatus;
-using shuttle::detail::wire;
 
-// On-wire strategy code → NowPolicy. The numeric values are protocol constants
+// Protocol strategy code → NowPolicy. The numeric values are protocol constants
 // (docs/backends.md pins NowPolicy::reject/skip/defer to SHUTTLE_NOW_* 0/1/2),
 // so the code is the enum; anything else falls back to the default, defer.
 shuttle::NowPolicy now_policy_of(int v) {
@@ -204,12 +204,12 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
     const int st = shuttle::detail::pub_state(pub_id);
     if (st == kUnknownPub) {
       set_last_error("shuttle: unknown pub_id " + std::to_string(pub_id));
-      *status = wire(WaitStatus::failed);
+      *status = code_of(WaitStatus::failed);
       return;
     }
-    if (st != wire(PubLifecycle::running)) {  // already completed: answer without suspending
-      *status = (st == wire(PubLifecycle::done_with_failures)) ? wire(WaitStatus::failed)
-                                                               : wire(WaitStatus::ok);
+    if (st != code_of(PubLifecycle::running)) {  // already completed: answer without suspending
+      *status = (st == code_of(PubLifecycle::done_with_failures)) ? code_of(WaitStatus::failed)
+                                                                  : code_of(WaitStatus::ok);
       return;
     }
     // A frame whose chain is held by the very SV process that waits for it can
@@ -233,18 +233,18 @@ void shuttle_c_wait_pub(int pub_id, long long timeout_fs, int* status) {
     if (deadline.valid()) deadline.cancel();
 
     const int fin = shuttle::detail::pub_state(pub_id);
-    if (fin == wire(PubLifecycle::running)) {  // the deadline leg won
-      *status = wire(WaitStatus::timeout);
+    if (fin == code_of(PubLifecycle::running)) {  // the deadline leg won
+      *status = code_of(WaitStatus::timeout);
       return;
     }
-    *status = (fin == wire(PubLifecycle::done_with_failures)) ? wire(WaitStatus::failed)
-                                                              : wire(WaitStatus::ok);
+    *status = (fin == code_of(PubLifecycle::done_with_failures)) ? code_of(WaitStatus::failed)
+                                                                 : code_of(WaitStatus::ok);
   } catch (const std::exception& e) {
     set_last_error(e.what());
-    *status = wire(WaitStatus::failed);
+    *status = code_of(WaitStatus::failed);
   } catch (...) {
     set_last_error("shuttle: wait cancelled or unknown exception");
-    *status = wire(WaitStatus::failed);
+    *status = code_of(WaitStatus::failed);
   }
 }
 

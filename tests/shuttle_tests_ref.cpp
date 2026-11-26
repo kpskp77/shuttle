@@ -1,7 +1,7 @@
 // Objects crossing by reference (svdpi backend only): the SV side publishes an object handle,
 // the frame carries a 4-byte reference, and the receiver resolves it back to the same handle.
 //
-// Paired with case_ref_xlang in tests/shuttle_tests_ref.sv. On the wire this is a plain u32 —
+// Paired with case_ref_xlang in tests/shuttle_tests_ref.sv. In the encoding this is a plain u32 —
 // class FObj on the SV side, struct FObj here — so the frame lives inside the broker's existing
 // type space: serial/concurrent/retained, triggers and cross-language routing all apply
 // unchanged. This suite plays the peer that does not own the object: it never resolves the
@@ -27,7 +27,7 @@ using shuttle_test::expect;
 using shuttle_test::report;
 using shuttle_test::run_case;
 
-// The wire form: one 32-bit reference. Byte-for-byte counterpart of `class FObj` in
+// The encoded form: one 32-bit reference. Byte-for-byte counterpart of `class FObj` in
 // tests/shuttle_tests_ref.sv (the SV side tags its frames $typename(FObj) == "FObj"), so both
 // ends agree on tag "FObj" and on a single big-endian u32.
 struct FObj {
