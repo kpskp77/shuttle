@@ -21,12 +21,10 @@ no locks, no atomics, no threads anywhere in the broker.
 
 - Broker state (`topics` / `subs` / `pubs`) stays lock-free plain data; no `std::mutex`,
   `std::atomic`, spinlock or `std::thread` in `src/`.
-- Simulation time is weave's: read `weave::now()`. No backend clock entry, no `$realtime`
-  conversion, no `shuttle::now_fs()`-style forwarding wrapper.
+- Simulation time is weave's: read `weave::now()`.
 - One registration = one subscriber = one entry, decided by the registering call (`subscribe(fn)`
   vs `subscribe(nb(fn))`; `shuttle_subscribe` vs `shuttle_subscribe_nb`; bare `serve` handler vs
-  `nb(handler)`). No runtime `Capability` parameter, no `$cast`-based auto-registration of both
-  entries. Both entries wanted = two registrations.
+  `nb(handler)`).
 - `publish_now`'s synchronous segment invokes nonblocking entries only; blocking targets are
   partitioned out before the loop (`dispatch_now`). Delivery never picks an entry by any parameter.
 - `defer` reuses `publish_serial`'s serial chain; background order on a topic equals enqueue order.
@@ -76,9 +74,7 @@ no locks, no atomics, no threads anywhere in the broker.
   cross-DSO `catch` in simv with `undefined symbol`.
 - SV packing is `{>>{...}}` (declaration order, MSB-first per field), matching the C++ `Writer`
   big-endian byte order; strings carry a 32-bit length prefix. Never `{<<{...}}`.
-- Call `shuttle_pkg` exports only under `SvScopeGuard`; never call weave's exports directly and
-  never reintroduce `WeaveScopeGuard` / `SHUTTLE_WEAVE_SV_PACKAGE` (weave guards its own
-  imports).
+- Call `shuttle_pkg` exports only under `SvScopeGuard`; never call weave's exports directly.
 - `add_headerfiles` in `xmake.lua` stays `include/(shuttle/**.hpp)` — a narrower glob silently
   drops `detail/abi.hpp` from installed packages.
 - Backend selection is the `src/backend/<backend>/` directory enumeration in `xmake.lua` only: no
