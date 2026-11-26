@@ -36,8 +36,8 @@
 //              section of publish_now, taken over by the background serial
 //              chain)
 //   skipped    the publisher's policy chose not to deliver at all (only
-//              NowPolicy::skip of publish_now): not a target and not in
-//              subscriber_count()
+//              NowPolicy::skip of publish_now): removed from the frame's
+//              target set by policy, not in subscriber_count()
 // reject produces no frame, so it has no terminal state. The three kinds of
 // "unsuccessful delivery" differ in **who decided**: retired = the
 // subscriber left, skipped = the publisher's policy, failed = tried but did
@@ -46,7 +46,7 @@
 // Invariants (hold for all three flavors):
 //   · finished() ≤ subscriber_count(), and done() ≡ finished() == subscriber_count()
 //   · subscriber_count() + skipped() == number of target subscribers of this
-//     frame (name ∩ type, and not skipped by policy)
+//     frame (name ∩ type, fixed at snapshot)
 //   · finished() == the cumulative delivered + retired + failed; a deferred
 //     delivery always lands in one of the first three once it completes
 //   · subscriber- and topic-level dropped() is the sum of these three

@@ -238,7 +238,7 @@ void target_finished(const std::shared_ptr<PubState>& pub) {
 记账不变量（topic 与订阅者两级都是 `dropped = retired + skipped + failed`）：
 
 1. 三种方式下都无例外：`done()` 当且仅当 `finished() == subscriber_count()`；
-2. `subscriber_count() + skipped()` = 本帧的目标订阅者数（名字 ∩ 类型，减去策略跳过）；
+2. `subscriber_count() + skipped()` = 本帧的目标订阅者数（名字 ∩ 类型，快照时固定）；
 3. `finished()` 只计 delivered + retired + failed；故 `finished() ≤ subscriber_count()`；
 4. 订阅者级 `received() + dropped()` 计到每一帧名字 ∩ 类型匹配上它的帧——注意帧级与订
    阅者级的分母差一个 `skip` 步：`dropped()` 计入策略跳过的帧，`subscriber_count()`

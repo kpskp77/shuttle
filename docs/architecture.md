@@ -264,7 +264,7 @@ The five terminal states:
 Accounting invariants (`dropped = retired + skipped + failed` at both topic and subscriber level):
 
 1. `done()` iff `finished() == subscriber_count()`, all three flavors, no exceptions;
-2. `subscriber_count() + skipped()` = this frame's target-subscriber count (name ∩ type, minus policy-skipped);
+2. `subscriber_count() + skipped()` = this frame's target-subscriber count (name ∩ type, fixed at snapshot);
 3. `finished()` counts only delivered + retired + failed; hence `finished() ≤ subscriber_count()`;
 4. subscriber-level `received() + dropped()` counts every frame whose name ∩ type matched it — note the frame-level/subscriber-level denominator differs by the `skip` step: `dropped()` counts policy-skipped frames, `subscriber_count()` does not.
 
