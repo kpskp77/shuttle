@@ -428,19 +428,27 @@ VCS 2018.09 保留 `edge`，所以 SV 侧字段名是 `edge_name`。
 | `set_retained(bit)` | 同上 |
 | `shuttle_ref_mailbox #(T)::new(topic[, capacity, overflow])`、`try_recv`/`recv`/`size`/`close` | `shuttle_mailbox` |
 | `shuttle_ref_subscription #(T)::blocking/nonblocking(topic, sink)` | `shuttle_subscribe` / `shuttle_subscribe_nb` |
-| `shuttle_ref_sink #(T)::on_msg(value, meta)` | `shuttle_sink::invoke`（替你解包） |
+| `shuttle_ref_sink #(T)::invoke_ref(value, meta)`（task） | `shuttle_sink::invoke`（替你解包） |
+| `shuttle_ref_sink_nb #(T)::invoke_ref_nb(value, meta)`（function） | `shuttle_sink_nb::invoke_nb` |
 | 非参数化 sink 里的 `shuttle_ref_msg #(T)::unpack(payload)` | `T::unpack(payload)` |
 | `typedef shuttle_ref_codec #(T) MyLink;` 配 `` `shuttle_field(obj, MyLink) `` | 声明字段的 codec（嵌套、向量、枚举同理） |
 
-`on_msg` 是 function：解析句柄不消耗仿真时间，与 `shuttle_responder::respond` 同一条规则。
-需要耗时的接收方把句柄塞进自己的 `shuttle_ref_mailbox` 或 task。
+入口种类决定 sink 种类，与值通路一致：`::blocking` 收 `shuttle_ref_sink #(T)`，它的 `invoke_ref` 是
+task，可以消耗仿真时间（运行在该主题的后台投递任务里，也就是串行链上）；`::nonblocking` 收
+`shuttle_ref_sink_nb #(T)`，它的 `invoke_ref_nb` 是 function，不得挂起（就地调用，`publish_now`
+也会调到）。两个方法名不同，所以一个类可以同时实现两者、各持一个入口。解析句柄本身从不耗时。
+
+`_ref` 这个后缀不是装饰：如果直接叫 `invoke` / `invoke_nb`，任何同时消费值帧与引用帧的类都会和
+`shuttle_sink` / `shuttle_sink_nb` 撞名，而 SV 没有重载可以按参数类型区分。
 
 SV 没有重载，一个类不能同时 implements `shuttle_ref_sink #(A)` 与 `shuttle_ref_sink #(B)`：两者
-都声明 `on_msg`，编译器把第二个当成重复声明拒掉。需要收多种引用类型的接收方改为实现一次非参数
+都声明 `invoke_ref`，编译器把第二个当成重复声明拒掉（两个 `shuttle_ref_sink_nb` 同理，都声明
+`invoke_ref_nb`）。需要收多种引用类型的接收方改为实现一次非参数
 化的 `shuttle_sink_nb::invoke_nb(payload, meta)`（阻塞形式是 `shuttle_sink::invoke`），每个分支
 用 `shuttle_ref_msg #(T)::unpack(payload)` 解一行，`meta.type_tag` 选分支——与值通路上靠它选消息
-类型是同一个动作。有继承关系时保留类型化写法：只 implements 一个 `shuttle_ref_sink #(Base)`，
-在 `on_msg` 里 `$cast` 下转（此时编码里的 tag 是基类名，按派生类名过滤的订阅者匹配不到）。队列式
+类型是同一个动作。有继承关系时保留类型化写法：只 implements 一个 `shuttle_ref_sink #(Base)`
+（或它的 `_nb` 版本），在 `invoke_ref` 里 `$cast` 下转（此时编码里的 tag 是基类名，按派生类名过滤的
+订阅者匹配不到）。队列式
 的接收方不需要任何适配类：每个类型一个 `shuttle_ref_mailbox #(T)`，由一个服务循环统一取。
 
 `shuttle_requester`、`shuttle_serve`、`shuttle_mailbox` 都没有引用版本，也不需要：请求/响应本身

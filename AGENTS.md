@@ -64,8 +64,8 @@ no locks, no atomics, no threads anywhere in the broker.
   mailbox is pure SV (`shuttle_subscribe_nb` + weave events) — no DPI entry for it.
 - Object references cross the boundary as a 4-byte internal id: the only user-facing surface is
   `shuttle_ref_publisher` / `shuttle_ref_mailbox` / `shuttle_ref_subscription` (+ the
-  `shuttle_ref_sink` callback), tagged `$typename(T)`; the id table is internal, ids are monotonic
-  and never reused, and `free(obj)` / `clear()` are the only lifetime verbs. No user-facing
+  `shuttle_ref_sink` / `shuttle_ref_sink_nb` callbacks), tagged `$typename(T)`; the id table is
+  internal, ids are monotonic and never reused, and `free(obj)` / `clear()` are the only lifetime verbs. No user-facing
   `alloc` / `get` / `free`, no DPI entry, no broker state. A reference inside a value message
   rides the ordinary codec surface (`shuttle_ref_codec #(T)` behind a typedef, used with
   `` `shuttle_field ``): no `shuttle_ref_requester` / `shuttle_ref_serve` / `shuttle_ref_mailbox`

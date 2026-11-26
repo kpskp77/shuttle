@@ -33,11 +33,11 @@ module shuttle_demo_ref;
     endfunction
   endclass
 
-  // Callback form of the same delivery: on_msg receives the resolved handle.
-  class SampleWatch implements shuttle_ref_sink #(Sample);
+  // Callback form of the same delivery: invoke_ref_nb receives the resolved handle, inline.
+  class SampleWatch implements shuttle_ref_sink_nb #(Sample);
     int    count = 0;
     Sample last;
-    virtual function void on_msg(input Sample value, input shuttle_meta meta);
+    virtual function void invoke_ref_nb(input Sample value, input shuttle_meta meta);
       count++;
       last = value;
     endfunction

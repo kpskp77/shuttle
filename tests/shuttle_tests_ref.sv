@@ -30,19 +30,41 @@ module shuttle_tests_ref;
     endfunction
   endclass
 
-  // Callback form: on_msg receives the resolved handle, so a later mutation is visible (the
-  // frame carried a reference, not a copy).
-  class FWatch implements shuttle_ref_sink #(FObj);
+  // Callback form: invoke_ref receives the resolved handle, so a later mutation is visible (the
+  // frame carried a reference, not a copy). One class can hold one entry of each kind — the
+  // blocking form is a task, the nonblocking form a function with its own name.
+  class FWatch implements shuttle_ref_sink #(FObj), shuttle_ref_sink_nb #(FObj);
     int          n;
     FObj         last;
     function new();
       n    = 0;
       last = null;
     endfunction
-    virtual function void on_msg(input FObj value, input shuttle_meta meta);
+    virtual task invoke_ref(input FObj value, input shuttle_meta meta);
+      n++;
+      last = value;
+    endtask
+    virtual function void invoke_ref_nb(input FObj value, input shuttle_meta meta);
       n++;
       last = value;
     endfunction
+  endclass
+
+  // A blocking sink may consume simulation time: the delivery task suspends on the delay and the
+  // clock moves on, instead of the chain deadlocking. A nonblocking sink cannot express this —
+  // the compiler rejects a timing control in a function.
+  class FSlow implements shuttle_ref_sink #(FObj);
+    int  n;
+    time stamp;
+    function new();
+      n     = 0;
+      stamp = 0;
+    endfunction
+    virtual task invoke_ref(input FObj value, input shuttle_meta meta);
+      #(100ns);
+      stamp = $time;
+      n++;
+    endtask
   endclass
 
   task automatic case_ref_basic();
@@ -323,11 +345,30 @@ module shuttle_tests_ref;
     g_xlang_done++;
   endtask
 
+  task automatic case_ref_blocking_time();
+    automatic shuttle_ref_publisher #(FObj) pub = new ("ref.blocking");
+    automatic FSlow slow = new ();
+    automatic shuttle_ref_subscription #(FObj) sub = null;
+    automatic FObj obj = new (23, "twenty-three");
+    automatic shuttle_publication h = null;
+    automatic time started = $time;
+    sub = shuttle_ref_subscription #(FObj)::blocking("ref.blocking", slow);
+    check(sub.valid(), "ref.blocking_subscribed");
+    h = pub.publish_serial(obj);
+    if (h != null) h.wait_done();
+    check(slow.n == 1, "ref.blocking_delivered");
+    // The callback ran after its own delay: the frame completed only once the task returned.
+    check(slow.stamp - started >= 100, "ref.blocking_consumed_time");
+    sub.unsubscribe();
+    pub.free(obj);
+  endtask
+
   task automatic run_cases();
     case_ref_basic();
     case_ref_mutation();
     case_ref_modes();
     case_ref_callbacks();
+    case_ref_blocking_time();
     case_ref_multi();
     case_ref_retained();
     case_ref_lifetime();

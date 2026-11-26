@@ -493,22 +493,32 @@ never appears in user code:
 | `set_retained(bit)` | the same |
 | `shuttle_ref_mailbox #(T)::new(topic[, capacity, overflow])`, `try_recv`/`recv`/`size`/`close` | `shuttle_mailbox` |
 | `shuttle_ref_subscription #(T)::blocking/nonblocking(topic, sink)` | `shuttle_subscribe` / `shuttle_subscribe_nb` |
-| `shuttle_ref_sink #(T)::on_msg(value, meta)` | `shuttle_sink::invoke` (unpacked for you) |
+| `shuttle_ref_sink #(T)::invoke_ref(value, meta)` (task) | `shuttle_sink::invoke` (unpacked for you) |
+| `shuttle_ref_sink_nb #(T)::invoke_ref_nb(value, meta)` (function) | `shuttle_sink_nb::invoke_nb` |
 | `shuttle_ref_msg #(T)::unpack(payload)` inside an untyped sink | `T::unpack(payload)` |
 | `typedef shuttle_ref_codec #(T) MyLink;` + `` `shuttle_field(obj, MyLink) `` | a codec for a declared field (nested, vector, enum) |
 
-`on_msg` is a function: resolving a handle cannot consume simulation time, the same rule as
-`shuttle_responder::respond`. A receiver that needs time queues the handle in its own
-`shuttle_ref_mailbox` or task.
+The entry kind fixes the sink kind, exactly as it does on the value path: `::blocking` takes a
+`shuttle_ref_sink #(T)` whose `invoke_ref` is a task and may consume simulation time (it runs inside
+the topic's background delivery task, on the serial chain), `::nonblocking` takes a
+`shuttle_ref_sink_nb #(T)` whose `invoke_ref_nb` is a function and must not suspend (it is invoked
+inline, also by `publish_now`). The method names differ, so one class may implement both and hold
+one entry of each kind. Resolving the handle itself never costs time.
+
+The `_ref` spelling is not decoration: a bare `invoke` / `invoke_nb` would collide with
+`shuttle_sink` / `shuttle_sink_nb` in any class that consumes value frames and reference frames at
+once, and SV has no overloading to separate them by parameter type.
 
 SV has no overloading, so one class cannot implement `shuttle_ref_sink #(A)` and
-`shuttle_ref_sink #(B)`: both declare `on_msg`, and the compiler rejects the second as already
-declared. A receiver that takes several reference types implements the untyped
+`shuttle_ref_sink #(B)`: both declare `invoke_ref`, and the compiler rejects the second as already
+declared (the same holds for two `shuttle_ref_sink_nb`, which both declare `invoke_ref_nb`). A
+receiver that takes several reference types implements the untyped
 `shuttle_sink_nb::invoke_nb(payload, meta)` (or the blocking `shuttle_sink::invoke`) once and
 resolves each arm with `shuttle_ref_msg #(T)::unpack(payload)` — one line per type, and
 `meta.type_tag` picks the arm exactly as it picks a message type on the value path. A type
-hierarchy keeps the typed shape instead: implement one `shuttle_ref_sink #(Base)` and `$cast`
-down inside `on_msg` (the encoded tag is then the base's name, so a subscriber filtering on a
+hierarchy keeps the typed shape instead: implement one `shuttle_ref_sink #(Base)` (or its `_nb`
+flavour) and `$cast` down inside `invoke_ref` (the encoded tag is then the base's name, so a
+subscriber filtering on a
 derived name does not match). A queue-shaped receiver needs no adapter at all: one
 `shuttle_ref_mailbox #(T)` per type, drained by one service loop.
 

@@ -38,19 +38,21 @@
 //   · ids are allocated monotonically and never reused.
 //
 // One class, several reference types. SV has no overloading, so a class cannot implement
-// shuttle_ref_sink #(A) and shuttle_ref_sink #(B) at once — both declare on_msg, and the compiler
-// reports the second as "identifier previously declared". Three shapes work instead; pick by what
+// shuttle_ref_sink #(A) and shuttle_ref_sink #(B) at once — both declare invoke_ref, and the
+// compiler reports the second as "identifier previously declared" (the same holds for two
+// shuttle_ref_sink_nb, which both declare invoke_ref_nb). Three shapes work instead; pick by what
 // the receiver needs:
 //   · an open-ended type set: implement the untyped shuttle_sink / shuttle_sink_nb once and
 //     dispatch on meta.type_tag, one line per arm through shuttle_ref_msg #(T)::unpack(payload) —
 //     the mirror of T::unpack(payload) on the value path;
-//   · a type hierarchy: one shuttle_ref_sink #(Base), $cast down inside on_msg (the encoded tag is
-//     then the base's name, so a subscriber filtering on a derived name does not match);
+//   · a type hierarchy: one shuttle_ref_sink #(Base) (or its _nb flavour), $cast down inside
+//     invoke_ref (the encoded tag is then the base's name, so a subscriber filtering on a derived
+//     name does not match);
 //   · queue semantics: one shuttle_ref_mailbox #(T) per type, drained by one service loop — no
 //     adapter class at all.
 // Untyped callbacks that want to stay fully static use one 4-line adapter class per type (each
-// implementing shuttle_ref_sink #(T) and forwarding to a plain method of the owner): distinct
-// classes never share a method name, so nothing collides.
+// implementing the typed interface for one type — blocking or nonblocking — and forwarding to a
+// plain method of the owner): distinct classes never share a method name, so nothing collides.
 
 // ── Internal id table (per #(T) specialization) ────────────────────────
 // by_id_ is the id → object map; ids_/objs_ is the reverse cache that keeps a re-published
@@ -176,29 +178,43 @@ class shuttle_ref_codec #(type T);
   endfunction
 endclass
 
-// ── Callback interface ─────────────────────────────────────────────────
-// on_msg is a function: resolving a handle cannot consume simulation time (same rule as
-// shuttle_responder::respond). A receiver that needs time queues the handle in its own
-// shuttle_ref_mailbox or task.
+// ── Callback interfaces ────────────────────────────────────────────────
+// Two interfaces, one entry kind each, mirroring shuttle_sink / shuttle_sink_nb. invoke_ref is a
+// task, so a blocking receiver may consume simulation time (it runs inside the topic's background
+// delivery task, on the serial chain). invoke_ref_nb is a function and must not suspend (it is
+// invoked inline, also by publish_now). Resolving the handle itself never costs time; what a
+// blocking receiver does with it afterwards is its own business. The _ref spelling, rather than a
+// bare invoke / invoke_nb, is what keeps a class that consumes value frames and reference frames
+// at once possible — see "SV has no overloading" above.
 interface class shuttle_ref_sink #(type T);
-  pure virtual function void on_msg(input T value, input shuttle_meta meta);
+  pure virtual task invoke_ref(input T value, input shuttle_meta meta);
 endclass
 
-// Landing implementation of both entries: the blocking task and the nonblocking function
-// resolve the id and call on_msg. Which one is registered is decided by the factory used
-// (::blocking / ::nonblocking), never by what this class implements.
-class shuttle_ref_cb #(type T) implements shuttle_sink, shuttle_sink_nb;
+interface class shuttle_ref_sink_nb #(type T);
+  pure virtual function void invoke_ref_nb(input T value, input shuttle_meta meta);
+endclass
+
+// Landing implementation per entry kind: each resolves the id and hands the handle over. Distinct
+// method names, so one receiver class may implement both interfaces and hold an entry of each kind.
+class shuttle_ref_cb #(type T) implements shuttle_sink;
   local shuttle_ref_sink #(T) sink_;
   function new(shuttle_ref_sink #(T) sink);
     sink_ = sink;
   endfunction
   virtual task invoke(input byte payload[], input shuttle_meta meta);
     T obj = shuttle_ref_msg #(T)::unpack(payload);
-    if (obj != null) sink_.on_msg(obj, meta);  // null = the table already reported it
+    if (obj != null) sink_.invoke_ref(obj, meta);  // null = the table already reported it
   endtask
+endclass
+
+class shuttle_ref_cb_nb #(type T) implements shuttle_sink_nb;
+  local shuttle_ref_sink_nb #(T) sink_;
+  function new(shuttle_ref_sink_nb #(T) sink);
+    sink_ = sink;
+  endfunction
   virtual function void invoke_nb(input byte payload[], input shuttle_meta meta);
     T obj = shuttle_ref_msg #(T)::unpack(payload);
-    if (obj != null) sink_.on_msg(obj, meta);
+    if (obj != null) sink_.invoke_ref_nb(obj, meta);
   endfunction
 endclass
 
@@ -296,21 +312,38 @@ class shuttle_ref_publisher #(type T);
 endclass
 
 // ── Callback subscription: entry chosen by the factory called ──────────
-// ::blocking mirrors shuttle_subscribe (the callback may run on the serial chain, i.e. inside
-// a background delivery task); ::nonblocking mirrors shuttle_subscribe_nb (invoked inline,
-// also by publish_now).
+// ::blocking mirrors shuttle_subscribe (the callback runs on the serial chain, inside a background
+// delivery task, and may consume simulation time); ::nonblocking mirrors shuttle_subscribe_nb
+// (invoked inline, also by publish_now, and must not suspend). The entry kind fixes the sink kind:
+// a task sink can only be registered blocking, a function sink only nonblocking.
 class shuttle_ref_subscription #(type T);
   local shuttle_subscription sub_;
 
   static function shuttle_ref_subscription #(T) blocking(string topic, shuttle_ref_sink #(T) sink,
                                                          string type_tag = "");
-    return make(topic, sink, type_tag, 1'b1);
+    shuttle_ref_subscription #(T) sub = new ();
+    shuttle_ref_cb #(T) cb;
+    if (sink == null) begin
+      $error("shuttle: reference subscription without a sink (topic=%s)", topic);
+      return sub;
+    end
+    cb       = new (sink);
+    sub.sub_ = shuttle_subscribe(topic, cb, (type_tag == "") ? $typename(T) : type_tag);
+    return sub;
   endfunction
 
   static function shuttle_ref_subscription #(T) nonblocking(string topic,
-                                                            shuttle_ref_sink #(T) sink,
+                                                            shuttle_ref_sink_nb #(T) sink,
                                                             string type_tag = "");
-    return make(topic, sink, type_tag, 1'b0);
+    shuttle_ref_subscription #(T) sub = new ();
+    shuttle_ref_cb_nb #(T) cb;
+    if (sink == null) begin
+      $error("shuttle: reference subscription without a sink (topic=%s)", topic);
+      return sub;
+    end
+    cb       = new (sink);
+    sub.sub_ = shuttle_subscribe_nb(topic, cb, (type_tag == "") ? $typename(T) : type_tag);
+    return sub;
   endfunction
 
   function bit valid();
@@ -323,22 +356,6 @@ class shuttle_ref_subscription #(type T);
 
   function void unsubscribe();
     if (sub_ != null) sub_.unsubscribe();
-  endfunction
-
-  local static function shuttle_ref_subscription #(T) make(string topic, shuttle_ref_sink #(T) sink,
-                                                           string type_tag, bit blocking_entry);
-    shuttle_ref_subscription #(T) sub = new ();
-    shuttle_ref_cb #(T) cb;
-    if (sink == null) begin
-      $error("shuttle: reference subscription without a sink (topic=%s)", topic);
-      return sub;
-    end
-    cb = new (sink);
-    if (blocking_entry)
-      sub.sub_ = shuttle_subscribe(topic, cb, (type_tag == "") ? $typename(T) : type_tag);
-    else
-      sub.sub_ = shuttle_subscribe_nb(topic, cb, (type_tag == "") ? $typename(T) : type_tag);
-    return sub;
   endfunction
 endclass
 
