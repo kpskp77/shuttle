@@ -77,12 +77,17 @@ The two directions use deliberately asymmetric mechanisms:
 
 | Direction | Entry | How the payload crosses |
 | --- | --- | --- |
-| SV → C++ | `shuttle_c_publish_now` / `_serial` / `_concurrent` (import functions) | `byte payload[]` open array; C++ copies it element by element via `svGetArrElemPtr1` into a `std::vector<std::byte>` (`read_payload` in dpi.cpp). |
-| C++ → SV | `shuttle_sv_dispatch` (export task) / `shuttle_sv_dispatch_nb` (export function) | Not through arguments. C++ parks the frame's byte stream in the process-level global `g_frame` (via the RAII `FrameContext`) before calling the export; SV pulls it inside the export body with `shuttle_c_frame_len()` + `shuttle_c_frame_qword(i)`, each qword carrying 8 little-endian bytes, and `shuttle_frame_bytes` reassembles them into a dynamic array. |
+| SV → C++ | `shuttle_c_publish_now` / `_serial` / `_concurrent` (import functions) | `byte payload[]` open array; C++ copies it in one `memcpy` through `svGetArrayPtr` into a `std::vector<std::byte>` (`read_payload` in dpi.cpp), falling back to per-element `svGetArrElemPtr1` when the layout is not canonical. |
+| C++ → SV | `shuttle_sv_dispatch` (export task) / `shuttle_sv_dispatch_nb` (export function) | Not through arguments. C++ parks the frame's byte stream in the process-level global `g_frame` (via the RAII `FrameContext`) before calling the export; SV pulls it inside the export body with `shuttle_c_frame_len()` (allocate this many bytes) + `shuttle_c_frame_payload(b)` (fill them), so the payload crosses in one DPI call per frame and the C++ side copies it with a single `memcpy`. |
 
 The reverse pull exists because VCS 2018.09's `svdpi.h` has no `svCreateArray`,
 so C++ cannot construct an open array to pass by value; passing the payload as
-an argument would also tie its lifetime to the caller's stack frame. A plain
+an argument would also tie its lifetime to the caller's stack frame. The array
+the pull fills is therefore SV-owned: `shuttle_c_frame_payload` takes the
+`byte payload[]` the SV side just allocated and writes it through
+`svGetArrayPtr` (a `memcpy`), falling back to `svGetArrElemPtr1` per element
+when the simulator reports a non-contiguous layout — both inside one crossing,
+never one crossing per word. A plain
 global is safe for exactly one reason: the single-active-process contract from
 [../AGENTS.md](../AGENTS.md) ("Invariants that must hold", invariant 1) —
 while an export body runs, no other simulation process can run C++-side code,
@@ -93,7 +98,7 @@ synchronously — safe.
 
 `shuttle_frame_bytes` returns the bytes through an `output byte b[]` parameter
 rather than as a function result because VCS does not accept unpacked arrays as
-function return types. `frame_len` / `frame_qword` are svdpi-only entries:
+function return types. `frame_len` / `frame_payload` are svdpi-only entries:
 they are declared in `svdpi_internal.hpp`, not in `backend/backend.hpp`, so
 only code inside an export body can reach them.
 
@@ -118,7 +123,7 @@ Imports — provided by libshuttle.so (dpi.cpp), called from SV
 | `shuttle_c_take_corr_id` | function | `() → int` | Allocates the next request/response correlation id from the counter `shuttle::Requester` uses; never 0. Kept C++-side so an SV requester and a C++ requester cannot mint the same id for two calls on one response topic. |
 | `shuttle_c_last_error` | function | `() → string` | The most recent error message on this process (the error channel for every entry that reports failure as a return code). |
 | `shuttle_c_frame_len` | function | `() → int` | Frame-pull protocol: byte length of the frame parked in `g_frame`. |
-| `shuttle_c_frame_qword` | function | `(int index) → longint` | Frame-pull protocol: the index-th 8-byte chunk, little-endian within the qword. |
+| `shuttle_c_frame_payload` | function | `(output byte payload[])` | Frame-pull protocol: copies the parked frame into the array the SV side allocated (one `memcpy` when the handle is contiguous, per-element accessors otherwise). |
 
 Exports — provided by `shuttle_pkg.sv`, called back by the C++ broker
 (prototypes in bridge.cpp):

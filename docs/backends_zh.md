@@ -61,18 +61,21 @@ svdpi 后端是唯一带外部订阅者通道的构建，由四块关注点严�
 
 | 方向 | 入口 | 载荷怎么过界 |
 | --- | --- | --- |
-| SV → C++ | `shuttle_c_publish_now` / `_serial` / `_concurrent`（import function） | `byte payload[]` open array；C++ 用 `svGetArrElemPtr1` 逐元素拷进 `std::vector<std::byte>`（dpi.cpp 的 `read_payload`）。 |
-| C++ → SV | `shuttle_sv_dispatch`（export task）/ `shuttle_sv_dispatch_nb`（export function） | 不走实参。C++ 调 export 前把帧字节流停放在进程级全局 `g_frame`（经 RAII 的 `FrameContext`）；SV 在 export 函数体内用 `shuttle_c_frame_len()` + `shuttle_c_frame_qword(i)` 反向拉取——每个 qword 带 8 个小端字节——`shuttle_frame_bytes` 再拼回动态数组。 |
+| SV → C++ | `shuttle_c_publish_now` / `_serial` / `_concurrent`（import function） | `byte payload[]` open array；C++ 经 `svGetArrayPtr` 一次 `memcpy` 拷进 `std::vector<std::byte>`（dpi.cpp 的 `read_payload`），布局非规范时退回 `svGetArrElemPtr1` 逐元素。 |
+| C++ → SV | `shuttle_sv_dispatch`（export task）/ `shuttle_sv_dispatch_nb`（export function） | 不走实参。C++ 调 export 前把帧字节流停放在进程级全局 `g_frame`（经 RAII 的 `FrameContext`）；SV 在 export 函数体内用 `shuttle_c_frame_len()`（分配这么多字节）+ `shuttle_c_frame_payload(b)`（填进去）反向拉取——每帧一次 DPI 调用，C++ 侧一次 `memcpy` 拷完。 |
 
 反向拉取的存在理由是 VCS 2018.09 的 `svdpi.h` 没有 `svCreateArray`：C++ 构造不了
-open array 按值传递；把载荷做实参还会把它的生命期绑在调用方栈帧上。裸全局之所以安全，
+open array 按值传递；把载荷做实参还会把它的生命期绑在调用方栈帧上。所以被拉取的
+数组归 SV 所有：`shuttle_c_frame_payload` 接收 SV 刚分配好的 `byte payload[]`，经
+`svGetArrayPtr` 写入（一次 `memcpy`）；模拟器报告布局不连续时退回 `svGetArrElemPtr1`
+逐元素写——两种情况都在同一次过界之内，不会变成逐字过界。裸全局之所以安全，
 只有一个理由：[../AGENTS.md](../AGENTS.md) 的单活跃进程契约（"Guarantees" 第一条）
 ——export 函数体执行期间没有别的仿真进程能执行 C++ 侧代码，所以拉取途中没有任何东
 西能覆盖 `g_frame`。`FrameContext` 是保存/恢复栈（持有旧指针、析构时恢复），这正是嵌
 套派发——一个订阅者同步发布给另一个 SV 订阅者——安全的机制。
 
 `shuttle_frame_bytes` 经 `output byte b[]` 参数返回字节而不是作为函数返回值，是因为
-VCS 不接受把非合并数组当函数返回类型。`frame_len` / `frame_qword` 是 svdpi 专属入
+VCS 不接受把非合并数组当函数返回类型。`frame_len` / `frame_payload` 是 svdpi 专属入
 口：它们声明在 `svdpi_internal.hpp` 而非 `backend/backend.hpp`，只有 export 函数体
 内的代码够得到它们。
 
@@ -97,7 +100,7 @@ Import——由 libshuttle.so 提供（dpi.cpp），SV 侧调用（`shuttle_pkg.
 | `shuttle_c_take_corr_id` | function | `() → int` | 从 `shuttle::Requester` 用的那个计数器里取下一个请求/响应关联 id，绝不返回 0。留在 C++ 侧，SV 请求者与 C++ 请求者才不会在同一响应 topic 上给两个调用发出同一个 id。 |
 | `shuttle_c_last_error` | function | `() → string` | 本进程最近的错误信息（每个以返回码报错的入口的错误通道）。 |
 | `shuttle_c_frame_len` | function | `() → int` | 帧拉取协议：停放在 `g_frame` 的帧的字节长度。 |
-| `shuttle_c_frame_qword` | function | `(int index) → longint` | 帧拉取协议：第 index 个 8 字节块，qword 内小端。 |
+| `shuttle_c_frame_payload` | function | `(output byte payload[])` | 帧拉取协议：把停放中的帧拷进 SV 侧刚分配的数组（句柄连续时一次 `memcpy`，否则退回逐元素访问）。 |
 
 Export——由 `shuttle_pkg.sv` 提供，C++ broker 回调（原型在 bridge.cpp）：
 

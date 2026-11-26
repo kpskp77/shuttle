@@ -428,7 +428,7 @@ not include `mailbox.hpp`.
 
 C++→SV delivery does not pass the payload as a DPI argument: the C++ side parks the encoded frame
 in a process-level `FrameContext` (an RAII save/restore stack, nesting-safe), and the SV export
-body pulls it with `shuttle_c_frame_len()` + `shuttle_c_frame_qword(i)`. The trigger was VCS
+body pulls it with `shuttle_c_frame_len()` + `shuttle_c_frame_payload(b)` — the array is SV-owned, so one DPI call per frame and one `memcpy` on the C++ side. The trigger was VCS
 2018.09's `svdpi.h` lacking `svCreateArray` — C++ cannot construct an open array — plus the
 lifetime problem of caller-stack arguments. The safety premise is the single-active-process
 contract: while the export executes, no other process can overwrite the parked frame. The full

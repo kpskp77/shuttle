@@ -375,7 +375,8 @@ close 后队列仍可读出。SV 邮箱（`shuttle_pkg::shuttle_mailbox`）是�
 
 C++→SV 投递不把载荷作为 DPI 实参传递：C++ 侧把编码后的帧停放在进程级 `FrameContext`
 （一个 RAII 保存/恢复栈，可安全嵌套），SV export 函数体用 `shuttle_c_frame_len()` +
-`shuttle_c_frame_qword(i)` 反向拉取。起因是 VCS 2018.09 的 `svdpi.h` 缺
+`shuttle_c_frame_payload(b)` 反向拉取——数组归 SV 所有，所以每帧一次 DPI 调用、C++
+侧一次 `memcpy`。起因是 VCS 2018.09 的 `svdpi.h` 缺
 `svCreateArray`——C++ 构造不了 open array——外加调用方栈上实参的生命期问题。安全前提
 是单活跃进程契约：export 执行期间没有别的进程能覆盖停放中的帧。完整协议——
 import/export 表、线上格式、作用域规则——是 [backends.md](backends.md) 的主题；这里

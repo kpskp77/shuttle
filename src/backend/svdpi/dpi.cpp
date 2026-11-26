@@ -60,15 +60,22 @@ shuttle::NowPolicy now_policy_of(int v) {
 }
 
 // Read a byte stream from an SV open array (byte payload[] → contiguous 8-bit elements).
+// `svGetArrayPtr` hands back the canonical layout in one shot, so the copy is a single
+// memcpy; the LRM allows a null pointer when the array is not in canonical form, so the
+// per-element accessor stays as the fallback (same trick as `shuttle_c_frame_payload`).
 std::vector<std::byte> read_payload(const svOpenArrayHandle h) {
-  std::vector<std::byte> out;
-  if (!h) return out;
+  if (!h) return {};
   const int n = svSize(h, 1);
-  out.reserve(n > 0 ? static_cast<std::size_t>(n) : 0);
+  if (n <= 0) return {};
+  std::vector<std::byte> out(static_cast<std::size_t>(n));
+  if (const auto* src = static_cast<const char*>(svGetArrayPtr(h))) {
+    std::memcpy(out.data(), src, out.size());
+    return out;
+  }
   for (int i = 0; i < n; ++i) {
     // SV byte is a 2-state 8-bit type; svdpi.h exposes its element type as char
     const char* p = static_cast<const char*>(svGetArrElemPtr1(h, i));
-    out.push_back(static_cast<std::byte>(static_cast<unsigned char>(*p)));
+    out[static_cast<std::size_t>(i)] = static_cast<std::byte>(static_cast<unsigned char>(*p));
   }
   return out;
 }
@@ -295,14 +302,30 @@ const char* shuttle_c_last_error() {
   return last_error().c_str();
 }
 
-// Current frame byte stream: length and little-endian 8-byte chunks (SV pulls
-// them inside the shuttle_sv_dispatch body).
+// Current frame byte stream: how many bytes, and a one-shot copy into the SV
+// side's array (SV pulls both inside the shuttle_sv_dispatch body). The array is
+// SV-owned — VCS 2018.09's svdpi.h has no svCreateArray — so C++ writes into a
+// handle it is given: a memcpy when the simulator reports a contiguous layout,
+// per-element accessors otherwise (still a single DPI crossing per frame).
 int shuttle_c_frame_len() {
   return shuttle::detail::backend::frame_len();
 }
 
-long long shuttle_c_frame_qword(int index) {
-  return static_cast<long long>(shuttle::detail::backend::frame_qword(index));
+void shuttle_c_frame_payload(const svOpenArrayHandle payload) {
+  if (!payload) return;
+  const std::byte* src = shuttle::detail::backend::frame_data();
+  if (src == nullptr) return;
+  const int have = shuttle::detail::backend::frame_len();
+  const int size = svSize(payload, 1);
+  const int n = (size < have) ? size : have;
+  if (n <= 0) return;
+  if (auto* dst = static_cast<char*>(svGetArrayPtr(payload))) {
+    std::memcpy(dst, src, static_cast<std::size_t>(n));
+    return;
+  }
+  // Non-canonical layout (the LRM allows svGetArrayPtr to return null):
+  for (int i = 0; i < n; ++i)
+    *static_cast<char*>(svGetArrElemPtr1(payload, i)) = static_cast<char>(src[i]);
 }
 
 }  // extern "C"

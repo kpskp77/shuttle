@@ -21,18 +21,15 @@ class shuttle_meta;
 endclass
 
 // ── Frame pull: byte stream of the C++ dispatch context → SV dynamic array ──
-// Protocol: shuttle_c_frame_qword(i) returns the i-th 8-byte chunk (little
-// endian); concatenating them yields the complete frame.
+// Protocol: shuttle_c_frame_len() gives the length, SV allocates the array, and
+// shuttle_c_frame_payload() fills it in one DPI call (a memcpy on the C++ side
+// when the array is contiguous) — one crossing per frame instead of one per word.
 // Relies on the single-active-process invariant: callable only inside the
 // shuttle_sv_dispatch[_nb] body.
 function automatic void shuttle_frame_bytes(output byte b[]);
   int n = shuttle_c_frame_len();
   b = new [n];
-  for (int base = 0; base < n; base += 8) begin
-    longint qw = shuttle_c_frame_qword(base / 8);
-    for (int j = 0; j < 8 && base + j < n; j++)
-      b[base + j] = byte'(qw[j * 8 +: 8]);
-  end
+  if (n > 0) shuttle_c_frame_payload(b);
 endfunction
 
 `endif  // SHUTTLE_META_SVH

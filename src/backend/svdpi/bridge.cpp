@@ -3,8 +3,8 @@
 //
 // Frame payloads do not go through DPI arguments: before C++ calls the export,
 // it puts the current frame's byte stream into the process-level context
-// (FrameContext), and the SV side pulls it in chunks inside the export body
-// via the scalar imports shuttle_c_frame_len / _qword. The DPI-C export
+// (FrameContext), and the SV side pulls it inside the export body via the
+// imports shuttle_c_frame_len / shuttle_c_frame_payload. The DPI-C export
 // surface (shuttle_c_*) lives in dpi.cpp.
 
 #include <svdpi.h>
@@ -82,15 +82,8 @@ int frame_len() {
   return g_frame ? static_cast<int>(g_frame->size()) : 0;
 }
 
-std::uint64_t frame_qword(int index) {
-  if (!g_frame) return 0;
-  std::uint64_t v = 0;
-  for (int k = 0; k < 8; ++k) {
-    const std::size_t i = static_cast<std::size_t>(index) * 8 + static_cast<std::size_t>(k);
-    if (i < g_frame->size())
-      v |= static_cast<std::uint64_t>(static_cast<std::uint8_t>((*g_frame)[i])) << (8 * k);
-  }
-  return v;
+const std::byte* frame_data() {
+  return (g_frame != nullptr && !g_frame->empty()) ? g_frame->data() : nullptr;
 }
 
 }  // namespace backend

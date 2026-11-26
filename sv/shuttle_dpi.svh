@@ -34,11 +34,13 @@ import "DPI-C" context function int shuttle_c_take_corr_id();
 import "DPI-C" context function string shuttle_c_last_error();
 
 // Frame-pull protocol: before calling shuttle_sv_dispatch[_nb], C++ sets the
-// current frame's byte stream as process-level context; SV pulls it in
-// chunks inside the export body via these two scalar imports (8-byte
-// little-endian chunks).
+// current frame's byte stream as process-level context; SV pulls it inside the
+// export body: frame_len() gives the length, the SV side allocates the dynamic
+// array, and frame_payload() copies the whole frame into it — one crossing per
+// frame, a memcpy on the C++ side (the array is SV-owned because VCS 2018.09's
+// svdpi.h has no svCreateArray).
 import "DPI-C" context function int shuttle_c_frame_len();
-import "DPI-C" context function longint shuttle_c_frame_qword(int index);
+import "DPI-C" context function void shuttle_c_frame_payload(output byte payload[]);
 
 // ── DPI: exports (provided by this package, called back by the C++ broker) ──
 // Same precedent as weave: exports live inside the package (verified on

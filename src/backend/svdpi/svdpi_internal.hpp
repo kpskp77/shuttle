@@ -5,7 +5,7 @@
 //
 // What lives here is "how the svdpi backend itself is implemented":
 //   - scope fixing for our own package-level exports (SvScopeGuard);
-//   - the C++→SV frame-byte pull channel (FrameContext + frame_len/frame_qword);
+//   - the C++→SV frame-byte pull channel (FrameContext + frame_len/frame_data);
 //   - declarations of the external facade (`shuttle::detail::ext_*` / `pub_*` /
 //     the event registry / set_last_error; implemented in facade.cpp).
 //
@@ -75,11 +75,13 @@ private:
 };
 
 // Byte stream of the frame currently being pulled: set before C++ calls the
-// export; SV pulls it in chunks inside the export body via
-// `shuttle_c_frame_len` / `shuttle_c_frame_qword`. A plain global is visible
-// enough because "only one process executes the C++-side bookkeeping at any
-// moment" (AGENTS.md invariant 1) — the simulation is not multithreaded, so no
-// thread_local is needed.
+// export; SV copies it in one go inside the export body via
+// `shuttle_c_frame_len` (how much to allocate) + `shuttle_c_frame_payload` (an
+// SV-owned open array the C++ side writes with one memcpy). The array lives on
+// the SV side because VCS 2018.09's svdpi.h has no svCreateArray. A plain
+// global is visible enough because "only one process executes the C++-side
+// bookkeeping at any moment" (AGENTS.md invariant 1) — the simulation is not
+// multithreaded, so no thread_local is needed.
 inline const std::vector<std::byte>* g_frame = nullptr;
 
 class FrameContext {
@@ -93,10 +95,10 @@ private:
   const std::vector<std::byte>* prev_;
 };
 
-// Chunked view of the frame byte stream (the SV side can only pull scalars,
-// so it is chunked into little-endian 8-byte words).
+// Whole view of the frame byte stream: the SV side allocates one dynamic array
+// of frame_len() bytes and frame_data() fills it (null when no frame is active).
 int frame_len();
-std::uint64_t frame_qword(int index);
+const std::byte* frame_data();
 
 }  // namespace backend
 

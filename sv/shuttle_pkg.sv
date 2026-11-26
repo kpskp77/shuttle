@@ -18,10 +18,11 @@
 //
 // Frame-pull protocol (the dispatch payload does not go through DPI arguments):
 //   before calling shuttle_sv_dispatch[_nb], C++ sets the current frame's byte
-//   stream as process-level context; SV pulls it in chunks inside the export
-//   body via shuttle_c_frame_len / shuttle_c_frame_qword (8-byte little-endian
-//   chunks). Relies on the simulator's single-active-process invariant (the
-//   same premise as weave).
+//   stream as process-level context; SV pulls it inside the export body via
+//   shuttle_c_frame_len / shuttle_c_frame_payload (one DPI call per frame; the
+//   payload crosses as an open array the SV side allocates, so C++ copies it
+//   with a single memcpy). Relies on the simulator's single-active-process
+//   invariant (the same premise as weave).
 //
 // Callback entry model (corresponds to shuttle::Capability on the C++ side):
 //   shuttle_sink    — blocking entry (export task, may consume simulation time),
