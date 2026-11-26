@@ -12,7 +12,7 @@ option("backend", function()
 end)
 
 -- Add dependencies
-add_requires("weave >=0.1.0", { configs = { shared = true, backend = get_config("backend") } })
+add_requires("weave", { configs = { shared = true, backend = get_config("backend") } })
 add_requires("simlog", { configs = { shared = true, backend = get_config("backend") } })
 
 -- ── Library ──────────────────────────────────────────────────────────────────────────────
