@@ -31,15 +31,15 @@
                       ┌──────────────────────────── user code ────────────────────────────┐
                       │  C++: Publisher<T> subscribe<T> Publication Subscription Trigger  │
                       │  SV : shuttle_publisher #(T) shuttle_subscribe sink(_nb) handle   │
-                      └───────────────┬───────────────────────────────┬───────────────────┘
+                      └───────────────┬────────────────────────────────────────┬──────────┘
                                       │ public headers (include/shuttle/*.hpp) │ SV package (sv/shuttle_pkg.sv)
-        ┌─────────────────────────────▼──────────┐        ┌───────────▼───────────────────┐
-        │  broker core (src/broker/)              │        │ shuttle_pkg.sv                │
-        │  Topic table / wildcards / type binding │        │  registry / sub / handle       │
-        │  three publish schedulings / retained   │◀──DPI─▶│  trigger / event / publisher   │
-        │  C++ API and handles: src/*.cpp         │        │  frame pull + {>>{}} packing   │
-        └───────┬───────────────────────▲─────────┘        └───────────────────────────────┘
-                │ backend-agnostic        │ backend boundary (5-entry detail::backend facade,
+        ┌─────────────────────────────▼───────────┐         ┌──────────────────▼────────────┐
+        │  broker core (src/broker/)              │         │ shuttle_pkg.sv                │
+        │  Topic table / wildcards / type binding │         │  registry / sub / handle      │
+        │  three publish schedulings / retained   │<──DPI──>│  trigger / event / publisher  │
+        │  C++ API and handles: src/*.cpp         │         │  frame pull + {>>{}} packing  │
+        └───────┬────────────────────────▲────────┘         └───────────────────────────────┘
+                │ backend-agnostic       │ backend boundary (5-entry detail::backend facade,
      ┌──────────▼─────────┐   ┌──────────┴─────────┐          src/backend/backend.hpp)
      │ backend/svdpi/     │   │ backend/systemc/   │
      │ bridge + DPI face  │   │ no SV bridge:      │
