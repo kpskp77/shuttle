@@ -282,7 +282,7 @@ void target_finished(const std::shared_ptr<PubState>& pub) {
 ### `publish_now` 有重入上限
 
 因为回调跑在发布者栈上，订阅者再次 `publish_now` 是递归而非挂起；两个互相发布的订
-阅者会在没有任何诊断的情况下爆栈。`dispatch_now` 带一个 `thread_local` 深度计数
+阅者会在没有任何诊断的情况下爆栈。`dispatch_now` 带一个文件作用域的深度计数
 （`kMaxNowDepth = 8`），把环变成 `PublishError`。这个上限是诊断天花板，不是策略：合
 法嵌套（请求帧 → 响应者 handler → 回执帧）到 2–3 层。同步段内单个回调失败不终止该
 帧——记入 `failures()` 与 `first_error`，循环继续，首个异常等所有目标处理完后才抛回调

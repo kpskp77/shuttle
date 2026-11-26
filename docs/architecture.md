@@ -312,7 +312,7 @@ The field names carry their scope prefix precisely because a bare `seq` was misr
 
 Because callbacks run on the publisher's stack, a subscriber that `publish_now`s again recurses
 rather than suspends; two mutually-publishing subscribers overflow the stack with no diagnosis.
-`dispatch_now` carries a `thread_local` depth counter (`kMaxNowDepth = 8`) turning the cycle into
+`dispatch_now` carries a file-scope depth counter (`kMaxNowDepth = 8`) turning the cycle into
 a `PublishError`. The bound is a diagnostic ceiling, not a policy: legitimate nesting
 (request frame → responder handler → reply frame) reaches depth 2–3. Within the synchronous
 segment a single callback failure does not abort the frame — it is recorded in `failures()` and
