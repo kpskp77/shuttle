@@ -320,26 +320,28 @@ segment a single callback failure does not abort the frame — it is recorded in
 all targets finished. On the SV side `shuttle_c_publish_now` converts the exception into a return
 code plus `shuttle_c_last_error()`.
 
-### Responses travel on `publish_now`, and the response topic rejects blocking observers
+### Responses travel on `publish_now`; blocking entries are never reply targets
 
-`Requester` and `serve` mark the response topic as a response channel (`Topic::carries_responses`);
-any *blocking*-entry registration on that topic is then rejected at registration time by
-`Broker::check_response_topic` (`CapabilityError`, wildcard patterns judged by match — a blocking
-`dev.>` observer on `dev.resp` fails too). The reason: a blocking observer holds the topic's
-serial chain, every later reply queues behind it, and the requester cannot distinguish "the
-responder died" from "the reply is queued behind a slow observer" — the timeout would lie.
-Registration-time rejection is the early-failure counterpart of the entry decision above; a
-delivery-time check would be too late. The name itself stays public (`resp_topic()`,
-hardcoded cross-language strings are legal), publishing to the topic by hand is legal; only
-blocking *observation* is banned. Blocking observers registered before the mark are not
-retro-rejected — the `publish_now` path makes them harmless.
+Replies use `detail::pub_now` with `NowPolicy::skip` (SV `shuttle_publisher::reply` likewise),
+never `publish_serial`: with a `nb(handler)` responder and `send_now()`, the entire round trip
+runs on the requester's stack — `send_now()` returns with the reply already in the `Call`
+(`call.queued() == 1`), zero RTT, no simulation time consumed.
 
-Replies use `detail::pub_now` (SV `shuttle_publisher::reply` likewise), never `publish_serial`: with a
-`nb(handler)` responder and `send_now()`, the entire round trip runs on the requester's stack —
-`send_now()` returns with the reply already in the `Call` (`call.queued() == 1`), zero RTT, no
-simulation time consumed. `NowPolicy::defer` is only the fallback for a blocking responder
-registered before the mark. Because replies never join the chain tail, a slow observer cannot
-delay a requester even where one exists.
+`skip` is the whole response-channel contract, and it is a delivery policy, not a registration
+rule: a response topic is an ordinary topic to the broker. A blocking entry on it is legal to
+register (a wildcard pattern covering the topic registers too) but is never a reply target —
+the frame counts it in `skipped()` and the `skipped` component of `dropped()`, its callback
+never runs, and it never touches the topic's serial chain, so a slow blocking observer cannot
+delay a requester, a responder, or another observer. A reply is half of a rendezvous; a copy
+queued behind a blocking observer's chain is a reply in name only, which is why the policy is
+`skip` and not `defer`.
+
+To watch the reply stream, register `nb()`: reply frames are delivered to every matching
+nonblocking subscriber, the requester's own `Call` table included, and `Meta::corr_id`
+distinguishes them — nonzero means a correlated reply (echoed from the request), `0` means a
+hand-published frame. The topic name itself stays public (`resp_topic()`, hardcoded
+cross-language strings are legal), and publishing to the topic by hand is legal; hand-published
+frames reach blocking entries there per the publisher's own policy.
 
 ### The correlation id lives in the frame header, not the payload
 
@@ -377,16 +379,15 @@ must differ — the responder publishes its reply inside the request callback, a
 would queue the reply behind the callback that published it; the constructors throw
 `std::invalid_argument`.
 
-### The SV requester is the same design, with the counter and the mark across the DPI
+### The SV requester is the same design, with the counter across the DPI
 
 `shuttle_requester #(TReq, TResp)` / `shuttle_call #(TResp)` mirror `Requester` / `Call` shape for
 shape: the call slot is registered before the frame goes out (an nb responder answers inside the
 publish call), `wait_for` bounds the whole wait with one deadline, and `wait_all` reads its
-expected count from the request frame's `subscriber_count()`. Two pieces cannot live in SV and
-become DPI entries instead — `shuttle_c_take_corr_id` (the [`detail::take_corr_id`] counter is
+expected count from the request frame's `subscriber_count()`. One piece cannot live in SV and
+becomes a DPI entry instead — `shuttle_c_take_corr_id` (the [`detail::take_corr_id`] counter is
 process-level C++ state; a second counter would let an SV call and a C++ call on one response
-topic mint the same id) and `shuttle_c_mark_responses` (`Broker::mark_response_topic` is broker
-state, and an SV requester must claim its response channel exactly like `Requester`/`serve`).
+topic mint the same id).
 
 The differences are the language, not the design: SV has no exceptions, so a failed constructor
 leaves `valid()` false with `last_error()` set, `send_*` returns a null call instead of throwing,

@@ -116,7 +116,6 @@ Imports — provided by libshuttle.so (dpi.cpp), called from SV
 | `shuttle_c_unsubscribe` | function | `(int sv_sid)` | Removes the external subscriber with this handle. |
 | `shuttle_c_set_retained` | function | `(string topic, bit retained)` | Enables/disables the retained latch on a topic. |
 | `shuttle_c_take_corr_id` | function | `() → int` | Allocates the next request/response correlation id from the counter `shuttle::Requester` uses; never 0. Kept C++-side so an SV requester and a C++ requester cannot mint the same id for two calls on one response topic. |
-| `shuttle_c_mark_responses` | function | `(string topic) → int` | Claims `topic` as a response channel (same call `Requester` / `serve` make): from here on a blocking-entry subscription matching it is refused. Returns 0 on success, 1 on failure (`shuttle_c_last_error`). |
 | `shuttle_c_last_error` | function | `() → string` | The most recent error message on this process (the error channel for every entry that reports failure as a return code). |
 | `shuttle_c_frame_len` | function | `() → int` | Frame-pull protocol: byte length of the frame parked in `g_frame`. |
 | `shuttle_c_frame_qword` | function | `(int index) → longint` | Frame-pull protocol: the index-th 8-byte chunk, little-endian within the qword. |
@@ -197,7 +196,7 @@ The consequences:
   because importing weave's exports from dpi.cpp would bypass weave's own
   guard and re-couple shuttle to weave's package layout.
 - Entries that never call an export need no guard: `shuttle_c_set_retained`,
-  `shuttle_c_take_corr_id`, `shuttle_c_mark_responses`, and the read-only queries (`shuttle_c_pub_done` / `_pub_stat` / `_pub_error`,
+  `shuttle_c_take_corr_id`, and the read-only queries (`shuttle_c_pub_done` / `_pub_stat` / `_pub_error`,
   and the frame-pull pair, which only runs inside an export body already under
   a guard).
 - The package name itself can be overridden with `-DSHUTTLE_SV_PACKAGE=`; only

@@ -57,7 +57,7 @@ shuttle 的 API 语义沿用主题式发布-订阅（NATS 风格的 topic、MQTT
 | `Publication` 句柄计数 | ——（无对应物） | 每帧：targets / finished / skipped / deferred / retired / failures |
 | `Trigger`（`after(event/task/duration/edge)`、`after_all/any`） | asyncio 式调度延迟 | 后台发布何时启动 |
 | `Mailbox<T>` | mailbox / 队列 | 一个自带有限队列的 nonblocking 订阅者；溢出策略逐邮箱配置 |
-| `Requester` / `serve`（SV：`shuttle_requester` / `shuttle_publisher::reply`） | 双主题上的请求/应答 | 关联号走帧头（`Meta::corr_id`），不进你的载荷；一个 id 计数器与一处响应 topic 标记同时服务两种语言 |
+| `Requester` / `serve`（SV：`shuttle_requester` / `shuttle_publisher::reply`） | 双主题上的请求/应答 | 关联号走帧头（`Meta::corr_id`），不进你的载荷；一个 id 计数器同时服务两种语言 |
 
 ### 模型差异（相对普通发布订阅，必读）
 

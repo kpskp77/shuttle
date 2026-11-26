@@ -95,7 +95,6 @@ Import——由 libshuttle.so 提供（dpi.cpp），SV 侧调用（`shuttle_pkg.
 | `shuttle_c_unsubscribe` | function | `(int sv_sid)` | 按句柄删除外部订阅者。 |
 | `shuttle_c_set_retained` | function | `(string topic, bit retained)` | 开关某 topic 的 retained 锁存器。 |
 | `shuttle_c_take_corr_id` | function | `() → int` | 从 `shuttle::Requester` 用的那个计数器里取下一个请求/响应关联 id，绝不返回 0。留在 C++ 侧，SV 请求者与 C++ 请求者才不会在同一响应 topic 上给两个调用发出同一个 id。 |
-| `shuttle_c_mark_responses` | function | `(string topic) → int` | 把 `topic` 标记为响应通道（`Requester` / `serve` 调的是同一处）：此后匹配它的阻塞入口订阅被拒绝。成功返回 0，失败返回 1（见 `shuttle_c_last_error`）。 |
 | `shuttle_c_last_error` | function | `() → string` | 本进程最近的错误信息（每个以返回码报错的入口的错误通道）。 |
 | `shuttle_c_frame_len` | function | `() → int` | 帧拉取协议：停放在 `g_frame` 的帧的字节长度。 |
 | `shuttle_c_frame_qword` | function | `(int index) → longint` | 帧拉取协议：第 index 个 8 字节块，qword 内小端。 |
@@ -162,8 +161,8 @@ VCS 2018.09 上实测：SV 进程调用过返回 `string` 的 import（如 `shut
   为 `weave_pkg` 切作用域；早年的 `WeaveScopeGuard` / `SHUTTLE_WEAVE_SV_PACKAGE` 方案
   被删，正因为从 dpi.cpp import weave 的 export 会绕过 weave 自己的守卫，并把 shuttle
   重新耦合到 weave 的包布局上。
-- 从不调 export 的条目不需要守卫：`shuttle_c_set_retained`、`shuttle_c_take_corr_id`、
-  `shuttle_c_mark_responses` 与只读查询
+- 从不调 export 的条目不需要守卫：`shuttle_c_set_retained`、`shuttle_c_take_corr_id`
+  与只读查询
   （`shuttle_c_pub_done` / `_pub_stat` / `_pub_error`，以及帧拉取对——它只运行在已经
   处于守卫之下的 export 函数体内）。
 - 包名本身可用 `-DSHUTTLE_SV_PACKAGE=` 覆盖；只有 shuttle 自己的包需要它。

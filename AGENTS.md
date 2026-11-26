@@ -51,10 +51,10 @@ no locks, no atomics, no threads anywhere in the broker.
 - Wildcards appear in subscription patterns only. Validate names/patterns in `check_topic_name` /
   `check_pattern` before building any state; `now_preflight` validates before the policy decision.
   Read-only queries do not validate.
-- Response topics (`detail::topic_mark_responses`) reject blocking-entry registrations in
-  `Broker::check_response_topic` (wildcard judged by match). Replies go through `detail::pub_now`
-  with `NowPolicy::defer`; never `publish_serial`. `dispatch_now` keeps the `kMaxNowDepth`
-  reentrancy bound.
+- Replies go through `detail::pub_now` with `NowPolicy::skip`; never `publish_serial`. A response
+  topic is an ordinary topic to the broker: blocking entries may register on it and are simply
+  never reply targets (counted in `skipped()`/`dropped()`); reply watchers use `nb()` and tell
+  replies apart by `Meta::corr_id`. `dispatch_now` keeps the `kMaxNowDepth` reentrancy bound.
 - `SHUTTLE_TRIG_EDGE` passes an edge name, never an event id; waits go through `Edge::wait()` /
   `Pulse::wait()`, never raw `weave_sv_wait`. No `shuttle_event` / `shuttle_c_event_*` /
   `SHUTTLE_TRIG_EVENT` resurrection.

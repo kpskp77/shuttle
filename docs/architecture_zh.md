@@ -288,23 +288,23 @@ void target_finished(const std::shared_ptr<PubState>& pub) {
 帧——记入 `failures()` 与 `first_error`，循环继续，首个异常等所有目标处理完后才抛回调
 用方。SV 侧 `shuttle_c_publish_now` 把异常转换成返回码加 `shuttle_c_last_error()`。
 
-### 回执走 `publish_now`，且回执 topic 拒绝 blocking 旁观者
+### 回执走 `publish_now`；blocking 入口永远不是回执的目标
 
-`Requester` 与 `serve` 会把回执 topic 标成响应通道（`Topic::carries_responses`）；
-此后该 topic 上任何 *blocking* 入口的注册都在注册时被 `Broker::check_response_topic`
-拒绝（`CapabilityError`；通配符模式按匹配判定——`dev.resp` 上注册一个 blocking 的
-`dev.>` 旁观者同样失败）。理由：blocking 旁观者持有该 topic 的串行链，此后每一帧回执
-都排在它后面，而请求方**无法区分"响应者死了"与"回执排在慢的旁观者后面"**——超时会撒
-谎。注册期拒绝是上面入口决策的早失败对应物；投递时检查就晚了。名字本身仍然公开
-（`resp_topic()`、跨语言硬编码字符串都合法），手工往回执 topic 发布也合法；只有
-blocking *旁观*被禁。标记之前注册的 blocking 旁观者不做追溯拒绝——`publish_now` 路
-径已经让它们无害。
+回执用 `detail::pub_now` 加 `NowPolicy::skip` 发布（SV `shuttle_publisher::reply` 同理），
+绝不走 `publish_serial`：配上 `nb(handler)` 响应者与 `send_now()`，整个往返跑在请求方栈上——
+`send_now()` 返回时回执已在 `Call` 里（`call.queued() == 1`），零往返时延、不消耗仿真时间。
 
-回执用 `detail::pub_now`（SV `shuttle_publisher::reply` 同理），绝不走 `publish_serial`：
-配上 `nb(handler)` 响应者与 `send_now()`，整个往返跑在请求方栈上——`send_now()` 返
-回时回执已在 `Call` 里（`call.queued() == 1`），零往返时延、不消耗仿真时间。
-`NowPolicy::defer` 只是给标记之前注册的 blocking 响应者兜底。因为回执不占链尾，旁观
-者再慢也拖不动请求方。
+`skip` 就是响应通道契约的全部，而且它是投递策略，不是注册规则：响应 topic 对 broker 来说
+是普通 topic。blocking 入口可以合法注册在它上面（覆盖它的通配符模式也一样），但它永远不会
+成为回执的目标——帧把它计入 `skipped()` 与 `dropped()` 的 skipped 分量，回调不触发，也从不
+接触该 topic 的串行链，所以再慢的 blocking 旁观者也拖不动请求方、响应者或其他旁观者。回执
+是一次会合的一半；排在 blocking 旁观者链后的副本只是名义上的回执，所以策略是 `skip` 而非
+`defer`。
+
+想观察回执流，用 `nb()` 注册：回执帧会投递给每个匹配的非阻塞订阅者——包括请求方自己的
+`Call` 表——用 `Meta::corr_id` 区分：非零表示一条关联回执（从请求回显），`0` 表示手工发布
+的帧。名字本身仍然公开（`resp_topic()`、跨语言硬编码字符串都合法），手工往回执 topic 发布
+也合法；手工发布的帧按发布者自己的策略正常抵达那里的 blocking 入口。
 
 ### 关联号住在帧头，不住在载荷里
 
@@ -334,15 +334,13 @@ blocking *旁观*被禁。标记之前注册的 blocking 旁观者不做追溯�
 `recv`。请求 topic 与回执 topic 必须不同——响应者在请求回调内发布回执，共享 topic 会
 让回执排在发布它的回调后面；构造时抛 `std::invalid_argument`。
 
-### SV 请求者是同一套设计，只有计数器与标记跨 DPI
+### SV 请求者是同一套设计，只有计数器跨 DPI
 
 `shuttle_requester #(TReq, TResp)` / `shuttle_call #(TResp)` 与 `Requester` / `Call` 逐项对应：
 调用槽先登记、再发帧（nonblocking 响应者在发布调用内就作答），`wait_for` 用一个截止时刻
-约束整段等待，`wait_all` 从请求帧的 `subscriber_count()` 取期望回执数。有两件东西放不进
+约束整段等待，`wait_all` 从请求帧的 `subscriber_count()` 取期望回执数。有一件东西放不进
 SV，于是变成 DPI 入口：`shuttle_c_take_corr_id`（计数器是进程级 C++ 状态，另起一个计数器
-会让同一响应 topic 上的 SV 调用与 C++ 调用拿到同一个 id）与 `shuttle_c_mark_responses`
-（`Broker::mark_response_topic` 是 broker 状态，SV 请求者必须像 `Requester`/`serve` 一样
-先认领自己的响应通道）。
+会让同一响应 topic 上的 SV 调用与 C++ 调用拿到同一个 id）。
 
 不同的地方是语言，不是设计：SV 没有异常，所以构造失败留在 `valid()` 为假 + `last_error()`，
 `send_*` 返回空调用而不抛异常，`recv`/`wait_*` 对超时与取消都用 `ok == 0` 作答（那里没有
