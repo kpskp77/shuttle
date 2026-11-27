@@ -42,6 +42,7 @@
 
 #include "broker/broker.hpp"
 #include "detail/publication.hpp"
+#include <shuttle/detail/trace.hpp>
 #include "svdpi_internal.hpp"
 
 namespace shuttle::detail {
@@ -97,6 +98,8 @@ Publication ext_pub_now(std::string_view topic, std::string_view tag, std::vecto
   // decide before building the frame: reject consumes no seq / refreshes no retained
   b.now_preflight(topic, tag, policy);
   auto env = b.make_envelope_bytes(topic, tag, std::move(frame), corr_id);
+  trace_svdpi()->trace("sv publish_now '{}' type={} seq={} pow={} corr={}", topic, tag,
+                       env->meta.topic_seq, static_cast<int>(policy), corr_id);
   return track_pub(detail_pub_access::make(dispatch_now(b, std::move(env), policy)));
 }
 
@@ -104,6 +107,8 @@ Publication ext_pub_serial(std::string_view topic, std::string_view tag,
                            std::vector<std::byte> frame, Trigger trig, std::uint32_t corr_id) {
   Broker& b = Broker::get();
   auto env = b.make_envelope_bytes(topic, tag, std::move(frame), corr_id);
+  trace_svdpi()->trace("sv publish_serial '{}' type={} seq={} corr={}", topic, tag,
+                       env->meta.topic_seq, corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
   return track_pub(detail_pub_access::make(
       b.start_serial(topic, std::move(env), std::move(trig), std::move(targets))));
@@ -113,6 +118,8 @@ Publication ext_pub_concurrent(std::string_view topic, std::string_view tag,
                                std::vector<std::byte> frame, Trigger trig, std::uint32_t corr_id) {
   Broker& b = Broker::get();
   auto env = b.make_envelope_bytes(topic, tag, std::move(frame), corr_id);
+  trace_svdpi()->trace("sv publish_concurrent '{}' type={} seq={} corr={}", topic, tag,
+                       env->meta.topic_seq, corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
   return track_pub(detail_pub_access::make(
       b.start_concurrent(topic, std::move(env), std::move(trig), std::move(targets))));
@@ -139,6 +146,7 @@ int ext_sub(std::string pattern, int caps, std::string type_tag, int handle) {
                    {}, handle);
     return kFacadeOk;
   } catch (const std::exception& e) {
+    trace_svdpi()->debug("sv subscribe failed: {}", e.what());
     set_last_error(e.what());
     return kFacadeError;
   }
@@ -178,10 +186,12 @@ std::string pub_error(int pub_id) {
 void pub_wait(int pub_id, std::int64_t timeout_fs, int* status) {
   const std::shared_ptr<PubState> pub = pub_of(pub_id);
   if (!pub) {
+    trace_svdpi()->debug("sv wait: unknown pub_id {}", pub_id);
     set_last_error("shuttle: unknown pub_id " + std::to_string(pub_id));
     *status = code_of(WaitStatus::failed);
     return;
   }
+  trace_svdpi()->trace("sv wait: pub {} (timeout {} fs)", pub_id, timeout_fs);
   if (timeout_fs <= 0) {  // the protocol spells "no deadline" as 0
     pub->done_ev.wait();
   } else if (!wait_pub_timed(pub, weave::duration(timeout_fs))) {

@@ -56,8 +56,12 @@ class shuttle_publisher #(type T = byte);
     if (pid <= 0) begin
       if (loud)
         $error("shuttle: %s publish failed (topic=%s): %s", what, topic_, shuttle_c_last_error());
+      else  // publish_now: the reason is the only voice there is
+        trace_pub().debug($sformatf("%s publish failed (topic='%s'): %s", what, topic_,
+                                    shuttle_c_last_error()));
       return null;
     end
+    trace_pub().trace($sformatf("%s publish on '%s' accepted (pub %0d)", what, topic_, pid));
     begin
       shuttle_publication h = new(pid);
       return h;
@@ -130,6 +134,9 @@ class shuttle_publisher #(type T = byte);
   // retained (latched): once enabled, the broker caches the latest frame
   // and new subscribers receive it immediately
   function void set_retained(bit r);
+    string state = "cleared";
+    if (r) state = "enabled";
+    trace_pub().debug($sformatf("retained %s for topic '%s'", state, topic_));
     shuttle_c_set_retained(topic_, r);
   endfunction
 

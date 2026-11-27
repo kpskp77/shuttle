@@ -2,7 +2,7 @@
 // shuttle_pkg.sv — SV-side interface of the shuttle publish-subscribe framework
 //
 // This file is an AGGREGATOR: the package body is split into functional
-// fragments (`include`d below, one concern per file — dpi / constants /
+// fragments (`include`d below, one concern per file — trace / dpi / constants /
 // meta / subscription / mailbox / publication / publisher / requester / ref / dispatch /
 // codec), so each part can be read and reviewed on its own. Compile THIS file
 // only; the fragments are not standalone compilation units. The shuttle_reflect_begin
@@ -10,7 +10,8 @@
 // included after `endpackage` because `define has compilation-unit scope.
 //
 // Depends on: weave_pkg (../weave/sv/weave_pkg.sv, compiled by the simulation
-// scripts along with this file). The DPI protocol reference is
+// scripts along with this file) and simlog_pkg (../simlog/sv/simlog_pkg.sv,
+// same order — see sv/shuttle_trace.svh). The DPI protocol reference is
 // docs/backends.md; the direction convention matches weave:
 //   import (provided by C++): shuttle_c_*  — publish / subscribe registration /
 //                                            completion wait / frame pull
@@ -80,6 +81,7 @@ package shuttle_pkg;
   //       package must import weave_pkg themselves when they need it.
   import weave_pkg::*;
 
+  `include "shuttle_trace.svh"
   `include "shuttle_dpi.svh"
   `include "shuttle_constants.svh"
   `include "shuttle_meta.svh"

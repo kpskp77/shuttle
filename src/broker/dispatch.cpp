@@ -23,6 +23,7 @@
 #include <weave/time.hpp>
 
 #include "broker/broker.hpp"
+#include <shuttle/detail/trace.hpp>
 
 namespace shuttle::detail {
 
@@ -32,17 +33,29 @@ void Broker::record_failure(const std::shared_ptr<PubState>& pub,
                             const std::optional<Publication::Failure>& failure) {
   if (!failure) return;
   pub->failures.push_back(*failure);
-  if (pub->first_error.empty()) {
-    try {
-      if (failure->error) pub->first_error = failure_error_what(*failure);
-    } catch (...) {
-      pub->first_error = "<exception>";
-    }
+  std::string what = "<no exception information>";
+  try {
+    if (failure->error) what = failure_error_what(*failure);
+  } catch (...) {
+    what = "<exception>";
   }
+  if (pub->first_error.empty() && failure->error) pub->first_error = what;
+  // The central failure log: every delivery failure of every flavor passes
+  // through here exactly once.
+  trace_dispatch()->debug("pub {} on '{}': delivery to {} failed: {}", pub->id, pub->topic_view,
+                          failure->subscriber, what);
 }
 
 void Broker::pub_complete(const std::shared_ptr<PubState>& pub) {
   pub->done_flag = true;
+  // A zero-target frame completes before its topic entry exists (start_serial
+  // and start_concurrent short-circuit before topic_for), so topic_view may
+  // still be empty here.
+  const std::string_view topic =
+      pub->topic_view.empty() ? std::string_view("<unregistered topic>") : pub->topic_view;
+  trace_dispatch()->debug("pub {} on '{}': complete — {}/{} finished, {} retired, {} failure(s)",
+                          pub->id, topic, pub->finished, pub->target_count, pub->retired,
+                          pub->failures.size());
   // Completion hooks run first: the SV wait_done relies on them to wake
   // waiting processes; a hook failure does not affect delivery results.
   auto hooks = std::exchange(pub->on_complete, {});
@@ -71,11 +84,6 @@ void Broker::wait_trigger(const Trigger& trig) {
   if (!trig.immediate()) trig.wait();
 }
 
-std::string Broker::describe(const std::shared_ptr<Subscriber>& sub) {
-  if (sub->kind == SubKind::external) return "external handle " + std::to_string(sub->handle);
-  return "cpp sub " + std::to_string(sub->id);
-}
-
 namespace {
 
 // Tail of one ordered delivery chain, identified by (topic, key):
@@ -96,6 +104,7 @@ ChainLinkPtr chain_join(Topic& topic, int key, const ChainLinkPtr& mine) {
     // event is never reset, so sharing cannot lose a wake-up.
     ChainLinkPtr prev = std::move(topic.chain);
     topic.chain = mine;
+    trace_dispatch()->trace("chain join: topic '{}' serial tail handed off", topic.name_view);
     return prev;
   }
   // A per-subscriber tail is handed off by pointer: the waiting frame keeps its
@@ -109,6 +118,7 @@ ChainLinkPtr chain_join(Topic& topic, int key, const ChainLinkPtr& mine) {
     prev->ev.set();  // first frame of this chain: nothing to wait for
   }
   slot = mine;
+  trace_dispatch()->trace("chain join: topic '{}' sub #{} tail handed off", topic.name_view, key);
   return prev;
 }
 
@@ -164,6 +174,7 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
   pub->target_count = targets.size();
   if (targets.empty()) {
     // Zero targets complete immediately: no task, no chain-tail installed.
+    trace_dispatch()->debug("pub {} on '{}': serial delivery, no targets", pub->id, topic);
     pub_complete(pub);
     return pub;
   }
@@ -185,68 +196,73 @@ std::shared_ptr<PubState> Broker::start_serial(std::string_view topic,
     prev = chain_join(frame_topic, 0, mine);
     pub->blocked_by.push_back(prev);
   }
+  trace_dispatch()->debug("pub {} on '{}': serial delivery, {} target(s){}", pub->id, topic,
+                          targets.size(), queued ? "" : " (deferred trigger)");
   Topic* const topic_state = &frame_topic;
-  weave::create_task(
-      std::string("shuttle-serial-") + std::string(topic),
-      [this, pub, env, trig = std::move(trig), targets = std::move(targets), prev, mine,
-       topic_state]() mutable {
-        std::optional<Publication::Failure> failure;
-        Topic& t = *topic_state;
-        std::size_t idx = 0;
-        try {
-          // From here on this task is the one that will release `mine`, so it is
-          // the one a waiter has to be compared against (check_self_blocked).
-          mine->owner = current_task_id();
-          wait_trigger(trig);
-          if (!prev) {
-            // Deferred frame joining the chain now. chain_join reads the tail and
-            // installs ours in one step: no suspension point lies between them
-            // (single-active-process invariant), so no other frame can interleave.
-            prev = chain_join(t, 0, mine);
-            pub->blocked_by.push_back(prev);
-          }
-          prev->ev.wait();
-          for (; idx < targets.size(); ++idx) {
-            const auto& sub = targets[idx];
-            try {
-              if (deliver(sub, *env, t) == Delivery::delivered)
-                ++t.delivered;
-              else
-                ++pub->retired;
-            } catch (const weave::CancelledError&) {
-              throw;  // handled by the outer scope as a unit-level failure; also guarantees
-                      // `mine` is finally set
-            } catch (const std::exception&) {
-              count_failed(t, sub);
-              if (!failure) failure = failure_of(describe(sub), std::current_exception());
-            } catch (...) {
-              count_failed(t, sub);
-              if (!failure) failure = failure_of(describe(sub), unknown_exc());
-            }
-            target_finished(pub);
-          }
-        } catch (const weave::CancelledError&) {
-          failure = failure_of("<delivery>", cancelled_exc());
-        } catch (const std::exception&) {
-          failure = failure_of("<trigger>", std::current_exception());
-        } catch (...) {
-          failure = failure_of("<trigger>", unknown_exc());
-        }
-        // On trigger failure, cancellation, or unit-level failure, the
-        // untried targets must also reach a terminal (failed) state.
-        for (; idx < targets.size(); ++idx) {
-          ++t.failed;
-          ++targets[idx]->failed;
-          target_finished(pub);
-        }
-        // Release the next frame regardless of outcome, to prevent chain stall
-        // (harmless when a deferred frame never installed it). Clearing the owner
-        // first means a waiter released by this link never reads a stale id.
-        mine->owner = -1;
-        mine->ev.set();
-        record_failure(pub, failure);
-        if (pub->finished == pub->target_count && !pub->done_flag) pub_complete(pub);
-      });
+  weave::create_task(std::string("shuttle-serial-") + std::string(topic),
+                     [this, pub, env, trig = std::move(trig), targets = std::move(targets), prev,
+                      mine, topic_state]() mutable {
+                       std::optional<Publication::Failure> failure;
+                       Topic& t = *topic_state;
+                       std::size_t idx = 0;
+                       try {
+                         // From here on this task is the one that will release `mine`, so it is
+                         // the one a waiter has to be compared against (check_self_blocked).
+                         mine->owner = current_task_id();
+                         wait_trigger(trig);
+                         if (!prev) {
+                           // Deferred frame joining the chain now. chain_join reads the tail and
+                           // installs ours in one step: no suspension point lies between them
+                           // (single-active-process invariant), so no other frame can interleave.
+                           prev = chain_join(t, 0, mine);
+                           pub->blocked_by.push_back(prev);
+                         }
+                         prev->ev.wait();
+                         trace_dispatch()->trace(
+                             "pub {}: serial unit starts delivery ({} target(s))", pub->id,
+                             targets.size());
+                         for (; idx < targets.size(); ++idx) {
+                           const auto& sub = targets[idx];
+                           try {
+                             if (deliver(sub, *env, t) == Delivery::delivered)
+                               ++t.delivered;
+                             else
+                               ++pub->retired;
+                           } catch (const weave::CancelledError&) {
+                             throw;  // handled by the outer scope as a unit-level failure; also
+                                     // guarantees `mine` is finally set
+                           } catch (const std::exception&) {
+                             count_failed(t, sub);
+                             if (!failure)
+                               failure = failure_of(describe(sub), std::current_exception());
+                           } catch (...) {
+                             count_failed(t, sub);
+                             if (!failure) failure = failure_of(describe(sub), unknown_exc());
+                           }
+                           target_finished(pub);
+                         }
+                       } catch (const weave::CancelledError&) {
+                         failure = failure_of("<delivery>", cancelled_exc());
+                       } catch (const std::exception&) {
+                         failure = failure_of("<trigger>", std::current_exception());
+                       } catch (...) {
+                         failure = failure_of("<trigger>", unknown_exc());
+                       }
+                       // On trigger failure, cancellation, or unit-level failure, the
+                       // untried targets must also reach a terminal (failed) state.
+                       for (; idx < targets.size(); ++idx) {
+                         ++t.failed;
+                         ++targets[idx]->failed;
+                         target_finished(pub);
+                       }
+                       // Release the next frame regardless of outcome, to prevent chain stall
+                       // (harmless when a deferred frame never installed it). Clearing the owner
+                       // first means a waiter released by this link never reads a stale id.
+                       mine->owner = -1;
+                       mine->ev.set();
+                       record_failure(pub, failure);
+                       if (pub->finished == pub->target_count && !pub->done_flag) pub_complete(pub);
+                     });
   return pub;
 }
 
@@ -260,6 +276,7 @@ std::shared_ptr<PubState> Broker::start_concurrent(
   pub->id = next_pub_id++;
   pub->target_count = targets.size();
   if (targets.empty()) {
+    trace_dispatch()->debug("pub {} on '{}': concurrent delivery, no targets", pub->id, topic);
     pub_complete(pub);
     return pub;
   }
@@ -276,6 +293,8 @@ std::shared_ptr<PubState> Broker::start_concurrent(
   // wait_trigger returns (invariant 12 — reserving early would let an un-fired
   // trigger hold the tail and stall that subscriber's later frames).
   const bool queued = trig.immediate();
+  trace_dispatch()->debug("pub {} on '{}': concurrent delivery, {} target(s){}", pub->id, topic,
+                          targets.size(), queued ? "" : " (deferred trigger)");
   for (const auto& sub : targets) {
     const int key = sub->id;
     const auto mine = std::make_shared<ChainLink>();
@@ -302,6 +321,8 @@ std::shared_ptr<PubState> Broker::start_concurrent(
                              pub->blocked_by.push_back(prev);
                            }
                            if (prev) prev->ev.wait();
+                           trace_dispatch()->trace("pub {}: concurrent unit starts for sub #{}",
+                                                   pub->id, sub->id);
                            if (deliver(sub, *env, t) == Delivery::delivered)
                              ++t.delivered;
                            else
@@ -383,6 +404,9 @@ std::shared_ptr<PubState> dispatch_now(Broker& b, std::shared_ptr<const Envelope
   pub->target_count = nb_count + (defer ? blocking_count : 0);
   pub->deferred = defer ? blocking_count : 0;
   pub->skipped = defer ? 0 : blocking_count;
+  trace_dispatch()->debug("pub {} on '{}': publish_now — {} nonblocking, {} blocking ({}), corr={}",
+                          pub->id, topic, nb_count, blocking_count, defer ? "deferred" : "skipped",
+                          env->meta.corr_id);
 
   // A single callback failure does not interrupt the remaining targets; the
   // first exception is rethrown to the publisher only after the defer chain
@@ -444,7 +468,10 @@ bool wait_pub_timed(const std::shared_ptr<PubState>& pub, weave::duration timeou
   check_self_blocked(pub);
   // The frame may complete between the check above and the wait: wait_wake
   // re-reads the level, so that race costs one wake-up, never a wrong answer.
-  return wait_wake(pub->done_ev, deadline_after(timeout));
+  const bool done = wait_wake(pub->done_ev, deadline_after(timeout));
+  trace_dispatch()->trace("pub {} on '{}': timed wait {} ({} fs)", pub->id, pub->topic_view,
+                          done ? "completed" : "timed out", timeout.count());
+  return done;
 }
 
 }  // namespace shuttle::detail

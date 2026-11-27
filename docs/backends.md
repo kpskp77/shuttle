@@ -45,12 +45,86 @@ Running the svdpi backend against a real simulator goes through
 testbench through `SHUTTLE_SV_TB` and its own pass marker through `SHUTTLE_PASS_MARKER`
 (`SHUTTLE_SV_PKG` overrides the package for compatibility probing). The script locates
 vcs via `VCS_HOME`/`PATH`, compiles
-`weave_pkg.sv` + `shuttle_pkg.sv` + the testbench, runs simv with the payload
+`weave_pkg.sv` + `simlog_pkg.sv` + `shuttle_pkg.sv` + the testbench, runs simv with the payload
 library through `-sv_root`/`-sv_lib`, and judges pass by the output marker plus
 the absence of `Error-[`/`^Error` lines; without vcs on `PATH` it prints
 `[svdpi-test] skipped` and exits 0. simv is always launched through
 `xmake run`, because xmake's prepared runtime search path is what lets simv find
 `libshuttle.so` → `libweave.so` and their simlog/spdlog dependencies.
+
+### Trace instrumentation: one simlog logger per module
+
+Every diagnostic line the broker writes goes through the simlog library, never through `printf` /
+`std::cout` and never through a hand-rolled sink. Two reasons, both of them properties of the host
+process: the line has to carry the simulation-time stamp that the rest of the trace uses (so a
+broker line and a `weave.task` line can be ordered by eye), and under svdpi a DPI library's own
+`printf` does not reach `simv -l` — the simulator mirrors its own output stream, which is exactly
+the one simlog's svdpi sink writes to.
+
+Modularity follows weave's scheme (`src/core/trace.hpp` over there): a function-local static per
+module, every name under the `shuttle.` prefix so `SIMLOG_LEVEL` addresses the tree as a whole or
+narrows to one module. All eight accessors are declared in one place,
+`include/shuttle/detail/trace.hpp` — installed, because `Mailbox` and `Requester` live entirely in
+installed headers and the core must not keep a second copy of the name tree; `detail/` is not API.
+The SV package's accessors are in `sv/shuttle_trace.svh`, the same eight names:
+
+| Logger | Covers |
+| --- | --- |
+| `shuttle.broker` | type binding, single-target delivery, retained replay |
+| `shuttle.sub` | subscription lifecycle from both halves: registration, unsubscription, deliveries that arrive after unsubscribe |
+| `shuttle.dispatch` | publish scheduling: units, chain-tail handoffs, completion, recorded failures, timed waits |
+| `shuttle.pub` | the publish entry points and `Publication::wait`; SV: accepted frames, rejected `publish_now`, retained toggle |
+| `shuttle.trigger` | `after_any` races |
+| `shuttle.svdpi` | the external facade (`ext_*` / `pub_*`), i.e. the SV side of the same operations |
+| `shuttle.mailbox` | queue overflow, receive timeouts, close — both halves |
+| `shuttle.requester` | calls going out, reply demultiplexing, stale replies, cancelled calls, responders — both halves |
+
+A module is a module regardless of the language it is written in: simlog keeps one native logger per
+name, so `new ("shuttle.pub")` in `sv/shuttle_trace.svh` and `simlog::get("shuttle.pub")` in
+`src/publication.cpp` hand back the same logger, and an SV publisher's line interleaves with the C++
+entry point's in simulation order. A `SIMLOG_LEVEL` rule therefore narrows both halves at once. The
+SV accessors mirror the C++ ones — `trace_pub()`, `trace_sub()`, `trace_mailbox()`,
+`trace_requester()` — and `shuttle.sub` has writers on both sides: `Broker::register_sub` /
+`remove_sub` report a registration once, spelling the half in the handle (`sv sid 3` vs `cpp sub
+2`), and the retired deliveries are logged by whoever knows the terminal state (`Subscriber::removed`
+in C++, the registry's `retired_` set in SV).
+
+```bash
+SIMLOG_LEVEL='shuttle*=debug'              # lifecycle and failure diagnosis
+SIMLOG_LEVEL='shuttle.dispatch=trace'      # one module in full detail, everything else at info
+SIMLOG_LEVEL='shuttle.sub=trace'           # subscription lifecycle, both languages
+```
+
+One voice per event: a condition that must surface at any `SIMLOG_LEVEL` keeps its `$error` (a
+failed `wait_done`, a rejected `publish_serial`, an invalid `subscribe`) and gets no log line on top
+of it, and the silent paths log at `debug` — `publish_now` under the reject policy, a responder whose
+request topic already equals its response topic. The same rule binds the two halves together: an SV
+subscribe is reported by the broker's `register_sub` (which spells it `sv sid N`), so
+`shuttle_register` in `sv/shuttle_subscription.svh` adds no second line; likewise `unsubscribe()`
+stays quiet and `Broker::remove_sub` reports it. Test pass markers are not diagnostics and stay
+`$display`.
+
+Level convention is weave's: `debug` for the lifecycle and failure-diagnosis events you want when a
+run hangs or fails, `trace` for the hot bookkeeping paths (per-frame delivery, chain handoffs,
+retained replay, reply routing). The default level is `info`, so a build stays silent unless
+`SIMLOG_LEVEL` says otherwise; spdlog checks the level before formatting, so a disabled C++ line
+costs one level check and no allocation, and simlog is not a backend API, so
+`src/backend/backend.hpp` stays the only backend door.
+
+Where the lines surface is the backend's business, not the broker's: the svdpi build's sink prints
+through the simulator's output routine (`simv -l sim.log`), the systemc build's goes to stdout.
+
+The SV half carries one cost the C++ half does not: SystemVerilog has no variadic functions, so a
+line's text is built at the call site with `$sformatf` and is therefore formatted even when the
+level filters it out. The sites stay on the interesting paths and the formats stay short. Two
+consequences for a hand-written simulator command line:
+
+- `../simlog/sv/simlog_pkg.sv` must be compiled before `shuttle_pkg.sv` (the package imports
+  `simlog_pkg::simlog_logger`), exactly like `weave_pkg.sv` — `tests/run-eda.sh` lists all three.
+- Add `-timescale=1ps/1ps`. Neither `weave_pkg.sv` nor `simlog_pkg.sv` carries a `timescale`, and vcs
+  rejects a `timescale`-bearing module that follows a unit without one (`ITSFM`, "has `timescale but
+  previous module(s)/package(s) do not"). `-timescale` supplies the default for units that have
+  none and leaves the testbench's own directives alone.
 
 ## The svdpi backend
 

@@ -6,6 +6,7 @@
 
 #include "detail/trigger.hpp"
 
+#include <cstddef>
 #include <memory>
 #include <shuttle/trigger.hpp>
 #include <utility>
@@ -14,6 +15,8 @@
 #include <weave/sv.hpp>
 #include <weave/task.hpp>
 #include <weave/time.hpp>
+
+#include <shuttle/detail/trace.hpp>
 
 namespace shuttle {
 
@@ -72,6 +75,7 @@ Trigger after_any(std::vector<Trigger> trigs) {
                          // naturally idempotent)
   };
   auto st = std::make_shared<State>();
+  detail::trace_trigger()->debug("after_any: racing {} sub-trigger(s)", trigs.size());
   for (auto& tr : trigs) {
     weave::create_task("shuttle-trig-any", [st, tr]() mutable {
       try {
@@ -80,6 +84,7 @@ Trigger after_any(std::vector<Trigger> trigs) {
         // Racing semantics: cancellation/failure also counts as "this sub-trigger
         // has settled" and does not affect the other sub-triggers
       }
+      detail::trace_trigger()->trace("after_any: one sub-trigger settled, releasing the race");
       st->fired.set();
     });
   }

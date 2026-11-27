@@ -34,13 +34,15 @@ class shuttle_mailbox_sink implements shuttle_sink_nb;
   local shuttle_mailbox_item q[$];
   local int             capacity_;
   local int             overflow_;
+  local string          pattern_;  // diagnostics only: the pattern this queue subscribes to
   local bit             closed_;
   local longint         received_;
   local longint         overflowed_;
 
-  function new(int capacity, int overflow);
+  function new(int capacity, int overflow, string pattern);
     capacity_ = capacity;
     overflow_ = overflow;
+    pattern_  = pattern;
     closed_   = 0;
     ev_       = weave_sv_create_event();
   endfunction
@@ -54,10 +56,16 @@ class shuttle_mailbox_sink implements shuttle_sink_nb;
     if (capacity_ > 0 && q.size() >= capacity_) begin
       if (overflow_ == SHUTTLE_OVERFLOW_DROP_NEWEST) begin
         overflowed_++;
+        trace_mailbox().debug($sformatf(
+            "mailbox '%s': queue full (capacity %0d), dropping the newest frame (overflowed %0d)",
+            pattern_, capacity_, overflowed_));
         return;
       end
       q.pop_front();  // DROP_OLDEST (and the default)
       overflowed_++;
+      trace_mailbox().debug($sformatf(
+          "mailbox '%s': queue full (capacity %0d), dropping the oldest frame (overflowed %0d)",
+          pattern_, capacity_, overflowed_));
     end
     begin
       shuttle_mailbox_item it = new(payload, meta);
@@ -133,6 +141,7 @@ class shuttle_mailbox_sink implements shuttle_sink_nb;
 
   function void close();
     if (closed_) return;
+    trace_mailbox().debug($sformatf("mailbox '%s': closed (queue %0d)", pattern_, q.size()));
     closed_ = 1;
     weave_sv_trigger(ev_);
   endfunction
@@ -144,7 +153,7 @@ class shuttle_mailbox;
 
   function new(string pattern, string type_tag = "", int capacity = 0,
                int overflow = SHUTTLE_OVERFLOW_DROP_OLDEST);
-    sink_ = new(capacity, overflow);
+    sink_ = new(capacity, overflow, pattern);
     sub_  = shuttle_subscribe_nb(pattern, sink_, type_tag);
   endfunction
 

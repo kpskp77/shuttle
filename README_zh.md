@@ -203,9 +203,12 @@ target("my_test")
 包不覆盖两件事：
 
 - **SV 侧。** `sv/shuttle_pkg.sv` 随 shuttle 源码树发布，不在包里（包只装头文件和库）：
-  在 `weave_pkg.sv` 之后、测试平台之前编译，然后 `import shuttle_pkg::*;` 在其中构造
-  publisher/subscriber。SV 消息类必须与 C++ struct 镜像：同名字段、同顺序、同
-  `type_tag`，用 `{>>{...}}` 打包。
+  先编译 `weave_pkg.sv` 与 `simlog_pkg.sv`（两者都取自各自的源码树——包不安装 `sv/`），
+  再编译 `shuttle_pkg.sv`、再编译测试平台，然后 `import shuttle_pkg::*;` 在其中构造
+  publisher/subscriber。命令行另需 `-timescale=1ps/1ps`，理由与 `tests/run-eda.sh` 相同：
+  `weave_pkg` 与 `simlog_pkg` 都不带 `timescale`，而 vcs 不允许带 `timescale` 的模块排在
+  这样的单元之后。SV 消息类必须与 C++ struct 镜像：同名字段、同顺序、同 `type_tag`，用
+  `{>>{...}}` 打包。
 - **运行时库路径。** `libweave`/`libsimlog`（以及 `libspdlog`）是动态库，任何加载
   `libshuttle.so` 的东西——包括 `simv`——都要能找到它们：用 `xmake run` 启动（它把包
   目录放进搜索路径），或自行导出这些目录。不要把库拷到 simv 旁边。
@@ -239,7 +242,7 @@ src/                后端无关翻译单元（publication、subscription、intr
 src/broker/         broker 内部：model、路由/校验/绑定、dispatch 调度
 src/backend/        后端边界（backend.hpp，5 入口）+ 恰好一个后端目录
                     （svdpi：桥 + DPI 面 + facade；systemc：退化桥）
-sv/                 shuttle_pkg.sv——SV 侧包（在 weave_pkg.sv 之后编译）
+sv/                 shuttle_pkg.sv——SV 侧包（在 weave_pkg.sv + simlog_pkg.sv 之后编译）
 examples/           覆盖整个公开 API 的逐特性演示，含两种语言与预期输出（一个对象一个文件，
                     由 shuttle_demo.cpp/.sv 顺序调用）
 tests/              测试套件，两种语言都是每个套件一个对象文件，由 tests/shuttle_tests.cpp / .sv

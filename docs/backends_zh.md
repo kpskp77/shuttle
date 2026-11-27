@@ -33,11 +33,74 @@ SystemVerilog DPI 边界，回答"边界为什么长这样"与"到底什么穿�
 用真实仿真器跑 svdpi 后端走 `tests/run-eda.sh`——唯一的 VCS 运行器。两个 phony xmake 目标
 `shuttle_examples_svdpi_vcs` 与 `shuttle_tests_svdpi_vcs` 各自经 `SHUTTLE_SV_TB` 指定测试
 平台、经 `SHUTTLE_PASS_MARKER` 指定通过标记（`SHUTTLE_SV_PKG` 可换包，供兼容性探针
-用）。脚本经 `VCS_HOME`/`PATH` 定位 vcs，编译 `weave_pkg.sv` + `shuttle_pkg.sv` + 测试平
-台，通过 `-sv_root`/`-sv_lib` 带载荷库运行 simv，以输出标记加 `Error-[`/`^Error`
+用）。脚本经 `VCS_HOME`/`PATH` 定位 vcs，编译 `weave_pkg.sv` + `simlog_pkg.sv` + `shuttle_pkg.sv`
++ 测试平台，通过 `-sv_root`/`-sv_lib` 带载荷库运行 simv，以输出标记加 `Error-[`/`^Error`
 行的缺席判定通过；`PATH` 上没有 vcs 时打印 `[svdpi-test] skipped` 并以 0 退出。simv
 一律经 `xmake run` 启动，因为 xmake 准备好的运行时搜索路径让 simv 能找到
 `libshuttle.so` → `libweave.so` 以及它们的 simlog/spdlog 依赖。
+
+### 追踪打印：每个模块一个 simlog logger
+
+broker 写出的每一行诊断都走 simlog：不用 `printf`、不用 `std::cout`，也不自己搭 sink。理由都在宿主
+进程上：这行要带仿真时间戳，才能与 trace 其余部分（例如 `weave.task` 的行）对得上先后；svdpi
+下 DPI 库自己的 `printf` 进不了 `simv -l`，仿真器只镜像它自己的输出流，而 simlog 的 svdpi sink
+写的正是这一个流。
+
+模块划分采用 weave 的做法（那边的 `src/core/trace.hpp`）：每个模块一个函数内静态 logger，名字全部处于
+`shuttle.` 前缀下，于是 `SIMLOG_LEVEL` 既可整体点名整棵树，也可收窄到单个模块。八个访问器只在
+`include/shuttle/detail/trace.hpp` 里声明——它随包安装，因为 `Mailbox` / `Requester` 整个住在已安装的
+头文件里，而核心不该另存一份名字树；`detail/` 不算 API。SV 包的访问器在 `sv/shuttle_trace.svh`，
+同样八个名字：
+
+| logger | 覆盖范围 |
+| --- | --- |
+| `shuttle.broker` | 类型绑定、单目标投递、retained 重放 |
+| `shuttle.sub` | 两侧的订阅生命周期：注册、退订、退订之后才到的投递 |
+| `shuttle.dispatch` | 发布调度：投递单元、链尾交接、完成、记录的失败、带超时的等待 |
+| `shuttle.pub` | 发布入口与 `Publication::wait`；SV 的那部分：被接受的帧、被拒的 `publish_now`、retained 开关 |
+| `shuttle.trigger` | `after_any` 的赛跑 |
+| `shuttle.svdpi` | 外部门面（`ext_*` / `pub_*`），即同一批操作的 SV 侧 |
+| `shuttle.mailbox` | 队列溢出、收信超时、关闭——两侧同一个对象 |
+| `shuttle.requester` | 请求发出、按回复分派、过期回复、已取消的调用、响应方注册——两侧 |
+
+模块就是模块，与用什么语言写无关。simlog 每个名字只保留一个原生 logger，所以 `sv/shuttle_trace.svh`
+里的 `new ("shuttle.pub")` 与 `src/publication.cpp` 里的 `simlog::get("shuttle.pub")` 拿到的是同一个
+logger，SV 发布方的行与 C++ 入口的行按仿真顺序交错在一条流里；于是一条 `SIMLOG_LEVEL` 规则同时收窄
+两侧。SV 的访问器与 C++ 一一对应——`trace_pub()`、`trace_sub()`、`trace_mailbox()`、
+`trace_requester()`；`shuttle.sub` 两侧都有写者：`Broker::register_sub` / `remove_sub` 只报一次注册，
+并在句柄上写明哪一半（`sv sid 3` 对 `cpp sub 2`），退订后的投递由知道终态的那一侧打印（C++ 是
+`Subscriber::removed`，SV 是注册表的 `retired_` 集合）。
+
+```bash
+SIMLOG_LEVEL='shuttle*=debug'              # 生命周期与失败诊断
+SIMLOG_LEVEL='shuttle.dispatch=trace'      # 单个模块全量细节，其余停在 info
+SIMLOG_LEVEL='shuttle.sub=trace'           # 两侧的订阅生命周期
+```
+
+一个事件只发一份声音：必须在任何 `SIMLOG_LEVEL` 下都露头的失败保留原来的 `$error`（失败的
+`wait_done`、被拒的 `publish_serial`、非法的 `subscribe`），并在它之上不再叠一行日志；本来就安静的路径
+才写 `debug`——reject 策略下的 `publish_now`、请求主题与回复主题同名的响应方。同一条规则也约束两侧的
+分工：SV 的订阅由 broker 的 `register_sub` 报（它已经把句柄写成 `sv sid N`），所以
+`sv/shuttle_subscription.svh` 里的 `shuttle_register` 不再报第二行；`unsubscribe()` 同样安静，由
+`Broker::remove_sub` 报。测试通过标记不是诊断，仍用 `$display`。
+
+级别约定与 weave 一致：`debug` 给跑挂或失败时才需要看的生命周期与诊断事件，`trace` 给热路径上的
+记账（逐帧投递、链尾交接、retained 重放、回复分派）。默认级别是 `info`，不设 `SIMLOG_LEVEL` 时构建
+保持沉默；spdlog 先查级别再格式化，被关掉的 C++ 行只花一次级别检查，不分配内存。simlog 不是后端
+API，后端唯一的门仍是 `src/backend/backend.hpp`。
+
+这些行最终落在哪里由后端决定，不由 broker 决定：svdpi 构建的 sink 经仿真器自己的输出例程打印
+（`simv -l sim.log`），systemc 构建的打 stdout。
+
+SV 那一半比 C++ 多付一笔：SystemVerilog 没有变参函数，行的文本在调用点用 `$sformatf` 拼好，因此
+即使级别把这一行滤掉，格式化照样发生。所以这些点只放在值得看的路径上，格式也保持短。给手写仿真器
+命令行带来两条约束：
+
+- `../simlog/sv/simlog_pkg.sv` 必须排在 `shuttle_pkg.sv` 之前（包要 import
+  `simlog_pkg::simlog_logger`），与 `weave_pkg.sv` 同理——`tests/run-eda.sh` 三个都列了。
+- 命令行要带 `-timescale=1ps/1ps`。`weave_pkg.sv` 与 `simlog_pkg.sv` 都没有 `timescale`，vcs 不允许
+  带 `timescale` 的模块排在这样一个单元之后（`ITSFM`，"has `timescale but previous
+  module(s)/package(s) do not"）。`-timescale` 只给没有该指令的单元补默认值，测试平台自己的指令不动。
 
 ## svdpi 后端
 

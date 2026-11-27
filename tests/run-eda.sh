@@ -27,6 +27,7 @@ set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "$here/.." && pwd)
 weave_root=$(cd -- "$root/../weave" && pwd)
+simlog_root=$(cd -- "$root/../simlog" && pwd)
 expect_fatal=0
 expects=()
 while [[ $# -gt 0 ]]; do
@@ -89,9 +90,10 @@ mkdir -p -- "$work"
 
 echo "[svdpi-test] compiling $base (vcs: $vcs)"
 if ! (cd "$work" &&
-  timeout 900 "$vcs" -full64 -sverilog -LDFLAGS "-Wl,--export-dynamic" \
+  timeout 900 "$vcs" -full64 -sverilog -timescale=1ps/1ps -LDFLAGS "-Wl,--export-dynamic" \
     +incdir+"$root/sv" \
-    "$weave_root/sv/weave_pkg.sv" "$sv_pkg" "${sv_tbs[@]}" >compile.log 2>&1 </dev/null); then
+    "$simlog_root/sv/simlog_pkg.sv" "$weave_root/sv/weave_pkg.sv" "$sv_pkg" "${sv_tbs[@]}" \
+    >compile.log 2>&1 </dev/null); then
   echo "[svdpi-test] FAIL: vcs compile failed, see $work/compile.log" >&2
   tail -n 20 "$work/compile.log" >&2
   exit 2

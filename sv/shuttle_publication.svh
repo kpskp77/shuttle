@@ -32,7 +32,9 @@ class shuttle_publication;
       automatic string why = first_error();
       if (why == "") why = shuttle_c_last_error();
       $error("shuttle: wait on Publication %0d failed: %s", pub_id_, why);
-    end
+    end else
+      trace_pub().trace($sformatf("publication %0d done (%0d/%0d subscribers finished)",
+                                  pub_id_, finished(), subscriber_count()));
   endtask
   // ── Visibility counters (same names and semantics as C++ Publication) ──
   // Target subscriber count of this frame (snapshot at publish time, including the deferred part)

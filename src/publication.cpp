@@ -28,6 +28,7 @@
 #include <weave/time.hpp>
 
 #include "broker/broker.hpp"
+#include <shuttle/detail/trace.hpp>
 
 namespace shuttle::detail {
 
@@ -57,6 +58,8 @@ Publication pub_now(const std::string& topic, std::shared_ptr<const void> msg, c
   Broker& b = Broker::get();
   b.now_preflight(topic, ops->tag, policy);
   auto env = b.make_envelope(topic, std::move(msg), ops, corr_id);
+  trace_pub()->trace("publish_now '{}' type={} seq={} corr={}", topic, env->meta.type_tag,
+                     env->meta.topic_seq, corr_id);
   return detail_pub_access::make(dispatch_now(b, std::move(env), policy));
 }
 
@@ -64,6 +67,8 @@ Publication pub_serial(const std::string& topic, std::shared_ptr<const void> msg
                        const TypeOps* ops, Trigger trig, std::uint32_t corr_id) {
   Broker& b = Broker::get();
   auto env = b.make_envelope(topic, std::move(msg), ops, corr_id);
+  trace_pub()->trace("publish_serial '{}' type={} seq={} corr={}", topic, env->meta.type_tag,
+                     env->meta.topic_seq, corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(
       b.start_serial(topic, std::move(env), std::move(trig), std::move(targets)));
@@ -73,6 +78,8 @@ Publication pub_concurrent(const std::string& topic, std::shared_ptr<const void>
                            const TypeOps* ops, Trigger trig, std::uint32_t corr_id) {
   Broker& b = Broker::get();
   auto env = b.make_envelope(topic, std::move(msg), ops, corr_id);
+  trace_pub()->trace("publish_concurrent '{}' type={} seq={} corr={}", topic, env->meta.type_tag,
+                     env->meta.topic_seq, corr_id);
   auto targets = b.match_subs(topic, env->meta.type_tag);
   return detail_pub_access::make(
       b.start_concurrent(topic, std::move(env), std::move(trig), std::move(targets)));
@@ -83,6 +90,7 @@ void topic_set_retained(const std::string& topic, bool on) {
   Topic& t = Broker::get().topic_for(topic);
   t.retained_on = on;
   if (!on) t.retained_env.reset();
+  trace_pub()->debug("retained {} for topic '{}'", on ? "enabled" : "cleared", topic);
 }
 
 bool topic_retained(const std::string& topic) {
@@ -104,6 +112,8 @@ void Publication::wait() {
   // A frame queued behind a chain held by the waiting task can never start;
   // waiting would hang instead of failing (see detail::check_self_blocked).
   detail::check_self_blocked(impl_->pub);
+  detail::trace_pub()->trace("pub {} on '{}': waiting for completion", impl_->pub->id,
+                             impl_->pub->topic_view);
   impl_->pub->done_ev.wait();
 }
 

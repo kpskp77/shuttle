@@ -59,6 +59,7 @@
 #include <memory>
 #include <optional>
 #include <shuttle/detail/abi.hpp>
+#include <shuttle/detail/trace.hpp>
 #include <shuttle/detail/wait.hpp>
 #include <shuttle/exception.hpp>
 #include <shuttle/meta.hpp>
@@ -126,18 +127,26 @@ struct ResponseTable {
     auto it = inflight.find(corr_id);
     if (it == inflight.end()) {
       ++stale;  // response for a call that was cancelled or already dropped
+      trace_requester()->trace("reply corr={} has no live call, discarding (stale {})", corr_id,
+                               stale);
       return;
     }
     auto call = it->second.lock();
     if (!call) {
       ++stale;
       inflight.erase(it);
+      trace_requester()->trace("reply corr={} belongs to a dropped call, discarding (stale {})",
+                               corr_id, stale);
       return;
     }
     if (call->cancelled) {
       ++stale;
+      trace_requester()->trace("reply corr={} belongs to a cancelled call, discarding (stale {})",
+                               corr_id, stale);
       return;
     }
+    trace_requester()->trace("reply corr={} routed to its call (queued {})", corr_id,
+                             call->items.size() + 1);
     call->items.push_back(resp);
     call->wake.set();
   }
@@ -197,7 +206,11 @@ public:
   // slot stays alive, so a later reply is still accepted).
   std::optional<TResp> recv(weave::duration timeout) {
     if (!state_) return std::nullopt;
-    if (!detail::wait_call(state_, detail::deadline_after(timeout))) return std::nullopt;
+    if (!detail::wait_call(state_, detail::deadline_after(timeout))) {
+      detail::trace_requester()->trace("call corr={} received no reply before the deadline",
+                                       corr_id_);
+      return std::nullopt;
+    }
     return take();
   }
 
@@ -212,6 +225,10 @@ public:
       if (!detail::wait_call(state_, deadline)) break;
       out.push_back(take());
     }
+    if (out.size() < n)
+      detail::trace_requester()->debug(
+          "call corr={} got {} of {} expected replies{} (cancelled={})", corr_id_, out.size(), n,
+          state_->cancelled ? "" : " before the deadline", state_->cancelled ? 1 : 0);
     return out;
   }
 
@@ -226,6 +243,8 @@ public:
   // a blocked recv() returns nullopt.
   void cancel() {
     if (!state_ || state_->cancelled) return;
+    detail::trace_requester()->debug("call corr={} cancelled ({} unread replies discarded)",
+                                     corr_id_, state_->items.size());
     state_->cancelled = true;
     state_->items.clear();
     state_->wake.set();
@@ -362,6 +381,8 @@ private:
 
     auto call = std::make_shared<detail::CallState<TResp>>();
     table_->inflight[corr_id] = call;  // before publishing: a response may arrive inline
+    detail::trace_requester()->trace("request corr={} on '{}' -> '{}'", corr_id, req_topic_,
+                                     resp_topic_);
     Publication pub = publish(st, std::move(req), corr_id);
     auto table = table_;
     return detail::CallAccess::make<TResp>(
@@ -418,16 +439,24 @@ template <typename TReq, typename TResp, typename F>
 Subscription serve(std::string req_pattern, std::string resp_topic, F&& handler,
                    SubOptions opts = {}) {
   detail::check_topics(req_pattern, resp_topic);
+  const std::string resp_name = resp_topic;  // diagnostics after the move
   auto body = detail::serve_body<TReq, TResp>(std::move(resp_topic), std::forward<F>(handler));
-  return subscribe<TReq>(std::move(req_pattern), std::move(body), std::move(opts));
+  auto sub = subscribe<TReq>(std::move(req_pattern), std::move(body), std::move(opts));
+  detail::trace_requester()->debug("responder registered on '{}' -> '{}' (blocking entry)",
+                                   sub.topic(), resp_name);
+  return sub;
 }
 
 template <typename TReq, typename TResp, typename F>
 Subscription serve(std::string req_pattern, std::string resp_topic, NonBlocking<F> handler,
                    SubOptions opts = {}) {
   detail::check_topics(req_pattern, resp_topic);
+  const std::string resp_name = resp_topic;  // diagnostics after the move
   auto body = detail::serve_body<TReq, TResp>(std::move(resp_topic), std::move(handler.fn));
-  return subscribe<TReq>(std::move(req_pattern), nb(std::move(body)), std::move(opts));
+  auto sub = subscribe<TReq>(std::move(req_pattern), nb(std::move(body)), std::move(opts));
+  detail::trace_requester()->debug("responder registered on '{}' -> '{}' (nonblocking entry)",
+                                   sub.topic(), resp_name);
+  return sub;
 }
 
 }  // namespace shuttle

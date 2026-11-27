@@ -141,10 +141,13 @@ class shuttle_serve #(type TReq, type TResp);
     svc.error_ = "";
     if (req_pattern.len() == 0 || resp_topic.len() == 0) begin
       svc.error_ = "shuttle: serve needs two non-empty topic names";
+      trace_requester().debug(svc.error_);
       return svc;
     end
     if (req_pattern == resp_topic) begin
       svc.error_ = "shuttle: request and response topics must differ";
+      trace_requester().debug($sformatf("serve rejected: request and response topic are both '%s'",
+                                        req_pattern));
       return svc;
     end
     // A response topic is an ordinary topic to the broker: replies go out with
@@ -155,7 +158,14 @@ class shuttle_serve #(type TReq, type TResp);
       svc.sub_ = shuttle_subscribe(req_pattern, sink, TReq::type_tag);
     else
       svc.sub_ = shuttle_subscribe_nb(req_pattern, sink, TReq::type_tag);
-    if (svc.sub_ == null) svc.error_ = shuttle_c_last_error();
+    if (svc.sub_ == null) begin
+      svc.error_ = shuttle_c_last_error();
+      trace_requester().debug($sformatf("serve failed (request pattern '%s'): %s", req_pattern,
+                                        svc.error_));
+    end else
+      trace_requester().debug($sformatf("responder registered on '%s' -> '%s' (%s entry)",
+                                        req_pattern, resp_topic,
+                                        shuttle_entry_name(blocking_entry)));
     return svc;
   endfunction
 endclass
@@ -276,6 +286,8 @@ class shuttle_call #(type TResp);
   // finished explicitly, not by luck.
   function void cancel();
     if (cancelled_) return;
+    trace_requester().debug($sformatf("call corr=%0d cancelled (%0d unread replies discarded)",
+                                      corr_id_, items.size()));
     cancelled_ = 1;
     items.delete();
     weave_sv_trigger(ev_);
@@ -305,16 +317,21 @@ class shuttle_requester #(type TReq, type TResp) extends shuttle_reply_target;
     error_      = "";
     if (req_topic.len() == 0 || resp_topic.len() == 0) begin
       error_ = "shuttle: request/response needs two non-empty topic names";
+      trace_requester().debug(error_);
       return;
     end
     if (req_topic == resp_topic) begin
       error_ = "shuttle: request and response topics must differ";
+      trace_requester().debug($sformatf("requester rejected: request and response topic are both '%s'",
+                                        req_topic));
       return;
     end
     sink_ = new (this);
     sub_  = shuttle_subscribe_nb(resp_topic_, sink_, TResp::type_tag);
     if (sub_ == null) begin
       error_ = shuttle_c_last_error();
+      trace_requester().debug($sformatf("requester failed (response topic '%s'): %s", resp_topic_,
+                                        error_));
       return;
     end
     pub_ = new (req_topic_);
@@ -352,11 +369,15 @@ class shuttle_requester #(type TReq, type TResp) extends shuttle_reply_target;
     shuttle_call #(TResp) call;
     if (!calls_.exists(corr_id)) begin
       stale_++;
+      trace_requester().trace($sformatf("reply corr=%0d has no live call, discarding (stale %0d)",
+                                        corr_id, stale_));
       return;
     end
     call = calls_[corr_id];
     if (call.cancelled()) begin
       stale_++;
+      trace_requester().trace($sformatf("reply corr=%0d belongs to a cancelled call, discarding (stale %0d)",
+                                        corr_id, stale_));
       return;
     end
     call.push(payload);
@@ -384,12 +405,15 @@ class shuttle_requester #(type TReq, type TResp) extends shuttle_reply_target;
     corr_id = 0;
     if (!valid()) begin
       error_ = "shuttle: empty requester handle";
+      trace_requester().debug(error_);
       return null;
     end
     prune();
     corr_id         = int'(shuttle_c_take_corr_id());
     call            = new (corr_id);
     calls_[corr_id] = call;
+    trace_requester().trace($sformatf("request corr=%0d on '%s' -> '%s'", corr_id, req_topic_,
+                                      resp_topic_));
     return call;
   endfunction
 
@@ -400,11 +424,14 @@ class shuttle_requester #(type TReq, type TResp) extends shuttle_reply_target;
     shuttle_publication h;
     if (pid <= 0) begin
       error_ = shuttle_c_last_error();
+      trace_requester().debug($sformatf("request corr=%0d was not published: %s", call.corr_id(),
+                                        error_));
       calls_.delete(call.corr_id());
       return null;
     end
     h = new (pid);
     call.attach(h);
+    trace_requester().trace($sformatf("call corr=%0d accepted (pub %0d)", call.corr_id(), pid));
     return call;
   endfunction
 

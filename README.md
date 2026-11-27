@@ -214,10 +214,13 @@ Requirements: xmake >= 2.8, a C++17 compiler, and the matching simulator for the
 Two things the package does not cover:
 
 - **The SystemVerilog side.** `sv/shuttle_pkg.sv` ships with the shuttle source tree, not with the
-  package (which installs headers and the library only): compile it after `weave_pkg.sv` and before
-  your testbench, `import shuttle_pkg::*;`, and construct publishers/subscribers there. The SV
-  message class must mirror the C++ struct: same fields, same order, same `type_tag`, packed with
-  `{>>{...}}`.
+  package (which installs headers and the library only): compile `weave_pkg.sv` and
+  `simlog_pkg.sv` first (both from their source trees — the packages do not install `sv/`), then
+  `shuttle_pkg.sv`, then your testbench, `import shuttle_pkg::*;`, and construct
+  publishers/subscribers there. Add `-timescale=1ps/1ps` for the same reason `tests/run-eda.sh`
+  does (neither `weave_pkg` nor `simlog_pkg` carries a `timescale`, and vcs rejects a
+  `timescale`-bearing module that follows one). The SV message class must mirror the C++ struct:
+  same fields, same order, same `type_tag`, packed with `{>>{...}}`.
 - **The runtime library path.** `libweave`/`libsimlog` (and `libspdlog`) are shared, so anything
   loading `libshuttle.so` — `simv` included — must find them: start it through `xmake run`, which
   puts the package directories on the search path, or export those directories yourself. Do not
@@ -253,7 +256,7 @@ src/                Backend-agnostic translation units (publication, subscriptio
 src/broker/         Broker internals: model, routing/validation/binding, dispatch scheduling
 src/backend/        Backend boundary (backend.hpp, 5 entries) + exactly one backend directory
                     (svdpi: bridge + DPI surface + facade; systemc: degenerate bridge)
-sv/                 shuttle_pkg.sv — the SV-side package (compile after weave_pkg.sv)
+sv/                 shuttle_pkg.sv — the SV-side package (compile after weave_pkg.sv + simlog_pkg.sv)
 examples/           Per-feature demos of the whole public API, both languages + expected output
                     (one subject file per demo, called in order by shuttle_demo.cpp/.sv)
 tests/              Test suites, one subject file per suite in each language, called in order by

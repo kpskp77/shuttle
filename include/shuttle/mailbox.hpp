@@ -56,6 +56,7 @@
 #include <deque>
 #include <optional>
 #include <shuttle/detail/abi.hpp>
+#include <shuttle/detail/trace.hpp>
 #include <shuttle/detail/wait.hpp>
 #include <shuttle/exception.hpp>
 #include <shuttle/meta.hpp>
@@ -88,13 +89,14 @@ struct MailboxAccess;  // named construction channel, defined below
 // Queue + wake event shared by all copies of one mailbox handle.
 template <typename T>
 struct MailboxState {
-  explicit MailboxState(const SubOptions& opts)
-      : capacity(opts.max_pending), overflow(opts.overflow) {}
+  MailboxState(const SubOptions& opts, std::string mailbox_pattern)
+      : capacity(opts.max_pending), overflow(opts.overflow), pattern(std::move(mailbox_pattern)) {}
 
   std::deque<MailboxItem<T>> items;
   weave::Event not_empty;    // level-triggered: "the queue is non-empty"
   std::size_t capacity = 0;  // 0 = unbounded
   OverflowPolicy overflow = OverflowPolicy::drop_oldest;
+  std::string pattern;  // diagnostics only: the pattern this queue subscribes to
   bool closed = false;
   std::uint64_t received = 0;
   std::uint64_t overflowed = 0;
@@ -116,13 +118,21 @@ void mailbox_push(MailboxState<T>& st, T value, const Meta& meta) {
   if (st.capacity != 0 && st.items.size() >= st.capacity) {
     switch (st.overflow) {
       case OverflowPolicy::drop_oldest:
+        trace_mailbox()->debug(
+            "mailbox '{}': queue full (capacity {}), dropping the oldest frame (overflowed {})",
+            st.pattern, st.capacity, st.overflowed + 1);
         st.items.pop_front();
         ++st.overflowed;
         break;
       case OverflowPolicy::drop_newest:
         ++st.overflowed;
+        trace_mailbox()->debug(
+            "mailbox '{}': queue full (capacity {}), dropping the newest frame (overflowed {})",
+            st.pattern, st.capacity, st.overflowed);
         return;
       case OverflowPolicy::reject:
+        trace_mailbox()->debug("mailbox '{}': queue full (capacity {}), rejecting the frame",
+                               st.pattern, st.capacity);
         throw MailboxOverflowError("shuttle: mailbox overflowed (capacity " +
                                    std::to_string(st.capacity) + ")");
       case OverflowPolicy::block:
@@ -165,7 +175,11 @@ std::optional<MailboxItem<T>> mailbox_recv(const std::shared_ptr<MailboxState<T>
       throw MailboxClosed("shuttle: receiving from a closed mailbox (queue drained)");
     // The queue is checked before the clock: a frame that is already there is
     // taken even if the deadline has passed (no frame is lost to a timeout).
-    if (!wait_wake(st_holder->not_empty, deadline)) return std::nullopt;
+    if (!wait_wake(st_holder->not_empty, deadline)) {
+      trace_mailbox()->trace("mailbox '{}': receive timed out (queue {})", st_holder->pattern,
+                             st_holder->items.size());
+      return std::nullopt;
+    }
   }
   return mailbox_pop(*st_holder);
 }
@@ -211,6 +225,8 @@ public:
   // Idempotent: unsubscribe and wake every waiter. Queued frames stay readable.
   void close() {
     if (!state_) return;
+    detail::trace_mailbox()->debug("mailbox '{}': closed (queue {})", state_->pattern,
+                                   state_->items.size());
     sub_.unsubscribe();
     state_->closed = true;
     state_->not_empty.set();
@@ -252,7 +268,7 @@ Mailbox<T> mailbox(std::string pattern, SubOptions opts = {}) {
                 "shuttle: mailbox<T> requires a copy-constructible T; use mailbox_bytes for "
                 "non-copyable payloads");
   detail::check_mailbox_options(opts);
-  auto state = std::make_shared<detail::MailboxState<T>>(opts);
+  auto state = std::make_shared<detail::MailboxState<T>>(opts, pattern);
   auto sub = detail::sub_typed(
       std::move(pattern), detail::type_ops<T>(),
       [state](const void* payload, const Meta& meta) {
@@ -269,7 +285,7 @@ Mailbox<T> mailbox(std::string pattern, SubOptions opts = {}) {
 // published from SV whose type has no C++ counterpart).
 inline Mailbox<std::vector<std::byte>> mailbox_bytes(std::string pattern, SubOptions opts = {}) {
   detail::check_mailbox_options(opts);
-  auto state = std::make_shared<detail::MailboxState<std::vector<std::byte>>>(opts);
+  auto state = std::make_shared<detail::MailboxState<std::vector<std::byte>>>(opts, pattern);
   auto sub = detail::sub_raw(
       std::move(pattern),
       [state](const std::vector<std::byte>& bytes, const Meta& meta) {

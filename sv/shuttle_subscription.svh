@@ -55,6 +55,8 @@ class shuttle_registry;
       // side (no $error), but C++ must be told, otherwise it would record
       // this delivery as delivered (a phantom success).
       if (retired_.exists(id)) begin
+        trace_sub().trace($sformatf("sid %0d retired: delivery arrived after unsubscribe",
+                                    id));
         shuttle_c_sub_retired(id);
         return;
       end
@@ -68,6 +70,8 @@ class shuttle_registry;
   static function automatic void dispatch_nb(int id, byte payload[], shuttle_meta meta);
     if (!sinks_nb_.exists(id)) begin
       if (retired_.exists(id)) begin
+        trace_sub().trace($sformatf("sid %0d retired: nonblocking delivery arrived after unsubscribe",
+                                    id));
         shuttle_c_sub_retired(id);
         return;
       end
@@ -94,6 +98,8 @@ class shuttle_subscription;
   function void unsubscribe();
     if (!active_) return;
     active_ = 0;
+    // No line of its own: the broker's remove_sub reports this event (shuttle.sub,
+    // "subscriber removed: sv sid N ..."), and one event keeps one voice.
     shuttle_c_unsubscribe(id_);
     shuttle_registry::remove(id_);
   endfunction
@@ -129,6 +135,9 @@ function automatic shuttle_subscription shuttle_register(string topic, shuttle_s
     $error("shuttle: subscribe failed (topic=%s): %s", topic, shuttle_c_last_error());
     return null;
   end
+  // The broker's register_sub reports this registration (shuttle.sub, "subscriber
+  // registered: sv sid N pattern=... kind=cap=filter="), so the registry adds no
+  // second line for the same event.
   sub = new(sid);
   return sub;
 endfunction

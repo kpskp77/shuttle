@@ -13,6 +13,7 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <shuttle/detail/trace.hpp>
 #include <shuttle/exception.hpp>
 #include <stdexcept>
 #include <string>
@@ -196,6 +197,8 @@ Delivery Broker::deliver(const std::shared_ptr<Subscriber>& sub, const Envelope&
   if (sub->removed) {
     ++sub->retired;
     ++topic.retired;
+    trace_sub()->trace("deliver: {} retired (unsubscribed in flight), topic '{}' seq={}",
+                       describe(sub), env.meta.topic_name, env.meta.topic_seq);
     return Delivery::retired;
   }
   switch (sub->kind) {
@@ -224,6 +227,8 @@ Delivery Broker::deliver(const std::shared_ptr<Subscriber>& sub, const Envelope&
       if (backend::take_retired_delivery()) {
         ++sub->retired;
         ++topic.retired;
+        trace_sub()->trace("deliver: {} retired by the SV registry, topic '{}' seq={}",
+                           describe(sub), env.meta.topic_name, env.meta.topic_seq);
         return Delivery::retired;
       }
       break;
@@ -262,7 +267,26 @@ void Broker::count_failed(Topic& topic, const std::shared_ptr<Subscriber>& sub) 
 
 // ── Frame construction and type binding ──────────────────────────────────
 
+// One spelling for every diagnostic that names a subscriber, pinned by
+// AGENTS.md: "cpp sub N" / "sv sid N".
+std::string Broker::describe(const std::shared_ptr<Subscriber>& sub) {
+  if (sub->kind == SubKind::external) return "sv sid " + std::to_string(sub->handle);
+  return "cpp sub " + std::to_string(sub->id);
+}
+
 namespace {
+
+const char* kind_name(SubKind kind) {
+  switch (kind) {
+    case SubKind::typed:
+      return "typed";
+    case SubKind::bytes:
+      return "bytes";
+    case SubKind::external:
+      return "external";
+  }
+  return "?";
+}
 
 // Complete an already-bound frame: environment, seq, backend time, retained
 // snapshot. Shared by the typed and the raw-byte entry points so the frame
@@ -296,6 +320,7 @@ std::shared_ptr<const Envelope> Broker::make_envelope(std::string_view topic,
   if (!t.binding) {
     check_bind_compat(topic, ops->tag);
     t.binding = Binding{ops->tag, ops};
+    trace_broker()->debug("topic '{}' bound to type {}", topic, ops->tag);
   } else if (t.binding->tag != ops->tag) {
     throw TypeMismatchError(std::string("shuttle: topic ") + std::string(topic) +
                             " is already bound to type " + t.binding->tag +
@@ -324,6 +349,9 @@ std::shared_ptr<const Envelope> Broker::make_envelope_bytes(std::string_view top
       t.binding->ops = sub->ops;
       break;
     }
+    trace_broker()->debug("topic '{}' bound to type {}{}", topic, tag,
+                          t.binding->ops == &raw_ops ? " (raw byte stream)"
+                                                     : " (materialized from a subscriber type)");
   } else if (t.binding->tag != tag) {
     throw TypeMismatchError(std::string("shuttle: topic ") + std::string(topic) +
                             " is already bound to type " + t.binding->tag +
@@ -347,6 +375,8 @@ void Broker::retained_catchup(const std::shared_ptr<Subscriber>& sub) {
   for (auto& [name, t] : topics) {
     if (!t.retained_on || !t.retained_env || !match(sub->pattern, name)) continue;
     if (!type_matches(*sub, t.retained_env->meta.type_tag)) continue;
+    trace_broker()->trace("retained replay: {} <- topic '{}' seq={}", describe(sub), name,
+                          t.retained_env->meta.topic_seq);
     if (sub->kind == SubKind::external && sub->cap == Capability::blocking) {
       // The SV blocking entry is invoked via an export task and must not be
       // replayed from within a possibly-function context.
@@ -379,6 +409,10 @@ std::shared_ptr<Subscriber> Broker::register_sub(std::string pattern, SubKind ki
   sub->handle = handle;
   check_filter_early(*sub);
   subs.push_back(sub);
+  trace_sub()->debug("subscriber registered: {} pattern=\"{}\" kind={} cap={} filter=\"{}\"",
+                     describe(sub), sub->pattern, kind_name(sub->kind),
+                     sub->cap == Capability::nonblocking ? "nonblocking" : "blocking",
+                     sub->filter_tag);
   retained_catchup(sub);
   return sub;
 }
@@ -387,6 +421,8 @@ void Broker::remove_sub(const std::shared_ptr<Subscriber>& sub) {
   // Flag first, then unlink: deliveries already snapshotted see `removed`
   // and are recorded as retired instead of entering the callback.
   sub->removed = true;
+  trace_sub()->debug("subscriber removed: {} pattern=\"{}\" (received={} dropped={})",
+                     describe(sub), sub->pattern, sub->received, sub->dropped());
   subs.erase(std::remove(subs.begin(), subs.end(), sub), subs.end());
   // Drop this subscriber's concurrent chain tails. Subscriber ids are never
   // reused, so this is not about correctness — it keeps the tail events of a

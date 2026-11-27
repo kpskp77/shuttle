@@ -70,6 +70,20 @@ no locks, no atomics, no threads anywhere in the broker.
   rides the ordinary codec surface (`shuttle_ref_codec #(T)` behind a typedef, used with
   `` `shuttle_field ``): no `shuttle_ref_requester` / `shuttle_ref_serve` / `shuttle_ref_mailbox`
   exists, and none is added.
+- Diagnostics go through simlog module loggers, all eight declared in
+  `include/shuttle/detail/trace.hpp` (`shuttle.broker`, `shuttle.sub`, `shuttle.dispatch`,
+  `shuttle.pub`, `shuttle.trigger`, `shuttle.svdpi`, `shuttle.mailbox`, `shuttle.requester`);
+  `sv/shuttle_trace.svh` mirrors them with the same names (`trace_pub()`, `trace_sub()`,
+  `trace_mailbox()`, `trace_requester()`), so one `SIMLOG_LEVEL` rule addresses both halves — no
+  separate `shuttle.sv.*` subtree, no second definition site. No `printf` /
+  `std::cout` / `std::cerr` / `$display` for diagnostics, no
+  second sink; `$error` stays for failures that must surface at any `SIMLOG_LEVEL`, and test pass
+  markers keep their own `$display`. An SV registration is reported once, by the broker's
+  `register_sub` (`shuttle.sub`, handle spelled `sv sid N`); `shuttle_register` / `unsubscribe()` in
+  `sv/shuttle_subscription.svh` add no line of their own. `debug` for lifecycle and failure
+  diagnosis, `trace` for hot-path bookkeeping; C++ arguments stay cheap (ids, views), never a
+  pre-built string. In SV the text is `$sformatf`-built at the call site, so a line only goes where
+  it is worth formatting.
 - Exception classes have out-of-line definitions (a key function) — header-only exceptions break
   cross-DSO `catch` in simv with `undefined symbol`.
 - SV packing is `{>>{...}}` (declaration order, MSB-first per field), matching the C++ `Writer`
