@@ -58,7 +58,7 @@ broker 写出的每一行诊断都走 simlog：不用 `printf`、不用 `std::co
 | `shuttle.sub` | 两侧的订阅生命周期：注册、退订、退订之后才到的投递 |
 | `shuttle.dispatch` | 发布调度：投递单元、链尾交接、完成、记录的失败、带超时的等待 |
 | `shuttle.pub` | 发布入口与 `Publication::wait`；SV 的那部分：被接受的帧、被拒的 `publish_now`、retained 开关 |
-| `shuttle.trigger` | `after_any` 的赛跑 |
+| `shuttle.trigger` | `after_any` 的赛跑；SV 的那部分：拿死边造出来的触发 |
 | `shuttle.svdpi` | 外部门面（`ext_*` / `pub_*`），即同一批操作的 SV 侧 |
 | `shuttle.mailbox` | 队列溢出、收信超时、关闭——两侧同一个对象 |
 | `shuttle.requester` | 请求发出、按回复分派、过期回复、已取消的调用、响应方注册——两侧 |
@@ -66,8 +66,10 @@ broker 写出的每一行诊断都走 simlog：不用 `printf`、不用 `std::co
 模块就是模块，与用什么语言写无关。simlog 每个名字只保留一个原生 logger，所以 `sv/shuttle_trace.svh`
 里的 `new ("shuttle.pub")` 与 `src/publication.cpp` 里的 `simlog::get("shuttle.pub")` 拿到的是同一个
 logger，SV 发布方的行与 C++ 入口的行按仿真顺序交错在一条流里；于是一条 `SIMLOG_LEVEL` 规则同时收窄
-两侧。SV 的访问器与 C++ 一一对应——`trace_pub()`、`trace_sub()`、`trace_mailbox()`、
-`trace_requester()`；`shuttle.sub` 两侧都有写者：`Broker::register_sub` / `remove_sub` 只报一次注册，
+两侧。SV 的访问器在 `sv/shuttle_trace.svh`，覆盖 SV 里存在的模块——`trace_pub()`、`trace_sub()`、
+`trace_trigger()`、`trace_mailbox()`、`trace_requester()`；`shuttle.broker`、`shuttle.dispatch`、
+`shuttle.svdpi` 只在 C++ 侧，没有任何名字定义两遍。名称与 C++ 一一对应；`shuttle.sub` 两侧都有写者：
+`Broker::register_sub` / `remove_sub` 只报一次注册，
 并在句柄上写明哪一半（`sv sid 3` 对 `cpp sub 2`），退订后的投递由知道终态的那一侧打印（C++ 是
 `Subscriber::removed`，SV 是注册表的 `retired_` 集合）。
 
@@ -77,16 +79,20 @@ SIMLOG_LEVEL='shuttle.dispatch=trace'      # 单个模块全量细节，其余�
 SIMLOG_LEVEL='shuttle.sub=trace'           # 两侧的订阅生命周期
 ```
 
-一个事件只发一份声音：必须在任何 `SIMLOG_LEVEL` 下都露头的失败保留原来的 `$error`（失败的
-`wait_done`、被拒的 `publish_serial`、非法的 `subscribe`），并在它之上不再叠一行日志；本来就安静的路径
-才写 `debug`——reject 策略下的 `publish_now`、请求主题与回复主题同名的响应方。同一条规则也约束两侧的
-分工：SV 的订阅由 broker 的 `register_sub` 报（它已经把句柄写成 `sv sid N`），所以
-`sv/shuttle_subscription.svh` 里的 `shuttle_register` 不再报第二行；`unsubscribe()` 同样安静，由
-`Broker::remove_sub` 报。测试通过标记不是诊断，仍用 `$display`。
+一个事件只发一份声音：失败由拥有那条路径的模块报一次，级别 `error`——失败的 `wait_done`、被拒的
+`publish_serial`、非法的 `subscribe`、投到了帧用不了的入口的订阅。它之上不再叠一行 `$error`；本来就
+安静的路径才写 `debug`——reject 策略下的 `publish_now`、请求主题与回复主题同名的响应方。同一条规则也
+约束两侧的分工：SV 的订阅由 `shuttle_register` 报（`shuttle.sub`，`error`），所以
+`src/backend/svdpi/facade.cpp` 里 `ext_sub` 的 catch 只把原因交给 last-error 通道，不再多写一行；
+注册成功由 broker 的 `register_sub` 报（它已经把句柄写成 `sv sid N`），`unsubscribe()` 同样安静，交给
+`Broker::remove_sub`。测试通过标记不是诊断，仍用 `$display`。
 
 级别约定与 weave 一致：`debug` 给跑挂或失败时才需要看的生命周期与诊断事件，`trace` 给热路径上的
-记账（逐帧投递、链尾交接、retained 重放、回复分派）。默认级别是 `info`，不设 `SIMLOG_LEVEL` 时构建
-保持沉默；spdlog 先查级别再格式化，被关掉的 C++ 行只花一次级别检查，不分配内存。simlog 不是后端
+记账（逐帧投递、链尾交接、retained 重放、回复分派），`error` 给调用方否则看不见的失败。`error` 及更高
+级别压过默认的 `info`，跑出问题的那一次不设 `SIMLOG_LEVEL` 也会把原因打出来；而既然诊断不再用
+`$error`，`tests/run-eda.sh` 就把日志里带 `[error]` 行的一次运行判为失败，缺陷的响亮程度与仿真器自己
+的错误计数持平。`$fatal` 只留在运行无法继续的地方：编解码帧里的字符串长度超出缓冲区时中止解码，
+而不是读越界。spdlog 先查级别再格式化，被关掉的 C++ 行只花一次级别检查，不分配内存。simlog 不是后端
 API，后端唯一的门仍是 `src/backend/backend.hpp`。
 
 这些行最终落在哪里由后端决定，不由 broker 决定：svdpi 构建的 sink 经仿真器自己的输出例程打印
@@ -264,12 +270,12 @@ DPI export 名是静态的——不可能"每个订阅者一个 export 函数"�
   然后 `shuttle_registry::dispatch[_nb]` 按 id 路由到 `invoke` / `invoke_nb`。
 - 在途退订：`shuttle_registry::remove` 删掉 sink 并置 `retired_[id]`。之后到达的派发
   在 SV 侧静默丢弃——不是错误——但会调 `shuttle_c_sub_retired`，让 C++ 把这次投递记
-  为 retired（真实终态）而非幻影 delivered。从未登记过的 id 仍然 `$error`，保留真缺
-  陷的可见性。
-- SV 侧的 `$error` 永不传回 C++：SV 代码成功调用的 import 就成功返回。需要严格错误
+  为 retired（真实终态）而非幻影 delivered。从未登记过的 id 仍然在 `shuttle.sub` 上写一行
+  `error`，保留真缺陷的可见性。
+- SV 侧的 error 行永不传回 C++：SV 代码成功调用的 import 就成功返回。需要严格错误
   通道的接口必须显式返回（这就是为什么 `shuttle_c_subscribe` 与发布 import 用返回码
   应答，也是为什么 `shuttle_publisher::publish_now` 失败时保持静默而 `publish_serial` /
-  `publish_concurrent` 立即打印——即发即弃的异步接口没有更晚的时机可以报错）。
+  `publish_concurrent` 立即写日志——即发即弃的异步接口没有更晚的时机可以报错）。
 
 ### wait_done 通过一个叶子 weave 等待挂起普通 SV 进程
 

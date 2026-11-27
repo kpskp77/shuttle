@@ -74,11 +74,12 @@ no locks, no atomics, no threads anywhere in the broker.
   `include/shuttle/detail/trace.hpp` (`shuttle.broker`, `shuttle.sub`, `shuttle.dispatch`,
   `shuttle.pub`, `shuttle.trigger`, `shuttle.svdpi`, `shuttle.mailbox`, `shuttle.requester`);
   `sv/shuttle_trace.svh` mirrors them with the same names (`trace_pub()`, `trace_sub()`,
-  `trace_mailbox()`, `trace_requester()`), so one `SIMLOG_LEVEL` rule addresses both halves — no
-  separate `shuttle.sv.*` subtree, no second definition site. No `printf` /
-  `std::cout` / `std::cerr` / `$display` for diagnostics, no
-  second sink; `$error` stays for failures that must surface at any `SIMLOG_LEVEL`, and test pass
-  markers keep their own `$display`. An SV registration is reported once, by the broker's
+  `trace_trigger()`, `trace_mailbox()`, `trace_requester()`), so one `SIMLOG_LEVEL` rule addresses
+  both halves — no separate `shuttle.sv.*` subtree, no second definition site. No `printf` /
+  `std::cout` / `std::cerr` / `$display` / `$error` for diagnostics, no
+  second sink: a failure is an `error`-level line on the logger that owns the path (the run script
+  fails a run carrying one), `$fatal` only where the run cannot continue, and test pass markers
+  keep their own `$display`. An SV registration is reported once, by the broker's
   `register_sub` (`shuttle.sub`, handle spelled `sv sid N`); `shuttle_register` / `unsubscribe()` in
   `sv/shuttle_subscription.svh` add no line of their own. `debug` for lifecycle and failure
   diagnosis, `trace` for hot-path bookkeeping; C++ arguments stay cheap (ids, views), never a

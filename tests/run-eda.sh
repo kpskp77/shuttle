@@ -132,12 +132,13 @@ if [[ $simv_status -ne 0 ]]; then
   exit 1
 fi
 
-# Simulator error shapes: VCS's "Error-[CODE]" and $error's "^Error".
+# Error shapes: VCS's "Error-[CODE]", $fatal's "^Error", and the loggers' "[error]"
+# level (a framework failure is a log line now, not a $error — see docs/backends.md).
 # A bare "Error" must not be used for matching — the example output itself legitimately
 # contains normal text such as CapabilityError.
-if grep -qE 'Error-\[|^Error' "$work/run.log"; then
-  echo "[svdpi-test] FAIL: \$error reported, see $work/run.log" >&2
-  grep -E 'Error-\[|^Error' "$work/run.log" | head -n 5 >&2
+if grep -qE 'Error-\[|^Error|\]\[error\]' "$work/run.log"; then
+  echo "[svdpi-test] FAIL: error reported, see $work/run.log" >&2
+  grep -E 'Error-\[|^Error|\]\[error\]' "$work/run.log" | head -n 5 >&2
   exit 2
 fi
 if ! grep -qF "$marker" "$work/run.log"; then

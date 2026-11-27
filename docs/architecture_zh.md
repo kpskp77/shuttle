@@ -183,8 +183,8 @@ owner 是当前任务时，经 `weave::fatal` 结束仿真。
 - C++ 侧：`Broker::remove_sub` 置 `Subscriber::removed`；`deliver` 在 kind 分发**之前**
   检查该标志。这个检查是必须的，因为快照持有 `shared_ptr`——漏了这一查，已退订的回调
   真的会执行。
-- SV 侧：`shuttle_registry` 用 `retired_[id]` 静默丢弃（只有从未登记过的 id 才
-  `$error`），丢弃时调 `shuttle_c_sub_retired`；`Broker::deliver` 在 export 返回后通过
+- SV 侧：`shuttle_registry` 用 `retired_[id]` 静默丢弃（只有从未登记过的 id 才在
+  `shuttle.sub` 上写一行 `error`），丢弃时调 `shuttle_c_sub_retired`；`Broker::deliver` 在 export 返回后通过
   `take_retired_delivery()` 把这次投递转成 retired。
 
 两个来源不相交、谁也替代不了谁：C++ 标志看不到 SV 侧 `shuttle_subscription::unsubscribe()`（它
@@ -477,7 +477,7 @@ shuttle_requester #(AskObj, RspVal) rq = new ("svc.ask", "svc.rsp");  // 原样�
 - `T` 在每一侧都必须是同一个类类型（声明在 package 里，或放进两侧共同 include 的文件）：
   表与标签按 `#(T)` 特化隔离，也没有运行时注册步骤。标签既然是 `$typename(T)`，package 作用域
   的类发出的帧就带 `pkg::T`——C++ 对端用这个拼写反射一个只含 `std::uint32_t` 的结构体即可。
-- id 单调分配、永不复用，所以过期引用在投递处大声 `$error`，绝不静默指向更新的对象；
+- id 单调分配、永不复用，所以过期引用在投递处大声写一行 error，绝不静默指向更新的对象；
   mailbox 把这类帧挡在队列之外，计入 `unresolved()`。
 - 表持强引用，所以发布方只在携带该引用的在途帧与 retained 帧都消费完之后才 `free(obj)`
   或 `clear()`。retained 帧在重放时才重新查表——这既让发布后的字段改动对迟到的订阅者可见，
@@ -550,7 +550,7 @@ shuttle 提供仿真进程内的类型化发布-订阅投递调度，C++、Syste
 - shuttle 自己的时钟——仿真时间是 weave 的（`weave::now()`），刻意不设
   `shuttle::now_fs()` 式转发包装（曾经有过，已删）。
 
-已知限制：SV 侧 `$error` 不传回 C++（协议后果；严格错误通道需要扩展 `dispatch` 的返
+已知限制：SV 侧的错误行不传回 C++（协议后果；严格错误通道需要扩展 `dispatch` 的返
 回值）；跨语言载荷是值语义、字段子集——编码里没有 variant、指针、引用或句柄，对象图只能
 以内部对象 id 过界（见上），不作为载荷；
 `TopicInfo::deferred`（topic 累计）与 `Publication::deferred()`（每帧）在两个粒度上共

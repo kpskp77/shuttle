@@ -105,7 +105,7 @@ endclass
 // subscribes on the request pattern, and answers every request through
 // shuttle_publisher::reply, which echoes the request's corr_id into the
 // response frame. Failures are reported through valid()/last_error() — never
-// silently, never by $error from here.
+// silently, never by an error-level line from here.
 class shuttle_serve #(type TReq, type TResp);
   local shuttle_subscription sub_;
   local string               error_;

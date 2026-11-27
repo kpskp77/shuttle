@@ -34,7 +34,7 @@
 //     type_tag — and a C++ peer reflects that name on a struct with one u32 field.
 //   · the table holds a strong reference. The publisher drops an object with free(obj)
 //     (or clear()) once no in-flight or retained frame carries it; a frame whose id was
-//     freed is a loud $error at delivery, never a silent alias onto another object.
+//     freed is a loud error line at delivery, never a silent alias onto another object.
 //   · ids are allocated monotonically and never reused.
 //
 // One class, several reference types. SV has no overloading, so a class cannot implement
@@ -66,7 +66,7 @@ class shuttle_ref_table #(type T);
 
   static function int unsigned id_of(input T obj);
     if (obj == null) begin
-      $error("shuttle: null handle published (tag \"%s\")", $typename(T));
+      trace_pub().error($sformatf("null handle published (tag \"%s\")", $typename(T)));
       return 0;
     end
     foreach (objs_[i])
@@ -83,8 +83,9 @@ class shuttle_ref_table #(type T);
   static function T of_id(input int unsigned id);
     if (id == 0) return null;  // malformed frame: shuttle_ref_unpack already spoke
     if (by_id_.exists(id)) return by_id_[id];
-    $error("shuttle: frame carries unknown object id %0d (tag \"%s\") — freed, or sent by another type",
-           id, $typename(T));
+    trace_sub().error(
+        $sformatf("frame carries unknown object id %0d (tag \"%s\") — freed, or sent by another type",
+                  id, $typename(T)));
     return null;
   endfunction
 
@@ -121,7 +122,7 @@ function automatic int unsigned shuttle_ref_unpack(input byte payload[]);
   int          pos = 0;
   int unsigned id;
   if (payload.size() != 4) begin
-    $error("shuttle: a reference frame must be 4 bytes, got %0d", payload.size());
+    trace_sub().error($sformatf("a reference frame must be 4 bytes, got %0d", payload.size()));
     return 0;
   end
   shuttle_u32::unpack_into(payload, pos, id);
@@ -164,7 +165,7 @@ endclass
 class shuttle_ref_codec #(type T);
   static function void pack_obj(ref byte q[$], input T v);
     if (v == null) begin
-      $error("shuttle: packing a null reference (tag \"%s\")", $typename(T));
+      trace_pub().error($sformatf("packing a null reference (tag \"%s\")", $typename(T)));
       shuttle_u32::pack_obj(q, 0);
       return;
     end
@@ -174,7 +175,7 @@ class shuttle_ref_codec #(type T);
   static function void unpack_into(const ref byte b[], ref int pos, output T v);
     int unsigned id;
     shuttle_u32::unpack_into(b, pos, id);
-    v = shuttle_ref_table #(T)::of_id(id);  // null + $error on an id nobody holds
+    v = shuttle_ref_table #(T)::of_id(id);  // null + an error line on an id nobody holds
   endfunction
 endclass
 
@@ -246,7 +247,9 @@ class shuttle_ref_publisher #(type T);
 
   local function shuttle_publication wrap(int pid, string what, bit loud);
     if (pid <= 0) begin
-      if (loud) $error("shuttle: %s publish failed (topic=%s): %s", what, topic_, shuttle_c_last_error());
+      if (loud)
+        trace_pub().error($sformatf("%s publish failed (topic='%s'): %s", what, topic_,
+                                    shuttle_c_last_error()));
       return null;
     end
     begin
@@ -324,7 +327,7 @@ class shuttle_ref_subscription #(type T);
     shuttle_ref_subscription #(T) sub = new ();
     shuttle_ref_cb #(T) cb;
     if (sink == null) begin
-      $error("shuttle: reference subscription without a sink (topic=%s)", topic);
+      trace_sub().error($sformatf("reference subscription without a sink (topic='%s')", topic));
       return sub;
     end
     cb       = new (sink);
@@ -338,7 +341,7 @@ class shuttle_ref_subscription #(type T);
     shuttle_ref_subscription #(T) sub = new ();
     shuttle_ref_cb_nb #(T) cb;
     if (sink == null) begin
-      $error("shuttle: reference subscription without a sink (topic=%s)", topic);
+      trace_sub().error($sformatf("reference subscription without a sink (topic='%s')", topic));
       return sub;
     end
     cb       = new (sink);
@@ -388,7 +391,8 @@ class shuttle_ref_mailbox_sink #(type T) implements shuttle_sink_nb;
     end
     if (!shuttle_ref_table #(T)::known(id)) begin
       unresolved_++;
-      $error("shuttle: reference mailbox got an unknown object id %0d (tag \"%s\")", id, $typename(T));
+      trace_mailbox().error(
+          $sformatf("reference mailbox got an unknown object id %0d (tag \"%s\")", id, $typename(T)));
       return;
     end
     if (closed_) return;

@@ -28,6 +28,15 @@
 // would call into the DPI library during static initialization, before the
 // simulator has finished loading it.
 //
+// Levels, same words as the C++ half: `debug` for lifecycle and failure
+// diagnosis, `trace` for the hot bookkeeping paths, `error` for a failure the
+// caller would otherwise swallow — a timed-out wait, a rejected fire-and-forget
+// publish, a registration the broker refused. `error` sits above the default
+// `info`, so such a line prints unasked, and tests/run-eda.sh treats a `[error]`
+// line as a failed run, so a defect is as visible as it was with `$error`.
+// `$fatal` stays where the run cannot continue (a corrupt frame length aborts
+// the decode).
+//
 // SystemVerilog has neither variadic functions nor variadic macros, so a line's
 // text is formatted at the call site with $sformatf — which happens even when
 // SIMLOG_LEVEL filters the line out. There is no cheap disabled line here, so
@@ -44,6 +53,8 @@ shuttle_sv_logger lg_pub = null;
 // "subscriber registered: sv sid 3 pattern=... kind=external cap=blocking
 // filter=..." — and one event keeps one voice.
 shuttle_sv_logger lg_sub = null;
+// Triggers: a trigger built from something that is not a live edge.
+shuttle_sv_logger lg_trigger = null;
 // Mailbox queue: capacity overflow, close. Same object, same name on both
 // sides (Mailbox in C++, shuttle_mailbox in SV).
 shuttle_sv_logger lg_mailbox = null;
@@ -59,6 +70,11 @@ endfunction
 function automatic shuttle_sv_logger trace_sub();
   if (lg_sub == null) lg_sub = new ("shuttle.sub");
   return lg_sub;
+endfunction
+
+function automatic shuttle_sv_logger trace_trigger();
+  if (lg_trigger == null) lg_trigger = new ("shuttle.trigger");
+  return lg_trigger;
 endfunction
 
 function automatic shuttle_sv_logger trace_mailbox();

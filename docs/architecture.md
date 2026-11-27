@@ -205,7 +205,7 @@ are recorded as the `retired` terminal state (part of `dropped`, never `delivere
   kind dispatch. The flag is necessary because the snapshot holds a `shared_ptr` — without the
   check the removed callback would really run.
 - SV side: `shuttle_registry` drops silently via `retired_[id]` (only never-registered ids
-  `$error`) and calls `shuttle_c_sub_retired`; `Broker::deliver` converts the attempt via
+  log an `error` line on `shuttle.sub`) and calls `shuttle_c_sub_retired`; `Broker::deliver` converts the attempt via
   `take_retired_delivery()`.
 
 The two sources are disjoint and neither replaces the other: the C++ flag cannot see SV-side
@@ -550,7 +550,7 @@ Four constraints follow from the reference being a table index:
   file both sides include): the table and the tag are per-`#(T)` specialization, and no runtime
   registration step exists. Because the tag is `$typename(T)`, a package-scope class tags its
   frames `pkg::T` — a C++ mirror reflects that exact spelling with a single `std::uint32_t` field.
-- ids are allocated monotonically and never reused, so a stale reference is a loud `$error` at
+- ids are allocated monotonically and never reused, so a stale reference is a loud error line at
   delivery and never a silent alias onto a newer object; the mailbox keeps such frames out of the
   queue and counts them in `unresolved()`.
 - the table holds a strong reference, so the publisher calls `free(obj)` (or `clear()`) only
@@ -629,7 +629,7 @@ in SystemVerilog, and across the DPI boundary. Deliberately not provided:
 - shuttle's own clock — simulation time is weave's (`weave::now()`), and there is deliberately no
   `shuttle::now_fs()`-style forwarding wrapper (one existed, and was removed).
 
-Known limitations: SV-side `$error` does not propagate back to C++ (a protocol consequence; a
+Known limitations: an SV-side error line does not propagate back to C++ (a protocol consequence; a
 strict error channel would extend `dispatch`'s return value); cross-language payloads are
 value-semantics with a declared-field subset — no variants, pointers, references or handles in the
 encoding, so an object graph crosses as internal object ids (see above), never as a payload;

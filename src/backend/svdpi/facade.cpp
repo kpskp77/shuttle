@@ -31,6 +31,7 @@
 #include <memory>
 #include <optional>
 #include <shuttle/detail/abi.hpp>
+#include <shuttle/detail/trace.hpp>
 #include <shuttle/publication.hpp>
 #include <shuttle/trigger.hpp>
 #include <stdexcept>
@@ -42,7 +43,6 @@
 
 #include "broker/broker.hpp"
 #include "detail/publication.hpp"
-#include <shuttle/detail/trace.hpp>
 #include "svdpi_internal.hpp"
 
 namespace shuttle::detail {
@@ -146,7 +146,8 @@ int ext_sub(std::string pattern, int caps, std::string type_tag, int handle) {
                    {}, handle);
     return kFacadeOk;
   } catch (const std::exception& e) {
-    trace_svdpi()->debug("sv subscribe failed: {}", e.what());
+    // The reason travels to SV through the last-error channel and is logged there
+    // by `shuttle_register` on `shuttle.sub`; this path adds no second line.
     set_last_error(e.what());
     return kFacadeError;
   }

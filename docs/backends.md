@@ -66,7 +66,9 @@ module, every name under the `shuttle.` prefix so `SIMLOG_LEVEL` addresses the t
 narrows to one module. All eight accessors are declared in one place,
 `include/shuttle/detail/trace.hpp` — installed, because `Mailbox` and `Requester` live entirely in
 installed headers and the core must not keep a second copy of the name tree; `detail/` is not API.
-The SV package's accessors are in `sv/shuttle_trace.svh`, the same eight names:
+The SV package's accessors are in `sv/shuttle_trace.svh` and cover the modules that exist in SV —
+`trace_pub()`, `trace_sub()`, `trace_trigger()`, `trace_mailbox()`, `trace_requester()`;
+`shuttle.broker`, `shuttle.dispatch` and `shuttle.svdpi` are C++-only, and no name is defined twice.
 
 | Logger | Covers |
 | --- | --- |
@@ -74,7 +76,7 @@ The SV package's accessors are in `sv/shuttle_trace.svh`, the same eight names:
 | `shuttle.sub` | subscription lifecycle from both halves: registration, unsubscription, deliveries that arrive after unsubscribe |
 | `shuttle.dispatch` | publish scheduling: units, chain-tail handoffs, completion, recorded failures, timed waits |
 | `shuttle.pub` | the publish entry points and `Publication::wait`; SV: accepted frames, rejected `publish_now`, retained toggle |
-| `shuttle.trigger` | `after_any` races |
+| `shuttle.trigger` | `after_any` races; SV: a trigger built from a dead edge |
 | `shuttle.svdpi` | the external facade (`ext_*` / `pub_*`), i.e. the SV side of the same operations |
 | `shuttle.mailbox` | queue overflow, receive timeouts, close — both halves |
 | `shuttle.requester` | calls going out, reply demultiplexing, stale replies, cancelled calls, responders — both halves |
@@ -83,7 +85,8 @@ A module is a module regardless of the language it is written in: simlog keeps o
 name, so `new ("shuttle.pub")` in `sv/shuttle_trace.svh` and `simlog::get("shuttle.pub")` in
 `src/publication.cpp` hand back the same logger, and an SV publisher's line interleaves with the C++
 entry point's in simulation order. A `SIMLOG_LEVEL` rule therefore narrows both halves at once. The
-SV accessors mirror the C++ ones — `trace_pub()`, `trace_sub()`, `trace_mailbox()`,
+SV accessors mirror the C++ ones name for name — `trace_pub()`, `trace_sub()`,
+`trace_trigger()`, `trace_mailbox()`,
 `trace_requester()` — and `shuttle.sub` has writers on both sides: `Broker::register_sub` /
 `remove_sub` report a registration once, spelling the half in the handle (`sv sid 3` vs `cpp sub
 2`), and the retired deliveries are logged by whoever knows the terminal state (`Subscriber::removed`
@@ -95,20 +98,26 @@ SIMLOG_LEVEL='shuttle.dispatch=trace'      # one module in full detail, everythi
 SIMLOG_LEVEL='shuttle.sub=trace'           # subscription lifecycle, both languages
 ```
 
-One voice per event: a condition that must surface at any `SIMLOG_LEVEL` keeps its `$error` (a
-failed `wait_done`, a rejected `publish_serial`, an invalid `subscribe`) and gets no log line on top
-of it, and the silent paths log at `debug` — `publish_now` under the reject policy, a responder whose
-request topic already equals its response topic. The same rule binds the two halves together: an SV
-subscribe is reported by the broker's `register_sub` (which spells it `sv sid N`), so
-`shuttle_register` in `sv/shuttle_subscription.svh` adds no second line; likewise `unsubscribe()`
-stays quiet and `Broker::remove_sub` reports it. Test pass markers are not diagnostics and stay
-`$display`.
+One voice per event: a failure is reported once, by the module that owns the failed path, at
+`error` level — a failed `wait_done`, a rejected `publish_serial`, an invalid `subscribe`, a
+subscription that reached an entry the frame cannot use. Nothing prints `$error` on top of it, and
+the silent paths log at `debug`: `publish_now` under the reject policy, a responder whose request
+topic already equals its response topic. The same rule binds the two halves together: an SV subscribe
+is reported by `shuttle_register` (`shuttle.sub`, `error`), so `ext_sub`'s catch block in
+`src/backend/svdpi/facade.cpp` only hands the reason to the last-error channel and adds no line;
+the successful registration is reported by the broker's `register_sub` (which spells it `sv sid N`)
+and `unsubscribe()` stays quiet in favour of `Broker::remove_sub`. Test pass markers are not
+diagnostics and stay `$display`.
 
 Level convention is weave's: `debug` for the lifecycle and failure-diagnosis events you want when a
 run hangs or fails, `trace` for the hot bookkeeping paths (per-frame delivery, chain handoffs,
-retained replay, reply routing). The default level is `info`, so a build stays silent unless
-`SIMLOG_LEVEL` says otherwise; spdlog checks the level before formatting, so a disabled C++ line
-costs one level check and no allocation, and simlog is not a backend API, so
+retained replay, reply routing), `error` for a failure the caller would otherwise swallow. `error`
+and above outrank the default `info`, so a failing run prints its reason unasked — and since no
+diagnostic uses `$error` any more, `tests/run-eda.sh` fails a run whose log carries an `[error]` line,
+which keeps the defect as loud as the simulator's own error count made it. `$fatal` stays where the
+run cannot continue at all: a codec frame whose string length exceeds the buffer (a corrupt payload
+aborts the decode instead of reading past it). spdlog checks the level before formatting, so a
+disabled C++ line costs one level check and no allocation, and simlog is not a backend API, so
 `src/backend/backend.hpp` stays the only backend door.
 
 Where the lines surface is the backend's business, not the broker's: the svdpi build's sink prints
@@ -325,13 +334,13 @@ integers:
   sets `retired_[id]`. A dispatch that arrives after that is dropped silently
   on the SV side — not an error — but calls `shuttle_c_sub_retired` so C++
   records the delivery as retired (a real terminal state) instead of a phantom
-  delivered. An id that was never registered still gets `$error`, preserving
-  visibility of genuine defects.
-- `$error` on the SV side never propagates back to C++: an import that the SV
+  delivered. An id that was never registered still logs an `error` line on
+  `shuttle.sub`, preserving visibility of genuine defects.
+- An error-level log line on the SV side never propagates back to C++: an import that the SV
   code called successfully returns successfully. Interfaces that need a strict
   error channel must return it explicitly (which is why `shuttle_c_subscribe`
   and the publish imports answer with codes, and why `shuttle_publisher::publish_now`
-  stays silent on failure while `publish_serial` / `publish_concurrent` print
+  stays silent on failure while `publish_serial` / `publish_concurrent` log
   immediately — fire-and-forget async interfaces have no later moment to
   surface an error).
 

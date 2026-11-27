@@ -52,7 +52,7 @@ class shuttle_registry;
   static task automatic dispatch(int id, byte payload[], shuttle_meta meta);
     if (!sinks_.exists(id)) begin
       // In-flight delivery after unsubscribing: dropped silently on the SV
-      // side (no $error), but C++ must be told, otherwise it would record
+      // side (no line of its own), but C++ must be told, otherwise it would record
       // this delivery as delivered (a phantom success).
       if (retired_.exists(id)) begin
         trace_sub().trace($sformatf("sid %0d retired: delivery arrived after unsubscribe",
@@ -60,7 +60,8 @@ class shuttle_registry;
         shuttle_c_sub_retired(id);
         return;
       end
-      $error("shuttle: subscriber %0d does not exist or lacks the blocking entry", id);
+      trace_sub().error($sformatf("subscriber %0d does not exist or lacks the blocking entry",
+                                  id));
       return;
     end
     sinks_[id].invoke(payload, meta);
@@ -75,7 +76,9 @@ class shuttle_registry;
         shuttle_c_sub_retired(id);
         return;
       end
-      $error("shuttle: subscriber %0d lacks the nonblocking entry (publish_now must not dispatch to it)", id);
+      trace_sub().error(
+          $sformatf("subscriber %0d lacks the nonblocking entry (publish_now must not dispatch to it)",
+                    id));
       return;
     end
     sinks_nb_[id].invoke_nb(payload, meta);
@@ -132,7 +135,7 @@ function automatic shuttle_subscription shuttle_register(string topic, shuttle_s
   // dispatch time; neither side maintains a mapping.
   if (shuttle_c_subscribe(topic, caps, type_tag, sid) != 0) begin
     shuttle_registry::remove(sid);
-    $error("shuttle: subscribe failed (topic=%s): %s", topic, shuttle_c_last_error());
+    trace_sub().error($sformatf("subscribe failed (topic='%s'): %s", topic, shuttle_c_last_error()));
     return null;
   end
   // The broker's register_sub reports this registration (shuttle.sub, "subscriber

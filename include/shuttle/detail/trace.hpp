@@ -17,7 +17,7 @@
 //   sub        subscription lifecycle: registration, unsubscription, retired deliveries
 //   dispatch   publish scheduling: units, chain-tail handoffs, completion, failures
 //   pub        the publish entry points and Publication::wait
-//   trigger    after_any races
+//   trigger    after_any races, and (SV) a trigger built from a dead edge
 //   svdpi      the external facade (ext_* / pub_*), i.e. the SV side of the same operations
 //   mailbox    queue overflow, receive timeouts, close
 //   requester  calls going out, reply demultiplexing, stale replies, cancelled calls
@@ -26,7 +26,10 @@
 // failure-diagnosis events you want when a run hangs or fails (subscriber
 // register/remove, topic type binding, publish-unit creation, publication
 // completion, recorded failures); trace = the hot bookkeeping paths (per-frame
-// delivery, chain handoffs, retained replay, wait outcomes). The default level
+// delivery, chain handoffs, retained replay, wait outcomes); error = a failure
+// the caller would otherwise swallow (the SV half has no exceptions, so the
+// sites that used to print `$error` log here; tests/run-eda.sh treats an
+// `[error]` line as a failed run). The default level
 // is info, so an enabled build stays silent unless SIMLOG_LEVEL says otherwise.
 //
 // The loggers are function-local statics of inline functions: one instance per

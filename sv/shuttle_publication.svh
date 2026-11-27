@@ -25,13 +25,13 @@ class shuttle_publication;
     if (!valid()) return;
     shuttle_c_wait_pub(pub_id_, timeout_fs, status);
     if (status == SHUTTLE_WAIT_TIMEOUT)
-      $error("shuttle: wait on Publication %0d timed out", pub_id_);
+      trace_pub().error($sformatf("wait on Publication %0d timed out", pub_id_));
     else if (status == SHUTTLE_WAIT_FAILED) begin
       // A subscriber failure carries its own text; an internal error only has the DPI error
       // channel.
       automatic string why = first_error();
       if (why == "") why = shuttle_c_last_error();
-      $error("shuttle: wait on Publication %0d failed: %s", pub_id_, why);
+      trace_pub().error($sformatf("wait on Publication %0d failed: %s", pub_id_, why));
     end else
       trace_pub().trace($sformatf("publication %0d done (%0d/%0d subscribers finished)",
                                   pub_id_, finished(), subscriber_count()));
@@ -98,7 +98,7 @@ class shuttle_trigger;
   static function shuttle_trigger after_edge(weave_edge e);
     shuttle_trigger t = new();
     if (e == null || e.id < 0)
-      $error("shuttle: after_edge needs a live weave_edge (pass `new(\"name\")`)");
+      trace_trigger().error("after_edge needs a live weave_edge (pass `new(\"name\")`)");
     t.kind = SHUTTLE_TRIG_EDGE;
     t.edge_name = (e == null) ? "" : e.name;
     return t;

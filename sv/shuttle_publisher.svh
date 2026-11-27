@@ -47,15 +47,17 @@ class shuttle_publisher #(type T = byte);
     shuttle_q2a(q, payload);
   endfunction
 
-  // pub_id → handle; returns null on failure. loud=1 additionally prints $error.
+  // pub_id → handle; returns null on failure. loud=1 additionally logs at error level.
   // `publish_now` stays silent (under the reject policy, failure is the
-  // expected outcome; the reason goes through shuttle_c_last_error());
-  // `serial`/`concurrent` print because they are fire-and-forget async
-  // interfaces where errors must be visible immediately.
+  // expected outcome; the reason goes through shuttle_c_last_error() and out
+  // as a debug line); `serial`/`concurrent` log because they are
+  // fire-and-forget async interfaces where a failure must be visible
+  // immediately.
   local function shuttle_publication wrap(int pid, string what, bit loud);
     if (pid <= 0) begin
       if (loud)
-        $error("shuttle: %s publish failed (topic=%s): %s", what, topic_, shuttle_c_last_error());
+        trace_pub().error($sformatf("%s publish failed (topic='%s'): %s", what, topic_,
+                                    shuttle_c_last_error()));
       else  // publish_now: the reason is the only voice there is
         trace_pub().debug($sformatf("%s publish failed (topic='%s'): %s", what, topic_,
                                     shuttle_c_last_error()));
