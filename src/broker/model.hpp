@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <vector>
 #include <weave/event.hpp>
+#include <weave/task.hpp>
 
 namespace shuttle::detail {
 
@@ -94,15 +95,13 @@ struct Subscriber {
 // exceptions and accounted uniformly by the delivery unit.
 enum class Delivery { delivered, retired };
 
-// One link of an ordered delivery chain: the event a frame releases when its
-// delivery is complete, plus the id of the task that will release it (-1 = not
-// known yet, which includes frames published from a context that is not a
-// weave task). The owner is recorded by the delivery unit itself when it starts
-// and read by `check_self_blocked` afterwards, so the waiter never has to guess
-// "who holds the chain I am queued behind".
+// One link of an ordered delivery chain: the delivery task whose reaching a
+// terminal state releases the next frame. The handle is recorded once, from the
+// one `weave::create_task` returns, so the waiter never has to guess "who holds
+// the chain I am queued behind" — and the release signal is weave's own per-task
+// event (`Task::await`), not a second event kept in step with it by hand.
 struct ChainLink {
-  weave::Event ev;
-  int owner = -1;
+  weave::Task task;
 };
 using ChainLinkPtr = std::shared_ptr<ChainLink>;
 
@@ -128,8 +127,8 @@ struct Topic {
   std::uint64_t deferred = 0;
   [[nodiscard]] std::uint64_t dropped() const { return retired + skipped + failed; }
   // Tail of the background serial chain shared by publish_serial and publish_now(defer).
-  // Held by pointer (not by value) so that a waiter can read `owner` from the
-  // very link it waits on; the link's event is never reset, so sharing is safe.
+  // Held by pointer (not by value) so that a waiter awaits the very task it read
+  // from the link; an empty tail means nothing is in flight on this chain.
   ChainLinkPtr chain;
   // Tail of each subscriber's concurrent chain, keyed by Subscriber::id (ids
   // are never reused). publish_concurrent hands off through one chain per
@@ -139,7 +138,6 @@ struct Topic {
   // overtake each other's promises. Erased when the subscriber is removed
   // (Broker::remove_sub) — a dead registration must not leave its chain behind.
   std::unordered_map<int, ChainLinkPtr> sub_chains;
-  Topic() : chain(std::make_shared<ChainLink>()) { chain->ev.set(); }
 };
 
 // ── Publication state ────────────────────────────────────────────────────

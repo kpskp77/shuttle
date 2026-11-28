@@ -31,9 +31,11 @@ no locks, no atomics, no threads anywhere in the broker.
   Immediate frames hand off the chain tail inside the publish call; delayed frames hand off only
   after `wait_trigger` returns, inside the delivery task.
 - Chain-tail handoff goes through `chain_join(topic, key, mine)` in both chains (topic chain and
-  per-subscriber `sub_chains`); capture the tail event at enqueue, never read the chain at
-  completion. `ChainLink::owner` is written only by the delivery unit (start: own task id; finish:
-  −1 before `ev.set()`), never by the publisher. `Broker::remove_sub` erases the id's tail slot.
+  per-subscriber `sub_chains`); capture the tail link at enqueue, never read the chain at
+  completion. A frame joins exactly once, chosen by `queued = trig.immediate()` — an empty tail means
+  "nothing in flight", not "not joined yet". `ChainLink::task` is set once, from the handle
+  `weave::create_task` returns, and never cleared; it is the release signal itself (`await_chain`, no
+  separate event). `Broker::remove_sub` erases the id's tail slot.
 - Self-wait diagnosis (`detail::check_self_blocked`) runs before the suspension in
   `Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub` — never at enqueue. It ends the
   run through `weave::fatal`; no exception type for it exists or is added (`catch` would only turn

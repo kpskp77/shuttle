@@ -142,23 +142,23 @@ parallel, each subscriber's consecutive frames stay strictly FIFO. The two chain
 promised.
 
 The handoff itself is non-commutative and must happen inside the same non-suspending segment. Each
-frame captures the chain-tail event to wait on and installs its own as the new tail:
+frame captures the chain-tail link it is queued behind and installs its own as the new tail:
 
 ```cpp
 // immediate frame: handoff inside the publish call
-auto prev = std::make_shared<weave::Event>(topics[topic].chain);  // tail this frame waits on
-auto mine = std::make_shared<weave::Event>();                     // tail this frame releases
-topics[topic].chain = *mine;                                      // install
+ChainLinkPtr prev = chain_join(topic, 0, mine);  // link this frame is queued behind
+if (prev) pub->blocked_by.push_back(prev);       // an empty tail = nothing in flight yet
 
-// delayed frame: wait_trigger first, then the same three steps inside the task
+// delayed frame: wait_trigger first, then the same step inside the task
 ```
 
-A delivery unit waits on `prev` and sets `mine` on completion — success or failure. Reading
-`topics[topic].chain` at *completion* time instead of capturing it at enqueue time was the
-original bug: a concurrent publish installs a different frame's tail, the event this frame should
-have set never fires, and every later frame on the topic blocks forever — observed as simulation
-time frozen at the last event with no error. `mine->set()` sits outside the `catch`, so a failed
-or cancelled unit still releases the chain.
+A delivery unit awaits `prev`'s task and releases `mine` by reaching a terminal state — success or
+failure. Reading `topics[topic].chain` at *completion* time instead of capturing it at enqueue time
+was the original bug: a concurrent publish installs a different frame's tail, the release this frame
+should have performed never happens, and every later frame on the topic blocks forever — observed as
+simulation time frozen at the last event with no error. The release is the unit's terminal task
+state rather than a statement in its body, so a failed or cancelled unit still releases the chain:
+there is no exit path that can skip it.
 
 Delayed frames must not hold the tail at publish time. An `after(Event)` delay is unbounded;
 holding the tail would pin every later frame on the topic (including frames with no trigger at
@@ -171,21 +171,31 @@ callback must fully finish before the next starts. That is an accepted trade-off
 is `publish_concurrent`, which keeps exactly the per-subscriber FIFO and drops only the
 cross-subscriber ordering.
 
-The chain tail is a `ChainLink{ev, owner}` held by `shared_ptr`, because a waiter must see the
-*live* value — a by-value copy would freeze `owner` at handoff time. `owner` (the task id that
-will set the event) is written by the delivery unit itself when it starts and cleared to −1 before
-`ev.set()`; the publisher cannot fill it in because it does not know which task will deliver.
-`Broker::remove_sub` erases that subscriber's tail slot so unsubscribing never strands chain-tail
-events in `topics`.
+The chain tail is a `ChainLink{task}` held by `shared_ptr`, because a waiter must see the *live*
+value — a by-value copy would freeze the handle at handoff time. `task` is the delivery task that
+releases the link, recorded once from the handle `weave::create_task` returns: a frame knows its
+unit the moment it creates it, and a link sitting in the chain without a handle would read as
+"nothing to wait for". No id is kept beside it — the handle is both the release signal and the
+identity the self-wait check compares against, and a terminal task awaits immediately, so a waiter
+that arrives after the release cannot miss it. `Broker::remove_sub` erases that subscriber's tail
+slot so unsubscribing never strands chain links in `topics`.
+
+Awaiting the task rather than a private event makes the predecessor's *outcome* a hazard the event
+did not have: `Task::await()` rethrows a failed predecessor's exception and raises `CancelledError`
+for a cancelled one, while the frame behind it still owes its delivery. `await_chain` therefore
+reads the link as ordering only — the failure is already recorded on the predecessor's `PubState`,
+and `cancelled()` tells the link's own cancellation apart from one injected into the waiter, which
+is rethrown. The order in which the two become terminal decides nothing: whatever the predecessor
+did, this frame delivers and is counted on its own.
 
 ### Self-waiting is diagnosed at the wait site, not the enqueue site
 
 Publishing to the same topic inside a callback and then `wait()`ing on the new frame deadlocks
 under any FIFO design — in `serial` the inner frame queues behind the current one, and in
 `concurrent` the same is true whenever the target set includes the publisher's own registration.
-The diagnosis relies on `ChainLink::owner`: `detail::check_self_blocked` runs *before* the
+The diagnosis relies on `ChainLink::task`: `detail::check_self_blocked` runs *before* the
 suspension in `Publication::wait()` / `wait(timeout)` / SV `shuttle_c_wait_pub`, and ends the run
-through `weave::fatal` when any link in `blocked_by` is owned by the current task.
+through `weave::fatal` when any link in `blocked_by` belongs to the calling task.
 
 Why the wait site: publishing to one's own topic *without* waiting (relay/forward) is legal, and in
 that case the tail really is held by the current callback's delivery task — the same observation
