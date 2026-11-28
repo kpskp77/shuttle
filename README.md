@@ -266,6 +266,8 @@ docs/               architecture.md / backends.md + Chinese twins (README_zh.md,
 
 ## Further reading
 
+- [user guide](docs/user-guide.md): concepts, terminology, and the complete public API
+  (C++ and SV)
 - [architecture](docs/architecture.md): the broker model — snapshot semantics, the three publish
   paths, terminal-state accounting, and the key design decisions
 - [backends](docs/backends.md): the DPI protocol (import/export tables, byte layout), the

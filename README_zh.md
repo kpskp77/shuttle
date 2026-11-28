@@ -252,6 +252,7 @@ docs/               architecture.md / backends.md 及中文孪生（README_zh.md
 
 ## 延伸阅读
 
+- [user guide](docs/user-guide_zh.md)：基本概念、术语与完整公开 API（C++ 与 SV）
 - [architecture](docs/architecture.md)：broker 模型——快照语义、三种发布路径、终态记账、关键设计决策
 - [backends](docs/backends.md)：DPI 协议（import/export 表、字节布局）、systemc 后端、ABI 说明
 - [AGENTS.md](AGENTS.md)：每次改动都要对照的约束清单
